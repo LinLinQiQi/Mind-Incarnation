@@ -461,6 +461,11 @@ This spec is the source of truth for V1 behavior. Any functional changes MUST up
 
 - This file: `docs/mi-v1-spec.md`
 
+Additionally, keep other user-facing docs aligned when impacted:
+
+- `README.md` and `README.zh-CN.md` (CLI usage/examples, artifact locations, core principles)
+- Any related `docs/*.md` files introduced later
+
 Doc sections to keep aligned:
 
 - Runtime loop / constraints (if execution contract changes)

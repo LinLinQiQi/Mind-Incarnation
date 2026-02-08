@@ -1,6 +1,6 @@
 ---
 name: mi-doc-keeper
-description: Keep Mind Incarnation (MI) documentation accurate and up to date. Use when working in the MindIncarnation repo to implement or change MI behavior, autonomy decisions, prompts, schemas, storage, risk/interrupt logic, or any other functional changes. Remind and enforce updating docs/mi-v1-spec.md in the same patch.
+description: Keep Mind Incarnation (MI) documentation accurate and up to date. Use when working in the MindIncarnation repo to implement or change MI behavior, autonomy decisions, prompts, schemas, storage, risk/interrupt logic, CLI UX, or any other functional changes. Enforce updating docs/mi-v1-spec.md (source of truth) AND any other impacted docs (README, docs/*, etc.) in the same patch.
 ---
 
 # MI Doc Keeper
@@ -14,7 +14,9 @@ If `.mi-project` is missing, do not apply this skill's workflow.
 ## Workflow (run on every functional change)
 
 1) Identify the user-visible behavior change (even if "behavior-preserving").
-2) Open and update `docs/mi-v1-spec.md` in the same patch.
+2) Update docs in the same patch:
+   - Always update `docs/mi-v1-spec.md` when V1 behavior/loop/prompts/schemas change.
+   - Also update any other impacted docs (typically `README.md`, `README.zh-CN.md`, and any relevant files under `docs/`).
 3) Ensure the following stay consistent with the implementation:
    - Constraints (no tool interception, no forced step slicing)
    - Runtime loop (batch autopilot)
@@ -23,7 +25,8 @@ If `.mi-project` is missing, do not apply this skill's workflow.
    - Violation handling and learned rules
 4) Run a quick doc drift check:
    - If any non-doc files changed, `docs/mi-v1-spec.md` should usually change too.
-   - If it did not, explain why in the final response and confirm the spec is still correct.
+   - If CLI UX or usage changed, `README.md` and `README.zh-CN.md` should usually change too.
+   - If expected doc updates are missing, explain why in the final response and confirm docs remain correct.
 5) Repo sync (when this repo has a GitHub remote configured):
    - Prefer committing logical changes with clear messages.
    - After committing, push `main` to `origin` to keep the open-source repo up to date.

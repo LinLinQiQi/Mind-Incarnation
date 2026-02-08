@@ -12,6 +12,21 @@ Build a "mind layer" that sits *above* an execution agent (V1: Codex CLI) and re
 - Autonomously answering the agent's questions when possible (using values + evidence + memory)
 - Keeping a persistent evidence log to avoid context loss and to support self-evaluation of completion
 
+## Root Idea (Keep Stable)
+
+Mind Incarnation (MI) exists to "incarnate" a person's values, habits, and decision style into an agent-like layer that operates **above** other agents (Hands).
+
+This section captures the most fundamental, intended-to-be-stable principles. If these change, it should be an explicit user decision (not an accidental refactor).
+
+Non-negotiables (design intent):
+
+- MI is a **controller**, not the executor: it only writes input prompts and reads outputs from Hands; it is not a tool proxy and does not enforce allow/deny at the command level.
+- MI optimizes for **low user burden**: default is to auto-advance using "values + evidence" and answer questions on behalf of the user; MI asks the user only when it cannot proceed safely or values are unclear.
+- MI is **transparent by default**: always store raw Hands transcripts + an EvidenceLog so users can audit what happened and why MI decided what it did.
+- MI is **personal and tunable**: values/preferences are expressed in prompts and compiled into structured logic; MI can learn tighter rules over time, but learning must be reversible (rollback).
+- MI avoids "protocol tyranny": it should not force Hands into rigid step-by-step reporting; light injection is allowed, but Hands should remain free to execute efficiently.
+- When "refactor" is requested, the default intent is **behavior-preserving** unless the user explicitly asks for behavior changes.
+
 ## Hard Constraints (Aligned)
 
 - MI MUST NOT intercept or gate Codex tool execution (no tool proxy / no allow/deny for shell commands).

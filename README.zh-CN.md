@@ -28,31 +28,45 @@ Mind Incarnation（MI）是一个“心智层（mind layer）”：它位于执�
 - Python 3.10+
 - 已安装并完成鉴权的 Codex CLI
 
+## 安装
+
+可编辑安装（推荐用于开发）：
+
+```bash
+pip install -e .
+```
+
+安装后可直接使用 `mi` 命令（也可以继续用 `python -m mi`）。
+
+```bash
+mi version
+```
+
 ## 快速开始
 
 初始化全局价值观/偏好（默认写入 `~/.mind-incarnation/mindspec/base.json`）：
 
 ```bash
-python3 -m mi init --values "我的偏好：尽量少问；默认行为不变重构；没有测试就停下来；非必要不联网/不安装依赖/不 push。"
+mi init --values "我的偏好：尽量少问；默认行为不变重构；没有测试就停下来；非必要不联网/不安装依赖/不 push。"
 ```
 
 在 Codex 之上运行 MI（默认将 transcript + evidence 写入 `~/.mind-incarnation/projects/<id>/`）：
 
 ```bash
-python3 -m mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。"
+mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。"
 ```
 
 查看最近一次 batch（MI 发给 Codex 的输入、最后输出、证据与路径指针）：
 
 ```bash
-python3 -m mi last --cd /path/to/your/project
+mi last --cd /path/to/your/project
 ```
 
 查看 EvidenceLog / 展示原始 transcript：
 
 ```bash
-python3 -m mi evidence tail --cd /path/to/your/project -n 20
-python3 -m mi transcript show --cd /path/to/your/project -n 200
+mi evidence tail --cd /path/to/your/project -n 20
+mi transcript show --cd /path/to/your/project -n 200
 ```
 
 ## 你会得到什么

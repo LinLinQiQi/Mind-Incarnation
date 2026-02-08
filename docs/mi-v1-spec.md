@@ -409,10 +409,24 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
 
 All commands support `--home <dir>` to override MI storage (or set `$MI_HOME`).
 
+Install (provides the `mi` command):
+
+```bash
+pip install -e .
+```
+
+Note: You can also run via `python3 -m mi ...` without installing.
+
+Print MI version:
+
+```bash
+mi version
+```
+
 Initialize/compile MindSpec:
 
 ```bash
-python3 -m mi --home ~/.mind-incarnation init --values "..."
+mi --home ~/.mind-incarnation init --values "..."
 ```
 
 Common init flags:
@@ -424,35 +438,35 @@ Common init flags:
 Run batch autopilot:
 
 ```bash
-python3 -m mi --home ~/.mind-incarnation run --cd <project_root> --show "<task>"
+mi --home ~/.mind-incarnation run --cd <project_root> --show "<task>"
 ```
 
 Inspect latest batch bundle (MI input + last agent message + evidence pointers):
 
 ```bash
-python3 -m mi --home ~/.mind-incarnation last --cd <project_root>
-python3 -m mi --home ~/.mind-incarnation last --cd <project_root> --json
+mi --home ~/.mind-incarnation last --cd <project_root>
+mi --home ~/.mind-incarnation last --cd <project_root> --json
 ```
 
 Tail EvidenceLog:
 
 ```bash
-python3 -m mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20
-python3 -m mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw
+mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20
+mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw
 ```
 
 Show raw transcript (defaults to latest Hands transcript; Mind transcripts optional):
 
 ```bash
-python3 -m mi --home ~/.mind-incarnation transcript show --cd <project_root> -n 200
-python3 -m mi --home ~/.mind-incarnation transcript show --cd <project_root> --mind -n 200
+mi --home ~/.mind-incarnation transcript show --cd <project_root> -n 200
+mi --home ~/.mind-incarnation transcript show --cd <project_root> --mind -n 200
 ```
 
 Inspect/rollback learned preferences:
 
 ```bash
-python3 -m mi --home ~/.mind-incarnation learned list --cd <project_root>
-python3 -m mi --home ~/.mind-incarnation learned disable <id> --scope project --cd <project_root>
+mi --home ~/.mind-incarnation learned list --cd <project_root>
+mi --home ~/.mind-incarnation learned disable <id> --scope project --cd <project_root>
 ```
 
 ## Doc Update Policy (Source of Truth)

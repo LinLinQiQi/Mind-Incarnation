@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mind-incarnation"
+version = "0.1.0"
+description = "A values-driven mind layer above execution agents (V1: Codex CLI)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "LinLinQiQi" }]
+keywords = ["agent", "automation", "codex", "cli"]
+
+[project.urls]
+Repository = "https://github.com/LinLinQiQi/Mind-Incarnation"
+
+[project.scripts]
+mi = "mi.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+mi = ["schemas/*.json"]
+

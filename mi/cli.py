@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 
+from . import __version__
 from .mindspec import MindSpecStore
 from .llm import MiLlm
 from .prompts import compile_mindspec_prompt
@@ -27,6 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("version", help="Print MI version.")
 
     p_init = sub.add_parser("init", help="Initialize global values/preferences (MindSpec base).")
     p_init.add_argument(
@@ -109,6 +112,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     store = MindSpecStore(home_dir=args.home)
+
+    if args.cmd == "version":
+        print(__version__)
+        return 0
 
     if args.cmd == "init":
         values = args.values

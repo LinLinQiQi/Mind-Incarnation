@@ -26,7 +26,7 @@ class _FakeLlm:
         if not q:
             raise AssertionError(f"FakeLlm: unexpected call schema={schema_filename}")
         obj = q.pop(0)
-        return _FakePromptResult(obj=obj, transcript_path=Path("/dev/null"))
+        return _FakePromptResult(obj=obj, transcript_path=Path("fake_mind.jsonl"))
 
 
 class _FakeHands:
@@ -196,4 +196,3 @@ class TestRunnerIntegrationFake(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

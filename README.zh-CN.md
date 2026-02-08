@@ -42,6 +42,19 @@ python3 -m mi init --values "我的偏好：尽量少问；默认行为不变重
 python3 -m mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。"
 ```
 
+查看最近一次 batch（MI 发给 Codex 的输入、最后输出、证据与路径指针）：
+
+```bash
+python3 -m mi last --cd /path/to/your/project
+```
+
+查看 EvidenceLog / 展示原始 transcript：
+
+```bash
+python3 -m mi evidence tail --cd /path/to/your/project -n 20
+python3 -m mi transcript show --cd /path/to/your/project -n 200
+```
+
 ## 你会得到什么
 
 - Hands 原始 transcript：`~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`

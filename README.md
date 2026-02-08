@@ -42,6 +42,19 @@ Run MI batch autopilot above Codex (stores transcripts + evidence under `~/.mind
 python3 -m mi run --cd /path/to/your/project --show "Do X, then verify with minimal checks."
 ```
 
+Inspect the latest batch (what MI sent, last agent message, evidence pointers):
+
+```bash
+python3 -m mi last --cd /path/to/your/project
+```
+
+Tail EvidenceLog / show raw transcript:
+
+```bash
+python3 -m mi evidence tail --cd /path/to/your/project -n 20
+python3 -m mi transcript show --cd /path/to/your/project -n 200
+```
+
 ## What You Get
 
 - Raw Hands transcript: `~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`

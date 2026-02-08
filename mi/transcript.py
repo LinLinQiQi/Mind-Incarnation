@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 
@@ -177,3 +179,44 @@ def summarize_codex_events(
         "errors": errors,
     }
 
+
+def last_agent_message_from_transcript(transcript_path: Path, *, limit_chars: int = 8000) -> str:
+    """Extract the last agent_message text from a Hands transcript JSONL file.
+
+    Transcript format is MI-owned: each line is JSON with {ts, stream, line},
+    where stream=stdout may contain Codex JSON events in the "line" field.
+    """
+
+    last = ""
+    try:
+        with transcript_path.open("r", encoding="utf-8") as f:
+            for row in f:
+                row = row.strip()
+                if not row:
+                    continue
+                try:
+                    rec = json.loads(row)
+                except Exception:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("stream") != "stdout":
+                    continue
+                raw = rec.get("line")
+                if not isinstance(raw, str):
+                    continue
+                s = raw.strip()
+                if not (s.startswith("{") and s.endswith("}")):
+                    continue
+                try:
+                    ev = json.loads(s)
+                except Exception:
+                    continue
+                if ev.get("type") == "item.completed" and isinstance(ev.get("item"), dict):
+                    item = ev["item"]
+                    if item.get("type") == "agent_message":
+                        last = str(item.get("text") or "")
+    except FileNotFoundError:
+        return ""
+
+    return _truncate(last, limit_chars)

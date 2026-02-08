@@ -427,6 +427,27 @@ Run batch autopilot:
 python3 -m mi --home ~/.mind-incarnation run --cd <project_root> --show "<task>"
 ```
 
+Inspect latest batch bundle (MI input + last agent message + evidence pointers):
+
+```bash
+python3 -m mi --home ~/.mind-incarnation last --cd <project_root>
+python3 -m mi --home ~/.mind-incarnation last --cd <project_root> --json
+```
+
+Tail EvidenceLog:
+
+```bash
+python3 -m mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20
+python3 -m mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw
+```
+
+Show raw transcript (defaults to latest Hands transcript; Mind transcripts optional):
+
+```bash
+python3 -m mi --home ~/.mind-incarnation transcript show --cd <project_root> -n 200
+python3 -m mi --home ~/.mind-incarnation transcript show --cd <project_root> --mind -n 200
+```
+
 Inspect/rollback learned preferences:
 
 ```bash

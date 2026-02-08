@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -7,6 +8,9 @@ from .mindspec import MindSpecStore
 from .llm import MiLlm
 from .prompts import compile_mindspec_prompt
 from .runner import run_autopilot
+from .paths import ProjectPaths, default_home_dir
+from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
+from .transcript import last_agent_message_from_transcript
 
 
 def _read_stdin_text() -> str:
@@ -82,6 +86,26 @@ def main(argv: list[str] | None = None) -> int:
     p_ld.add_argument("--cd", default=os.getcwd(), help="Project root used for project-scoped disable.")
     p_ld.add_argument("--rationale", default="user rollback", help="Reason to record for the rollback.")
 
+    p_last = sub.add_parser("last", help="Show the latest MI batch bundle (input/output/evidence pointers).")
+    p_last.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_last.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_evidence = sub.add_parser("evidence", help="Inspect EvidenceLog (JSONL).")
+    ev_sub = p_evidence.add_subparsers(dest="evidence_cmd", required=True)
+    p_ev_tail = ev_sub.add_parser("tail", help="Tail EvidenceLog records.")
+    p_ev_tail.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_ev_tail.add_argument("-n", "--lines", type=int, default=20, help="Number of records to show.")
+    p_ev_tail.add_argument("--raw", action="store_true", help="Print raw JSONL lines.")
+
+    p_tr = sub.add_parser("transcript", help="Inspect raw transcripts (Hands or Mind).")
+    tr_sub = p_tr.add_subparsers(dest="tr_cmd", required=True)
+    p_tr_show = tr_sub.add_parser("show", help="Show a transcript (defaults to the latest Hands transcript).")
+    p_tr_show.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_tr_show.add_argument("--mind", action="store_true", help="Show Mind transcript instead of Hands.")
+    p_tr_show.add_argument("--path", default="", help="Explicit transcript path to show (overrides --mind/--cd selection).")
+    p_tr_show.add_argument("-n", "--lines", type=int, default=200, help="Number of transcript lines to show (tail).")
+    p_tr_show.add_argument("--jsonl", action="store_true", help="Print stored JSONL lines (no pretty formatting).")
+
     args = parser.parse_args(argv)
 
     store = MindSpecStore(home_dir=args.home)
@@ -152,6 +176,133 @@ def main(argv: list[str] | None = None) -> int:
         if args.show:
             print(result.render_text())
         return 0 if result.status == "done" else 1
+
+    if args.cmd == "last":
+        project_root = Path(args.cd).resolve()
+        home = Path(args.home) if args.home else default_home_dir()
+        pp = ProjectPaths(home_dir=home, project_root=project_root)
+
+        bundle = load_last_batch_bundle(pp.evidence_log_path)
+        codex_input = bundle.get("codex_input") if isinstance(bundle.get("codex_input"), dict) else None
+        evidence_item = bundle.get("evidence_item") if isinstance(bundle.get("evidence_item"), dict) else None
+
+        transcript_path = ""
+        if codex_input and isinstance(codex_input.get("transcript_path"), str):
+            transcript_path = codex_input["transcript_path"]
+        elif evidence_item and isinstance(evidence_item.get("codex_transcript_ref"), str):
+            transcript_path = evidence_item["codex_transcript_ref"]
+
+        last_msg = ""
+        if transcript_path:
+            last_msg = last_agent_message_from_transcript(Path(transcript_path))
+
+        out = {
+            "project_root": str(project_root),
+            "project_dir": str(pp.project_dir),
+            "evidence_log": str(pp.evidence_log_path),
+            "batch_id": bundle.get("batch_id") or "",
+            "thread_id": bundle.get("thread_id") or "",
+            "hands_transcript": transcript_path,
+            "mi_input": (codex_input.get("input") if codex_input else "") or "",
+            "codex_last_message": last_msg,
+            "evidence_item": evidence_item or {},
+            "check_plan": (bundle.get("check_plan") or {}) if isinstance(bundle.get("check_plan"), dict) else {},
+            "auto_answer": (bundle.get("auto_answer") or {}) if isinstance(bundle.get("auto_answer"), dict) else {},
+            "risk_event": (bundle.get("risk_event") or {}) if isinstance(bundle.get("risk_event"), dict) else {},
+            "loop_guard": (bundle.get("loop_guard") or {}) if isinstance(bundle.get("loop_guard"), dict) else {},
+        }
+
+        if args.json:
+            print(json.dumps(out, indent=2, sort_keys=True))
+            return 0
+
+        print(f"thread_id={out['thread_id']} batch_id={out['batch_id']}")
+        print(f"project_dir={out['project_dir']}")
+        print(f"evidence_log={out['evidence_log']}")
+        if transcript_path:
+            print(f"hands_transcript={transcript_path}")
+        if out["mi_input"].strip():
+            print("\nmi_input:\n" + out["mi_input"].strip())
+        if out["codex_last_message"].strip():
+            print("\ncodex_last_message:\n" + out["codex_last_message"].strip())
+        if evidence_item:
+            facts = evidence_item.get("facts") if isinstance(evidence_item.get("facts"), list) else []
+            results = evidence_item.get("results") if isinstance(evidence_item.get("results"), list) else []
+            unknowns = evidence_item.get("unknowns") if isinstance(evidence_item.get("unknowns"), list) else []
+            if facts:
+                print("\nfacts:")
+                for x in facts[:8]:
+                    xs = str(x).strip()
+                    if xs:
+                        print(f"- {xs}")
+            if results:
+                print("\nresults:")
+                for x in results[:8]:
+                    xs = str(x).strip()
+                    if xs:
+                        print(f"- {xs}")
+            if unknowns:
+                print("\nunknowns:")
+                for x in unknowns[:8]:
+                    xs = str(x).strip()
+                    if xs:
+                        print(f"- {xs}")
+        return 0
+
+    if args.cmd == "evidence":
+        project_root = Path(args.cd).resolve()
+        home = Path(args.home) if args.home else default_home_dir()
+        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        if args.evidence_cmd == "tail":
+            if args.raw:
+                for line in tail_raw_lines(pp.evidence_log_path, args.lines):
+                    print(line)
+                return 0
+            for obj in tail_json_objects(pp.evidence_log_path, args.lines):
+                print(summarize_evidence_record(obj))
+            return 0
+
+    if args.cmd == "transcript":
+        project_root = Path(args.cd).resolve()
+        home = Path(args.home) if args.home else default_home_dir()
+        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        if args.tr_cmd == "show":
+            if args.path:
+                tp = Path(args.path).expanduser()
+            else:
+                subdir = "mind" if args.mind else "hands"
+                tdir = pp.transcripts_dir / subdir
+                files = sorted([p for p in tdir.glob("*.jsonl") if p.is_file()])
+                tp = files[-1] if files else Path("")
+            if not tp or not str(tp):
+                print("No transcript found.", file=sys.stderr)
+                return 2
+            if not tp.exists():
+                print(f"Transcript not found: {tp}", file=sys.stderr)
+                return 2
+
+            lines = tail_raw_lines(tp, args.lines)
+            print(str(tp))
+            if args.jsonl:
+                for line in lines:
+                    print(line)
+                return 0
+
+            for line in lines:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    print(line)
+                    continue
+                if not isinstance(rec, dict):
+                    print(line)
+                    continue
+                ts = str(rec.get("ts") or "")
+                stream = str(rec.get("stream") or "")
+                payload = rec.get("line")
+                payload_s = str(payload) if payload is not None else ""
+                print(f"{ts} {stream} {payload_s}")
+            return 0
 
     if args.cmd == "learned":
         project_root = Path(args.cd).resolve()

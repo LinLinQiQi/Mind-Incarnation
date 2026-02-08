@@ -53,3 +53,6 @@ python3 -m mi run --cd /path/to/your/project --show "Do X, then verify with mini
 - Multi-agent routing
 - Hard permission enforcement / tool-level gating
 
+## License
+
+MIT. See `LICENSE`.

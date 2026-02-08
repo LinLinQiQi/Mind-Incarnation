@@ -53,3 +53,6 @@ python3 -m mi run --cd /path/to/your/project --show "完成 X，并用最小检�
 - 多 agent 路由
 - 硬权限控制 / 工具级门禁
 
+## License
+
+MIT，见 `LICENSE`。

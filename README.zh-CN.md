@@ -60,6 +60,7 @@ mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。
 
 ```bash
 mi last --cd /path/to/your/project
+mi last --cd /path/to/your/project --redact
 ```
 
 查看 EvidenceLog / 展示原始 transcript：
@@ -67,6 +68,7 @@ mi last --cd /path/to/your/project
 ```bash
 mi evidence tail --cd /path/to/your/project -n 20
 mi transcript show --cd /path/to/your/project -n 200
+mi transcript show --cd /path/to/your/project -n 200 --redact
 ```
 
 ## 你会得到什么

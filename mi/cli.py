@@ -12,6 +12,7 @@ from .runner import run_autopilot
 from .paths import ProjectPaths, default_home_dir
 from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
 from .transcript import last_agent_message_from_transcript
+from .redact import redact_text
 
 
 def _read_stdin_text() -> str:
@@ -92,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     p_last = sub.add_parser("last", help="Show the latest MI batch bundle (input/output/evidence pointers).")
     p_last.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
     p_last.add_argument("--json", action="store_true", help="Print as JSON.")
+    p_last.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
 
     p_evidence = sub.add_parser("evidence", help="Inspect EvidenceLog (JSONL).")
     ev_sub = p_evidence.add_subparsers(dest="evidence_cmd", required=True)
@@ -99,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     p_ev_tail.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
     p_ev_tail.add_argument("-n", "--lines", type=int, default=20, help="Number of records to show.")
     p_ev_tail.add_argument("--raw", action="store_true", help="Print raw JSONL lines.")
+    p_ev_tail.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
 
     p_tr = sub.add_parser("transcript", help="Inspect raw transcripts (Hands or Mind).")
     tr_sub = p_tr.add_subparsers(dest="tr_cmd", required=True)
@@ -108,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     p_tr_show.add_argument("--path", default="", help="Explicit transcript path to show (overrides --mind/--cd selection).")
     p_tr_show.add_argument("-n", "--lines", type=int, default=200, help="Number of transcript lines to show (tail).")
     p_tr_show.add_argument("--jsonl", action="store_true", help="Print stored JSONL lines (no pretty formatting).")
+    p_tr_show.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
 
     args = parser.parse_args(argv)
 
@@ -203,6 +207,19 @@ def main(argv: list[str] | None = None) -> int:
         if transcript_path:
             last_msg = last_agent_message_from_transcript(Path(transcript_path))
 
+        mi_input_text = (codex_input.get("input") if codex_input else "") or ""
+        codex_last_text = last_msg or ""
+
+        evidence_item_out = evidence_item or {}
+        if args.redact:
+            mi_input_text = redact_text(mi_input_text)
+            codex_last_text = redact_text(codex_last_text)
+            if isinstance(evidence_item_out, dict):
+                for k in ("facts", "results", "unknowns", "risk_signals"):
+                    v = evidence_item_out.get(k)
+                    if isinstance(v, list):
+                        evidence_item_out[k] = [redact_text(str(x)) for x in v]
+
         out = {
             "project_root": str(project_root),
             "project_dir": str(pp.project_dir),
@@ -210,9 +227,9 @@ def main(argv: list[str] | None = None) -> int:
             "batch_id": bundle.get("batch_id") or "",
             "thread_id": bundle.get("thread_id") or "",
             "hands_transcript": transcript_path,
-            "mi_input": (codex_input.get("input") if codex_input else "") or "",
-            "codex_last_message": last_msg,
-            "evidence_item": evidence_item or {},
+            "mi_input": mi_input_text,
+            "codex_last_message": codex_last_text,
+            "evidence_item": evidence_item_out,
             "check_plan": (bundle.get("check_plan") or {}) if isinstance(bundle.get("check_plan"), dict) else {},
             "auto_answer": (bundle.get("auto_answer") or {}) if isinstance(bundle.get("auto_answer"), dict) else {},
             "risk_event": (bundle.get("risk_event") or {}) if isinstance(bundle.get("risk_event"), dict) else {},
@@ -232,10 +249,10 @@ def main(argv: list[str] | None = None) -> int:
             print("\nmi_input:\n" + out["mi_input"].strip())
         if out["codex_last_message"].strip():
             print("\ncodex_last_message:\n" + out["codex_last_message"].strip())
-        if evidence_item:
-            facts = evidence_item.get("facts") if isinstance(evidence_item.get("facts"), list) else []
-            results = evidence_item.get("results") if isinstance(evidence_item.get("results"), list) else []
-            unknowns = evidence_item.get("unknowns") if isinstance(evidence_item.get("unknowns"), list) else []
+        if isinstance(evidence_item_out, dict) and evidence_item_out:
+            facts = evidence_item_out.get("facts") if isinstance(evidence_item_out.get("facts"), list) else []
+            results = evidence_item_out.get("results") if isinstance(evidence_item_out.get("results"), list) else []
+            unknowns = evidence_item_out.get("unknowns") if isinstance(evidence_item_out.get("unknowns"), list) else []
             if facts:
                 print("\nfacts:")
                 for x in facts[:8]:
@@ -263,10 +280,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.evidence_cmd == "tail":
             if args.raw:
                 for line in tail_raw_lines(pp.evidence_log_path, args.lines):
-                    print(line)
+                    print(redact_text(line) if args.redact else line)
                 return 0
             for obj in tail_json_objects(pp.evidence_log_path, args.lines):
-                print(summarize_evidence_record(obj))
+                s = summarize_evidence_record(obj)
+                print(redact_text(s) if args.redact else s)
             return 0
 
     if args.cmd == "transcript":
@@ -292,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
             print(str(tp))
             if args.jsonl:
                 for line in lines:
-                    print(line)
+                    print(redact_text(line) if args.redact else line)
                 return 0
 
             for line in lines:
@@ -308,6 +326,8 @@ def main(argv: list[str] | None = None) -> int:
                 stream = str(rec.get("stream") or "")
                 payload = rec.get("line")
                 payload_s = str(payload) if payload is not None else ""
+                if args.redact:
+                    payload_s = redact_text(payload_s)
                 print(f"{ts} {stream} {payload_s}")
             return 0
 

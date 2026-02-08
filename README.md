@@ -60,6 +60,7 @@ Inspect the latest batch (what MI sent, last agent message, evidence pointers):
 
 ```bash
 mi last --cd /path/to/your/project
+mi last --cd /path/to/your/project --redact
 ```
 
 Tail EvidenceLog / show raw transcript:
@@ -67,6 +68,7 @@ Tail EvidenceLog / show raw transcript:
 ```bash
 mi evidence tail --cd /path/to/your/project -n 20
 mi transcript show --cd /path/to/your/project -n 200
+mi transcript show --cd /path/to/your/project -n 200 --redact
 ```
 
 ## What You Get

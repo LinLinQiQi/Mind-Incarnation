@@ -446,6 +446,7 @@ Inspect latest batch bundle (MI input + last agent message + evidence pointers):
 ```bash
 mi --home ~/.mind-incarnation last --cd <project_root>
 mi --home ~/.mind-incarnation last --cd <project_root> --json
+mi --home ~/.mind-incarnation last --cd <project_root> --redact
 ```
 
 Tail EvidenceLog:
@@ -453,6 +454,7 @@ Tail EvidenceLog:
 ```bash
 mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20
 mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw
+mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw --redact
 ```
 
 Show raw transcript (defaults to latest Hands transcript; Mind transcripts optional):
@@ -460,6 +462,7 @@ Show raw transcript (defaults to latest Hands transcript; Mind transcripts optio
 ```bash
 mi --home ~/.mind-incarnation transcript show --cd <project_root> -n 200
 mi --home ~/.mind-incarnation transcript show --cd <project_root> --mind -n 200
+mi --home ~/.mind-incarnation transcript show --cd <project_root> -n 200 --redact
 ```
 
 Inspect/rollback learned preferences:

@@ -21,6 +21,8 @@ mi = "mi.cli:main"
 [tool.setuptools]
 include-package-data = true
 
+[tool.setuptools.packages.find]
+include = ["mi*"]
+
 [tool.setuptools.package-data]
 mi = ["schemas/*.json"]
-

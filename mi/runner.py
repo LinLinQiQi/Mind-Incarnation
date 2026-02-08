@@ -15,7 +15,6 @@ from .mindspec import MindSpecStore
 from .paths import ProjectPaths, default_home_dir
 from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt
 from .prompts import auto_answer_to_codex_prompt
-from .prompts import closure_eval_prompt
 from .prompts import risk_judge_prompt
 from .storage import append_jsonl, now_rfc3339, ensure_dir
 from .transcript import summarize_codex_events
@@ -117,6 +116,52 @@ def _empty_auto_answer() -> dict[str, Any]:
         "unanswered_questions": [],
         "notes": "",
     }
+
+def _empty_check_plan() -> dict[str, Any]:
+    return {
+        "should_run_checks": False,
+        "needs_testless_strategy": False,
+        "testless_strategy_question": "",
+        "check_goals": [],
+        "commands_hints": [],
+        "codex_check_input": "",
+        "notes": "",
+    }
+
+
+def _should_plan_checks(
+    *,
+    summary: dict[str, Any],
+    evidence_obj: dict[str, Any],
+    codex_last_message: str,
+    repo_observation: dict[str, Any],
+) -> bool:
+    # Heuristic gate to reduce mind calls; err on the side of planning checks
+    # when there's uncertainty, failures, questions, or repo changes.
+    try:
+        if int(summary.get("exit_code") or 0) != 0:
+            return True
+    except Exception:
+        return True
+
+    unknowns = evidence_obj.get("unknowns") if isinstance(evidence_obj, dict) else None
+    if isinstance(unknowns, list) and any(str(x).strip() for x in unknowns):
+        return True
+
+    rs = evidence_obj.get("risk_signals") if isinstance(evidence_obj, dict) else None
+    if isinstance(rs, list) and any(str(x).strip() for x in rs):
+        return True
+
+    if _looks_like_user_question(codex_last_message):
+        return True
+
+    if isinstance(repo_observation, dict):
+        for k in ("git_status_porcelain", "git_diff_stat", "git_diff_cached_stat"):
+            v = repo_observation.get(k)
+            if isinstance(v, str) and v.strip():
+                return True
+
+    return False
 
 
 def _normalize_for_sig(text: str, limit: int) -> str:
@@ -283,7 +328,16 @@ def _read_user_answer(question: str) -> str:
     return sys.stdin.readline().strip()
 
 
-def run_autopilot(*, task: str, project_root: str, home_dir: str | None, max_batches: int) -> AutopilotResult:
+def run_autopilot(
+    *,
+    task: str,
+    project_root: str,
+    home_dir: str | None,
+    max_batches: int,
+    hands_exec: Any | None = None,
+    hands_resume: Any | None = None,
+    llm: Any | None = None,
+) -> AutopilotResult:
     project_path = Path(project_root).resolve()
     home = Path(home_dir) if home_dir else default_home_dir()
 
@@ -294,7 +348,12 @@ def run_autopilot(*, task: str, project_root: str, home_dir: str | None, max_bat
     ensure_dir(project_paths.project_dir)
     ensure_dir(project_paths.transcripts_dir)
 
-    llm = MiLlm(project_root=project_path, transcripts_dir=project_paths.transcripts_dir)
+    if llm is None:
+        llm = MiLlm(project_root=project_path, transcripts_dir=project_paths.transcripts_dir)
+    if hands_exec is None:
+        hands_exec = run_codex_exec
+    if hands_resume is None:
+        hands_resume = run_codex_resume
 
     evidence_window: list[dict[str, Any]] = []
     thread_id: str | None = None
@@ -399,7 +458,7 @@ def run_autopilot(*, task: str, project_root: str, home_dir: str | None, max_bat
         prompt_sha256 = hashlib.sha256(codex_prompt.encode("utf-8")).hexdigest()
 
         if thread_id is None:
-            result = run_codex_exec(
+            result = hands_exec(
                 prompt=codex_prompt,
                 project_root=project_path,
                 transcript_path=hands_transcript,
@@ -410,7 +469,7 @@ def run_autopilot(*, task: str, project_root: str, home_dir: str | None, max_bat
             )
             thread_id = result.thread_id
         else:
-            result = run_codex_resume(
+            result = hands_resume(
                 thread_id=thread_id,
                 prompt=codex_prompt,
                 project_root=project_path,
@@ -518,17 +577,29 @@ def run_autopilot(*, task: str, project_root: str, home_dir: str | None, max_bat
                     notes = "stopped after high-risk event"
                     break
 
-        # Plan minimal checks (LLM) to reduce uncertainty; Codex executes checks when instructed.
         repo_obs = evidence_item.get("repo_observation") or {}
-        checks_prompt = plan_min_checks_prompt(
-            task=task,
-            mindspec_base=loaded.base,
-            learned_text=loaded.learned_text,
-            project_overlay=loaded.project_overlay,
-            recent_evidence=evidence_window,
+        codex_last = result.last_agent_message()
+
+        # Plan minimal checks (LLM) only when uncertainty/risk/change suggests it.
+        checks_obj = _empty_check_plan()
+        if _should_plan_checks(
+            summary=summary,
+            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
+            codex_last_message=codex_last,
             repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-        )
-        checks_obj = llm.call(schema_filename="plan_min_checks.json", prompt=checks_prompt, tag=f"checks_b{batch_idx}").obj
+        ):
+            checks_prompt = plan_min_checks_prompt(
+                task=task,
+                mindspec_base=loaded.base,
+                learned_text=loaded.learned_text,
+                project_overlay=loaded.project_overlay,
+                recent_evidence=evidence_window,
+                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            )
+            checks_obj = llm.call(schema_filename="plan_min_checks.json", prompt=checks_prompt, tag=f"checks_b{batch_idx}").obj
+        else:
+            checks_obj = _empty_check_plan()
+            checks_obj["notes"] = "skipped: no uncertainty/risk/question detected"
         append_jsonl(
             project_paths.evidence_log_path,
             {
@@ -544,7 +615,6 @@ def run_autopilot(*, task: str, project_root: str, home_dir: str | None, max_bat
 
         # Auto-answer Codex when it is asking the user questions; only ask the user if MI cannot answer.
         auto_answer_obj = _empty_auto_answer()
-        codex_last = result.last_agent_message()
         if _looks_like_user_question(codex_last):
             aa_prompt = auto_answer_to_codex_prompt(
                 task=task,
@@ -683,146 +753,6 @@ def run_autopilot(*, task: str, project_root: str, home_dir: str | None, max_bat
                 codex_last_message=codex_last,
                 batch_id=f"b{batch_idx}",
                 reason="sent auto-answer/checks to Codex",
-            ):
-                break
-            continue
-
-        # Closure eval (LLM) before decide_next: stop early when MI believes the task is complete.
-        closure_obj = {
-            "status": "not_done",
-            "confidence": 0.0,
-            "done_reasons": [],
-            "blocking_issues": [],
-            "ask_user_question": "",
-            "notes": "",
-        }
-        try:
-            closure_prompt = closure_eval_prompt(
-                task=task,
-                mindspec_base=loaded.base,
-                learned_text=loaded.learned_text,
-                project_overlay=loaded.project_overlay,
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                auto_answer=auto_answer_obj if isinstance(auto_answer_obj, dict) else _empty_auto_answer(),
-                recent_evidence=evidence_window,
-                codex_last_message=codex_last,
-            )
-            closure_obj = llm.call(schema_filename="closure_eval.json", prompt=closure_prompt, tag=f"closure_b{batch_idx}").obj
-        except Exception as e:
-            closure_obj = {
-                "status": "not_done",
-                "confidence": 0.0,
-                "done_reasons": [],
-                "blocking_issues": [f"closure_eval failed: {e}"],
-                "ask_user_question": "",
-                "notes": "",
-            }
-
-        append_jsonl(
-            project_paths.evidence_log_path,
-            {
-                "kind": "closure_eval",
-                "batch_id": f"b{batch_idx}",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "closure": closure_obj,
-            },
-        )
-        evidence_window.append({"kind": "closure_eval", "batch_id": f"b{batch_idx}", **closure_obj})
-        evidence_window = evidence_window[-8:]
-
-        cl_status = str(closure_obj.get("status") or "not_done")
-        cl_conf = float(closure_obj.get("confidence") or 0.0)
-        if cl_status == "done" and cl_conf >= 0.6:
-            status = "done"
-            notes = str(closure_obj.get("notes") or "") or "closure_eval: done"
-            break
-
-        if cl_status == "blocked":
-            q = str(closure_obj.get("ask_user_question") or "").strip()
-            if not q:
-                status = "blocked"
-                notes = str(closure_obj.get("notes") or "") or "closure_eval: blocked"
-                break
-
-            # Try auto-answering the closure question before prompting the user.
-            aa_from_closure = _empty_auto_answer()
-            aa_prompt2 = auto_answer_to_codex_prompt(
-                task=task,
-                mindspec_base=loaded.base,
-                learned_text=loaded.learned_text,
-                project_overlay=loaded.project_overlay,
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                recent_evidence=evidence_window,
-                codex_last_message=q,
-            )
-            try:
-                aa_from_closure = llm.call(
-                    schema_filename="auto_answer_to_codex.json",
-                    prompt=aa_prompt2,
-                    tag=f"autoanswer_from_closure_b{batch_idx}",
-                ).obj
-            except Exception as e:
-                aa_from_closure = _empty_auto_answer()
-                aa_from_closure["notes"] = f"auto_answer_to_codex(from closure_eval) failed: {e}"
-
-            append_jsonl(
-                project_paths.evidence_log_path,
-                {
-                    "kind": "auto_answer",
-                    "batch_id": f"b{batch_idx}.from_closure",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "auto_answer": aa_from_closure,
-                },
-            )
-            evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}.from_closure", **aa_from_closure})
-            evidence_window = evidence_window[-8:]
-
-            aa_text = ""
-            if isinstance(aa_from_closure, dict) and bool(aa_from_closure.get("should_answer", False)):
-                aa_text = str(aa_from_closure.get("codex_answer_input") or "").strip()
-            if aa_text:
-                if not _queue_next_input(
-                    nxt=aa_text,
-                    codex_last_message=codex_last,
-                    batch_id=f"b{batch_idx}.from_closure",
-                    reason="auto-answered from closure_eval",
-                ):
-                    break
-                continue
-
-            if isinstance(aa_from_closure, dict) and bool(aa_from_closure.get("needs_user_input", False)):
-                q2 = str(aa_from_closure.get("ask_user_question") or "").strip()
-                if q2:
-                    q = q2
-
-            answer = _read_user_answer(q)
-            if not answer:
-                status = "blocked"
-                notes = "user did not provide required input"
-                break
-            append_jsonl(
-                project_paths.evidence_log_path,
-                {
-                    "kind": "user_input",
-                    "batch_id": f"b{batch_idx}.from_closure",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "question": q,
-                    "answer": answer,
-                },
-            )
-            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}.from_closure", "question": q, "answer": answer})
-            evidence_window = evidence_window[-8:]
-
-            if not _queue_next_input(
-                nxt=answer.strip(),
-                codex_last_message=codex_last,
-                batch_id=f"b{batch_idx}.from_closure",
-                reason="answered after closure_eval",
             ):
                 break
             continue

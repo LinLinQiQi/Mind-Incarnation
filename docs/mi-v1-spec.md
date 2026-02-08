@@ -60,9 +60,7 @@ flowchart TD
   AA --> ARB[MI: pre-action arbitration]
   ARB -->|answer/checks available| I
   ARB -->|need user input| Q[Ask user (minimal)]
-  ARB -->|no pre-actions| CL[MI: closure_eval]
-  CL -->|done/blocked| END[Stop]
-  CL -->|not_done| D[MI: decide_next]
+  ARB -->|no pre-actions| D[MI: decide_next (includes closure)]
   D -->|need info not covered| Q
   D -->|continue or run checks| I
   D -->|done/blocked| END[Stop]
@@ -128,7 +126,7 @@ MI can propose or generate "minimal checks" when evidence is insufficient, prior
 
 Execution preference (aligned): **Codex runs checks** (MI only suggests/plans via next batch input).
 
-Implementation: MI runs `plan_min_checks` after each batch, persists it as an `evidence.jsonl` record (`kind="check_plan"`), and the runtime loop prefers sending `codex_check_input` to Codex when checks are needed (often before calling `decide_next`), optionally combined with an auto-answer when applicable.
+Implementation: MI records a `check_plan` after each batch. To reduce latency/cost, MI may **skip** the `plan_min_checks` model call when evidence indicates no uncertainty/risk/questions; in that case it records a default `check_plan` with `should_run_checks=false` and a short note explaining the skip.
 
 ## Prompts (MI Prompt Pack)
 
@@ -157,16 +155,13 @@ MI uses the following internal prompts (all should return strict JSON):
    - Input: `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional minimal check plan, and the raw Codex last message
    - Output: an optional Codex reply (`codex_answer_input`) that answers Codex's question(s) using values + evidence; only asks the user when MI cannot answer
 
-6) `closure_eval` (implemented)
-   - Input: `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional minimal check plan + auto-answer suggestion, and raw Codex last message
-   - Output: `status` (`done|not_done|blocked`) + brief reasons; used to stop early when MI considers the loop closed
-
-7) `decide_next` (implemented)
+6) `decide_next` (implemented)
    - Input: `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional risk judgement
-   - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Codex for that batch; in that case `decide_next` may be skipped for the iteration.
+   - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Codex for that batch; in that case `decide_next` may be skipped for the iteration.
 
 Planned (not required for V1 loop to function; can be added incrementally):
 
+- `closure_eval` (legacy/optional; not used in the default loop because `decide_next` includes closure)
 - `checkpoint_decide`
 - `learn_update` (beyond the simple learned text entries)
 
@@ -243,7 +238,6 @@ Minimal shape:
 - `risk_event` (post-hoc judgement when heuristic risk signals are present)
 - `check_plan` (minimal checks proposed post-batch)
 - `auto_answer` (MI-generated reply to Codex questions, when possible)
-- `closure_eval` (MI's closure/done evaluation)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
 
@@ -348,25 +342,6 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
     "needs_user_input": false,
     "ask_user_question": "string",
     "unanswered_questions": ["string"],
-    "notes": "string"
-  }
-}
-```
-
-`closure_eval` record shape (MI "closed loop" evaluation):
-
-```json
-{
-  "kind": "closure_eval",
-  "batch_id": "string",
-  "ts": "RFC3339 timestamp",
-  "thread_id": "string",
-  "closure": {
-    "status": "done|not_done|blocked",
-    "confidence": 0.0,
-    "done_reasons": ["string"],
-    "blocking_issues": ["string"],
-    "ask_user_question": "string",
     "notes": "string"
   }
 }

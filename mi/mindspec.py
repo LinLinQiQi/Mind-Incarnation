@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import secrets
+import time
+from pathlib import Path
+from typing import Any
+
+from .paths import GlobalPaths, ProjectPaths, default_home_dir
+from .storage import append_jsonl, now_rfc3339, read_json, write_json, iter_jsonl
+
+
+def _default_base(values_text: str) -> dict[str, Any]:
+    # Keep this minimal and user-editable; most decisions are still made by MI prompts at runtime.
+    return {
+        "version": "v1",
+        "values_text": values_text,
+        "values_summary": [],
+        "decision_procedure": {
+            "summary": (
+                "MI controls only input/output around Codex (no tool interception, no forced step slicing). "
+                "MI runs in batches, logs evidence, suggests minimal checks, and asks the user only when needed."
+            ),
+            "mermaid": (
+                "flowchart TD\n"
+                "  U[User task + values] --> S[Load MindSpec/Overlay/Learned]\n"
+                "  S --> I[Build light injection + task input]\n"
+                "  I --> C[Run Codex (free execution)]\n"
+                "  C --> T[Capture raw transcript]\n"
+                "  T --> E[Extract evidence]\n"
+                "  E --> D[Decide next / risk]\n"
+                "  D -->|need missing info| Q[Ask user (minimal)]\n"
+                "  D -->|continue| I\n"
+                "  D -->|done/blocked| END[Stop]\n"
+            ),
+        },
+        "defaults": {
+            "refactor_intent": "behavior_preserving",
+            "ask_when_uncertain": True,
+        },
+        "verification": {
+            "no_tests_policy": "ask_once_per_project_then_remember",
+        },
+        "external_actions": {
+            "network_policy": "values_judged",
+            "install_policy": "values_judged",
+        },
+        "interrupt": {
+            "mode": "off",
+            "signal_sequence": ["SIGINT", "SIGTERM", "SIGKILL"],
+            "escalation_ms": [2000, 5000],
+        },
+        "transparency": {
+            "store_raw_transcript": True,
+            "store_evidence_log": True,
+            "ui_expandable_transcript": True,
+        },
+        "violation_response": {
+            "auto_learn": True,
+            "prompt_user_on_high_risk": True,
+        },
+    }
+
+
+@dataclass(frozen=True)
+class LoadedMindSpec:
+    base: dict[str, Any]
+    learned_text: str
+    project_overlay: dict[str, Any]
+
+    def light_injection(self) -> str:
+        values_text = (self.base.get("values_text") or "").strip()
+        values_summary = self.base.get("values_summary") or []
+        if isinstance(values_summary, list) and any(str(x).strip() for x in values_summary):
+            values = "User values/preferences (summary):\n" + "\n".join([f"- {str(x).strip()}" for x in values_summary if str(x).strip()])
+        else:
+            values = values_text
+        learned = (self.learned_text or "").strip()
+
+        # "Light injection": enough to steer behavior and reduce unnecessary questions,
+        # but does not impose a step protocol.
+        parts: list[str] = []
+        parts.append("[MI Light Injection]")
+        if values:
+            parts.append("User values/preferences (high-level):")
+            parts.append(values)
+        dp = self.base.get("decision_procedure") or {}
+        if isinstance(dp, dict):
+            dp_summary = str(dp.get("summary") or "").strip()
+            if dp_summary:
+                parts.append("Decision procedure (summary):")
+                parts.append(dp_summary)
+        if learned:
+            parts.append("Learned preferences (reversible):")
+            parts.append(learned)
+
+        defaults = self.base.get("defaults", {})
+        refactor_intent = defaults.get("refactor_intent", "behavior_preserving")
+        ask_when_uncertain = defaults.get("ask_when_uncertain", True)
+
+        parts.append("Defaults:")
+        parts.append(f"- Refactor intent: {refactor_intent} (unless explicitly requested otherwise)")
+        parts.append(f"- When uncertain: {'ask' if ask_when_uncertain else 'proceed'}")
+        parts.append("- If a potentially external action (network/install/push/publish) is NOT clearly covered, pause and ask.")
+
+        return "\n".join(parts).strip() + "\n"
+
+
+class MindSpecStore:
+    def __init__(self, home_dir: str | None):
+        home = Path(home_dir) if home_dir else default_home_dir()
+        self._paths = GlobalPaths(home_dir=home)
+
+    @property
+    def home_dir(self) -> Path:
+        return self._paths.home_dir
+
+    @property
+    def base_path(self) -> Path:
+        return self._paths.base_path
+
+    @property
+    def learned_path(self) -> Path:
+        return self._paths.learned_path
+
+    def write_base_values(self, values_text: str) -> None:
+        write_json(self.base_path, _default_base(values_text=values_text))
+
+    def write_base(self, base_obj: dict[str, Any]) -> None:
+        write_json(self.base_path, base_obj)
+
+    def load_base(self) -> dict[str, Any]:
+        return read_json(self.base_path, default=_default_base(values_text=""))
+
+    def append_learned(self, *, project_root: Path, scope: str, text: str, rationale: str) -> str:
+        entry_id = f"lc_{time.time_ns()}_{secrets.token_hex(4)}"
+        if scope == "project":
+            target = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root).learned_path
+        else:
+            target = self.learned_path
+        append_jsonl(
+            target,
+            {
+                "id": entry_id,
+                "ts": now_rfc3339(),
+                "scope": scope,
+                "enabled": True,
+                "text": text,
+                "rationale": rationale,
+            },
+        )
+        return entry_id
+
+    def load_learned_text(self, project_root: Path) -> str:
+        project_learned_path = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root).learned_path
+        sources = (self.learned_path, project_learned_path)
+
+        # Pass 1: gather disables so later project-scoped rollbacks can mask earlier global entries.
+        disabled: set[str] = set()
+        for source in sources:
+            for entry in iter_jsonl(source):
+                if entry.get("action") == "disable" and entry.get("target_id"):
+                    disabled.add(str(entry["target_id"]))
+
+        # Pass 2: gather enabled text entries, skipping disabled ones.
+        enabled_lines: list[str] = []
+        for source in sources:
+            for entry in iter_jsonl(source):
+                if entry.get("action") == "disable":
+                    continue
+                entry_id = str(entry.get("id") or "")
+                if not entry_id or entry_id in disabled:
+                    continue
+                if not entry.get("enabled", True):
+                    continue
+                text = str(entry.get("text") or "").strip()
+                if text:
+                    enabled_lines.append(f"- {text}")
+        return "\n".join(enabled_lines).strip()
+
+    def list_learned_entries(self, project_root: Path) -> list[dict[str, Any]]:
+        project_learned_path = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root).learned_path
+        entries: list[dict[str, Any]] = []
+        for source_name, source in (("global", self.learned_path), ("project", project_learned_path)):
+            for entry in iter_jsonl(source):
+                if isinstance(entry, dict):
+                    entries.append({"_source": source_name, **entry})
+        return entries
+
+    def disable_learned(self, *, project_root: Path, scope: str, target_id: str, rationale: str) -> str:
+        entry_id = f"ld_{time.time_ns()}_{secrets.token_hex(4)}"
+        if scope == "project":
+            target = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root).learned_path
+        else:
+            target = self.learned_path
+        append_jsonl(
+            target,
+            {
+                "id": entry_id,
+                "ts": now_rfc3339(),
+                "action": "disable",
+                "target_id": target_id,
+                "rationale": rationale,
+            },
+        )
+        return entry_id
+
+    def load_project_overlay(self, project_root: Path) -> dict[str, Any]:
+        project_paths = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root)
+        overlay = read_json(project_paths.overlay_path, default=None)
+        if overlay is None:
+            overlay = {
+                "project_id": project_paths.project_id,
+                "root_path": str(project_root.resolve()),
+                "stack_hints": [],
+                "testless_verification_strategy": {
+                    "chosen_once": False,
+                    "strategy": "",
+                    "rationale": "",
+                },
+            }
+            write_json(project_paths.overlay_path, overlay)
+        return overlay
+
+    def write_project_overlay(self, project_root: Path, overlay: dict[str, Any]) -> None:
+        project_paths = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root)
+        write_json(project_paths.overlay_path, overlay)
+
+    def load(self, project_root: Path) -> LoadedMindSpec:
+        base = self.load_base()
+        learned_text = self.load_learned_text(project_root)
+        overlay = self.load_project_overlay(project_root)
+        return LoadedMindSpec(base=base, learned_text=learned_text, project_overlay=overlay)

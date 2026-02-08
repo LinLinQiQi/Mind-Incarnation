@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MI ExtractEvidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["facts", "actions", "results", "unknowns", "risk_signals"],
+  "properties": {
+    "facts": { "type": "array", "items": { "type": "string" } },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "detail"],
+        "properties": {
+          "kind": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "results": { "type": "array", "items": { "type": "string" } },
+    "unknowns": { "type": "array", "items": { "type": "string" } },
+    "risk_signals": { "type": "array", "items": { "type": "string" } }
+  }
+}
+

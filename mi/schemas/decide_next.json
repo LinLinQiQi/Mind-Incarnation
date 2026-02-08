@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MI DecideNext",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "next_action",
+    "status",
+    "confidence",
+    "next_codex_input",
+    "ask_user_question",
+    "learned_changes",
+    "update_project_overlay",
+    "notes"
+  ],
+  "properties": {
+    "next_action": {
+      "type": "string",
+      "enum": ["send_to_codex", "ask_user", "stop"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["done", "not_done", "blocked"]
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "next_codex_input": { "type": "string" },
+    "ask_user_question": { "type": "string" },
+    "learned_changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope", "severity", "text", "rationale"],
+        "properties": {
+          "scope": { "type": "string", "enum": ["global", "project"] },
+          "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+          "text": { "type": "string" },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "update_project_overlay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["set_testless_strategy"],
+      "properties": {
+        "set_testless_strategy": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["strategy", "rationale"],
+              "properties": {
+                "strategy": { "type": "string" },
+                "rationale": { "type": "string" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

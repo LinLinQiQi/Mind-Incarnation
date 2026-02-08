@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MI AutoAnswerToCodex",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "should_answer",
+    "confidence",
+    "codex_answer_input",
+    "needs_user_input",
+    "ask_user_question",
+    "unanswered_questions",
+    "notes"
+  ],
+  "properties": {
+    "should_answer": { "type": "boolean" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "codex_answer_input": { "type": "string" },
+    "needs_user_input": { "type": "boolean" },
+    "ask_user_question": { "type": "string" },
+    "unanswered_questions": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": "string" }
+  }
+}
+

@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MI PlanMinChecks",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "should_run_checks",
+    "needs_testless_strategy",
+    "testless_strategy_question",
+    "check_goals",
+    "commands_hints",
+    "codex_check_input",
+    "notes"
+  ],
+  "properties": {
+    "should_run_checks": { "type": "boolean" },
+    "needs_testless_strategy": { "type": "boolean" },
+    "testless_strategy_question": { "type": "string" },
+    "check_goals": { "type": "array", "items": { "type": "string" } },
+    "commands_hints": { "type": "array", "items": { "type": "string" } },
+    "codex_check_input": { "type": "string" },
+    "notes": { "type": "string" }
+  }
+}
+

@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MI RiskJudge",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["category", "severity", "should_ask_user", "mitigation", "learned_changes"],
+  "properties": {
+    "category": {
+      "type": "string",
+      "enum": ["network", "install", "push", "delete", "privacy", "cost", "other"]
+    },
+    "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+    "should_ask_user": { "type": "boolean" },
+    "mitigation": { "type": "array", "items": { "type": "string" } },
+    "learned_changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope", "severity", "text", "rationale"],
+        "properties": {
+          "scope": { "type": "string", "enum": ["global", "project"] },
+          "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+          "text": { "type": "string" },
+          "rationale": { "type": "string" }
+        }
+      }
+    }
+  }
+}
+

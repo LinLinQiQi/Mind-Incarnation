@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import selectors
@@ -13,6 +14,7 @@ from typing import Any, Iterable
 from .codex_runner import _should_interrupt_command, _signal_from_name
 from .storage import now_rfc3339
 from .transcript_store import append_transcript_line, write_transcript_header
+from .transcript import last_agent_message_from_transcript
 
 
 @dataclass(frozen=True)
@@ -24,7 +26,8 @@ class CliRunResult:
     last_stdout_line: str
 
     def last_agent_message(self) -> str:
-        return self.last_stdout_line or ""
+        # Prefer transcript parsing so stream-json (e.g., Claude Code) yields human text.
+        return last_agent_message_from_transcript(self.raw_transcript_path) or (self.last_stdout_line or "")
 
     def iter_command_executions(self) -> Iterable[dict[str, Any]]:
         return iter(())
@@ -91,6 +94,7 @@ def _run_process(
     last_stdout = ""
     stdout_tail: deque[str] = deque(maxlen=80)
     found_thread_id = ""
+    found_session_id = ""
     rx = re.compile(thread_id_regex) if thread_id_regex else None
     interrupt_requested = False
     interrupt_requested_at = 0.0
@@ -135,6 +139,17 @@ def _run_process(
                 if stream_name == "stdout" and line.strip():
                     last_stdout = line
                     stdout_tail.append(line)
+                    if not found_session_id:
+                        s = line.strip()
+                        if s.startswith("{") and s.endswith("}"):
+                            try:
+                                ev = json.loads(s)
+                            except Exception:
+                                ev = None
+                            if isinstance(ev, dict):
+                                sid = ev.get("session_id") or ev.get("sessionId")
+                                if isinstance(sid, str) and sid.strip():
+                                    found_session_id = sid.strip()
                 if rx and not found_thread_id and line:
                     m = rx.search(line)
                     if m and m.group(1):
@@ -171,6 +186,9 @@ def _run_process(
         transcript_path,
         {"ts": now_rfc3339(), "stream": "meta", "line": f"mi.cli.exit_code={exit_code} duration_ms={duration_ms}"},
     )
+
+    if not found_thread_id and found_session_id:
+        found_thread_id = found_session_id
 
     tail = "\n".join(list(stdout_tail)).strip()
     return exit_code, found_thread_id, tail if tail else last_stdout

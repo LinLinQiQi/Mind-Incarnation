@@ -100,7 +100,7 @@ Hands providers:
   - Runs arbitrary command argv configured by the user (wrapper mechanism).
   - Captures raw stdout/stderr lines into MI-owned JSONL transcript records.
   - Resume is optional; it depends on whether the underlying CLI supports a thread/session id.
-  - Evidence/risks are best-effort: MI derives `transcript_observation` by heuristically scanning captured text (paths/errors/etc.), and post-hoc risk signals are detected by scanning transcript text for risky markers.
+  - Evidence/risks are best-effort: when the wrapped CLI prints JSON (e.g., Claude Code `--output-format stream-json|json`), MI will parse JSON events; otherwise it falls back to heuristically scanning captured text (paths/errors/etc.). Post-hoc risk signals are detected by scanning transcript text for risky markers.
   - Interrupt is best-effort: MI can send signals to terminate the process, but it can only trigger based on observed output text (unlike Codex which exposes `command_execution` events).
 
 Mind providers:
@@ -475,8 +475,8 @@ Edit `<home>/config.json`:
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "text"],
-      "resume": ["claude", "-c", "-p", "{prompt}", "--output-format", "text"],
+      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "resume": ["claude", "-c", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
       "thread_id_regex": "",
       "env": {}
     }
@@ -487,7 +487,7 @@ Edit `<home>/config.json`:
 Notes:
 
 - If your Claude Code install requires env, set it in your shell (preferred) or under `hands.cli.env`.
-- `--output-format stream-json` can be helpful for debugging/auditing, but MI currently treats CLI output as raw text.
+- `--output-format stream-json` is recommended: MI will parse JSON events (best-effort) to improve evidence extraction, last-message detection, and risk signals.
 
 Initialize/compile MindSpec:
 

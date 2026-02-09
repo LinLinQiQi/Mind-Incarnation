@@ -63,11 +63,13 @@ Edit `~/.mind-incarnation/config.json`:
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "text"]
+      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     }
   }
 }
 ```
+
+MI will parse `stream-json` output (best-effort) to improve evidence extraction and last-message detection.
 
 Initialize global values/preferences (writes MindSpec to `~/.mind-incarnation/mindspec/base.json` by default):
 

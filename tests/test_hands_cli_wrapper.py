@@ -50,6 +50,60 @@ class TestHandsCliWrapper(unittest.TestCase):
             self.assertIn("README.md", obs["file_paths"])
             self.assertTrue(any("Error:" in e for e in obs["errors"]))
 
+    def test_summarize_hands_transcript_parses_stream_json_events(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tp = Path(td) / "t.jsonl"
+            stream_lines = [
+                {"type": "system", "subtype": "init", "session_id": "s123"},
+                {"type": "stream_event", "session_id": "s123", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hi"}}},
+                {"type": "result", "subtype": "success", "session_id": "s123", "result": "Hi", "path": "src/app.py"},
+            ]
+            lines = [
+                json.dumps({"type": "mi.transcript.header", "ts": "t", "kind": "cli.exec", "cwd": td, "argv": ["x"]}),
+            ] + [json.dumps({"ts": "t", "stream": "stdout", "line": json.dumps(ev)}) for ev in stream_lines]
+            tp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            obs = summarize_hands_transcript(tp)
+            self.assertGreaterEqual(obs["event_type_counts"].get("event.system", 0), 1)
+            self.assertGreaterEqual(obs["event_type_counts"].get("event.stream_event", 0), 1)
+            self.assertGreaterEqual(obs["event_type_counts"].get("event.result", 0), 1)
+            self.assertGreaterEqual(obs["item_type_counts"].get("content_block_delta", 0), 1)
+            self.assertIn("src/app.py", obs.get("file_paths") or [])
+
+    def test_cli_extracts_session_id_and_last_agent_message_from_stream_json(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            transcript_path = root / "hands.jsonl"
+
+            script = (
+                "import json\n"
+                "def p(o):\n"
+                "  print(json.dumps(o))\n"
+                "  import sys; sys.stdout.flush()\n"
+                "p({'type':'system','subtype':'init','session_id':'s123'})\n"
+                "p({'type':'stream_event','session_id':'s123','event':{'type':'content_block_delta','delta':{'type':'text_delta','text':'Hi'}}})\n"
+                "p({'type':'stream_event','session_id':'s123','event':{'type':'content_block_delta','delta':{'type':'text_delta','text':' there'}}})\n"
+                "p({'type':'result','subtype':'success','session_id':'s123','result':'Hi there'})\n"
+            )
+            adapter = CliHandsAdapter(
+                exec_argv=[sys.executable, "-c", script],
+                resume_argv=None,
+                prompt_mode="stdin",
+                env=None,
+                thread_id_regex="",
+            )
+            res = adapter.exec(
+                prompt="x",
+                project_root=root,
+                transcript_path=transcript_path,
+                full_auto=True,
+                sandbox=None,
+                output_schema_path=None,
+                interrupt=None,
+            )
+            self.assertEqual(res.thread_id, "s123")
+            self.assertEqual(res.last_agent_message().strip(), "Hi there")
+
     def test_cli_interrupt_sends_signal_and_records_meta(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -147,4 +201,3 @@ class TestHandsCliWrapper(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

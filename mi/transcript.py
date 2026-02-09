@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -216,12 +217,32 @@ def summarize_hands_transcript(
     """
 
     event_type_counts: dict[str, int] = {}
+    item_type_counts: dict[str, int] = {}
     file_paths: list[str] = []
+    non_command_actions: list[str] = []
     errors: list[str] = []
+    session_id = ""
 
     stdout_lines = 0
     stderr_lines = 0
     meta_lines = 0
+
+    def add_action(s: str) -> None:
+        if len(non_command_actions) >= max_non_command_actions:
+            return
+        s2 = (s or "").strip()
+        if s2:
+            non_command_actions.append(_truncate(s2, 200))
+
+    def maybe_parse_event(line: str) -> dict[str, Any] | None:
+        s = (line or "").strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return None
+        try:
+            obj = json.loads(s)
+        except Exception:
+            return None
+        return obj if isinstance(obj, dict) else None
 
     try:
         with transcript_path.open("r", encoding="utf-8") as f:
@@ -252,8 +273,49 @@ def summarize_hands_transcript(
                 else:
                     meta_lines += 1
 
-                if s2 and len(file_paths) < max_paths:
-                    file_paths.extend(_extract_paths_from_text(s2, limit=max_paths - len(file_paths)))
+                # Claude Code's stream-json is common for CLI Hands. Parse JSON events when possible.
+                ev = maybe_parse_event(s2) if stream in ("stdout", "stderr") else None
+                if ev:
+                    et = str(ev.get("type") or "").strip()
+                    if et:
+                        event_type_counts[f"event.{et}"] = event_type_counts.get(f"event.{et}", 0) + 1
+
+                    if not session_id:
+                        sid = ev.get("session_id") or ev.get("sessionId") or ""
+                        if isinstance(sid, str) and sid.strip():
+                            session_id = sid.strip()
+
+                    # Stream wrapper: count nested raw event types too.
+                    if et == "stream_event":
+                        inner = ev.get("event")
+                        if isinstance(inner, dict):
+                            it = str(inner.get("type") or "").strip()
+                            if it:
+                                item_type_counts[it] = item_type_counts.get(it, 0) + 1
+                    # Extract file paths by structured traversal (less brittle than token scanning).
+                    if len(file_paths) < max_paths:
+                        file_paths.extend(_collect_paths(ev, limit=max_paths - len(file_paths), depth=6))
+
+                    # Record a small number of human-friendly event summaries.
+                    subtype = ev.get("subtype")
+                    st = str(subtype).strip() if isinstance(subtype, str) else ""
+                    if et:
+                        add_action(f"type={et}" + (f" subtype={st}" if st else ""))
+
+                    # Extract common error signals.
+                    if len(errors) < max_errors:
+                        lower = s2.lower()
+                        if et == "error":
+                            errors.append(_truncate(s2, 400))
+                        elif et == "result":
+                            if st and st not in ("success", "ok"):
+                                errors.append(_truncate(s2, 400))
+                        elif any(x in lower for x in ("traceback", "exception", "error:", "failed", "fatal", "panic")):
+                            errors.append(_truncate(s2, 400))
+                else:
+                    # Plain text output: tokenize for path-ish strings.
+                    if s2 and len(file_paths) < max_paths:
+                        file_paths.extend(_extract_paths_from_text(s2, limit=max_paths - len(file_paths)))
 
                 if len(errors) < max_errors:
                     lower = s2.lower()
@@ -274,15 +336,22 @@ def summarize_hands_transcript(
     file_paths = _dedup_preserve(file_paths)[:max_paths]
     errors = _dedup_preserve(errors)[:max_errors]
 
-    non_command_actions = [
-        f"raw_transcript_lines={stdout_lines + stderr_lines + meta_lines}",
-        f"stdout_lines={stdout_lines}",
-        f"stderr_lines={stderr_lines}",
-    ][:max_non_command_actions]
+    # Include basic line counts at the start (always available).
+    non_command_actions = (
+        [
+            f"raw_transcript_lines={stdout_lines + stderr_lines + meta_lines}",
+            f"stdout_lines={stdout_lines}",
+            f"stderr_lines={stderr_lines}",
+        ]
+        + non_command_actions
+    )[:max_non_command_actions]
+
+    if session_id:
+        add_action(f"session_id={session_id}")
 
     return {
         "event_type_counts": event_type_counts,
-        "item_type_counts": {},
+        "item_type_counts": item_type_counts,
         "file_paths": file_paths,
         "non_command_actions": non_command_actions,
         "errors": errors,
@@ -298,6 +367,12 @@ def last_agent_message_from_transcript(transcript_path: Path, *, limit_chars: in
 
     last = ""
     last_stdout_line = ""
+    claude_result = ""
+    claude_assistant = ""
+    # Bounded accumulation for stream-json text deltas.
+    stream_frags: deque[str] = deque()
+    stream_len = 0
+    stream_max = max(2000, int(limit_chars) * 2)
     try:
         with transcript_path.open("r", encoding="utf-8") as f:
             for row in f:
@@ -324,11 +399,63 @@ def last_agent_message_from_transcript(transcript_path: Path, *, limit_chars: in
                     ev = json.loads(s)
                 except Exception:
                     continue
+                if not isinstance(ev, dict):
+                    continue
+
                 if ev.get("type") == "item.completed" and isinstance(ev.get("item"), dict):
                     item = ev["item"]
                     if item.get("type") == "agent_message":
                         last = str(item.get("text") or "")
+                        continue
+
+                # Claude Code (and other CLIs) may output stream-json or json formats.
+                et = str(ev.get("type") or "").strip()
+                if et == "result" and isinstance(ev.get("result"), str):
+                    claude_result = ev["result"]
+                    continue
+                if et == "assistant":
+                    msg = ev.get("message")
+                    if isinstance(msg, dict):
+                        content = msg.get("content")
+                        if isinstance(content, list):
+                            parts: list[str] = []
+                            for blk in content:
+                                if isinstance(blk, dict) and blk.get("type") == "text" and isinstance(blk.get("text"), str):
+                                    parts.append(blk["text"])
+                                elif isinstance(blk, str):
+                                    parts.append(blk)
+                            if parts:
+                                claude_assistant = "".join(parts).strip()
+                                continue
+                        if isinstance(content, str) and content.strip():
+                            claude_assistant = content.strip()
+                            continue
+                if et == "stream_event":
+                    inner = ev.get("event")
+                    if isinstance(inner, dict):
+                        delta = inner.get("delta")
+                        frag = ""
+                        if isinstance(delta, dict) and isinstance(delta.get("text"), str) and str(delta.get("type") or "text_delta") == "text_delta":
+                            frag = delta["text"]
+                        elif str(inner.get("type") or "") == "text_delta" and isinstance(inner.get("text"), str):
+                            frag = inner["text"]
+                        if frag:
+                            stream_frags.append(frag)
+                            stream_len += len(frag)
+                            while stream_len > stream_max and stream_frags:
+                                drop = stream_frags.popleft()
+                                stream_len -= len(drop)
     except FileNotFoundError:
         return ""
 
-    return _truncate(last or last_stdout_line, limit_chars)
+    if last:
+        return _truncate(last, limit_chars)
+    if claude_result:
+        return _truncate(claude_result, limit_chars)
+    if claude_assistant:
+        return _truncate(claude_assistant, limit_chars)
+    if stream_frags:
+        streamed = "".join(list(stream_frags)).strip()
+        if streamed:
+            return _truncate(streamed, limit_chars)
+    return _truncate(last_stdout_line, limit_chars)

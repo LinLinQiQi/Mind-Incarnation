@@ -63,11 +63,13 @@ mi config show
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "text"]
+      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
     }
   }
 }
 ```
+
+MI 会尽力解析 `stream-json` 输出，以提升证据提取与“最后一条消息”识别的可靠性。
 
 初始化全局价值观/偏好（默认写入 `~/.mind-incarnation/mindspec/base.json`）：
 

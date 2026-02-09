@@ -113,7 +113,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                     obj = json.loads(line)
                     if isinstance(obj, dict) and obj.get("kind"):
                         kinds.add(obj["kind"])
-            self.assertIn("codex_input", kinds)
+            self.assertIn("hands_input", kinds)
             self.assertIn("check_plan", kinds)
 
     def test_loop_guard_blocks_when_repeating_and_ask_when_uncertain_false(self) -> None:

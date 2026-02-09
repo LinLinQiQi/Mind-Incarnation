@@ -188,6 +188,7 @@ def last_agent_message_from_transcript(transcript_path: Path, *, limit_chars: in
     """
 
     last = ""
+    last_stdout_line = ""
     try:
         with transcript_path.open("r", encoding="utf-8") as f:
             for row in f:
@@ -206,6 +207,8 @@ def last_agent_message_from_transcript(transcript_path: Path, *, limit_chars: in
                 if not isinstance(raw, str):
                     continue
                 s = raw.strip()
+                if s:
+                    last_stdout_line = s
                 if not (s.startswith("{") and s.endswith("}")):
                     continue
                 try:
@@ -219,4 +222,4 @@ def last_agent_message_from_transcript(transcript_path: Path, *, limit_chars: in
     except FileNotFoundError:
         return ""
 
-    return _truncate(last, limit_chars)
+    return _truncate(last or last_stdout_line, limit_chars)

@@ -5,14 +5,15 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .config import config_for_display, init_config, load_config, config_path
 from .mindspec import MindSpecStore
-from .llm import MiLlm
 from .prompts import compile_mindspec_prompt
 from .runner import run_autopilot
 from .paths import ProjectPaths, default_home_dir
 from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
 from .transcript import last_agent_message_from_transcript
 from .redact import redact_text
+from .provider_factory import make_hands_functions, make_mind_provider
 
 
 def _read_stdin_text() -> str:
@@ -21,7 +22,10 @@ def _read_stdin_text() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="mi", description="Mind Incarnation (MI) V1 wrapper for Codex.")
+    parser = argparse.ArgumentParser(
+        prog="mi",
+        description="Mind Incarnation (MI) V1: a values-driven mind layer above execution agents (default Hands: Codex CLI).",
+    )
     parser.add_argument(
         "--home",
         default=os.environ.get("MI_HOME"),
@@ -31,6 +35,13 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("version", help="Print MI version.")
+
+    p_cfg = sub.add_parser("config", help="Manage MI config (Mind/Hands providers).")
+    cfg_sub = p_cfg.add_subparsers(dest="config_cmd", required=True)
+    p_ci = cfg_sub.add_parser("init", help="Write a default config.json to MI home.")
+    p_ci.add_argument("--force", action="store_true", help="Overwrite existing config.json.")
+    cfg_sub.add_parser("show", help="Show the current config (redacted).")
+    cfg_sub.add_parser("path", help="Print the config.json path.")
 
     p_init = sub.add_parser("init", help="Initialize global values/preferences (MindSpec base).")
     p_init.add_argument(
@@ -54,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the compiled values summary and decision procedure.",
     )
 
-    p_run = sub.add_parser("run", help="Run MI batch autopilot with Codex as Hands.")
+    p_run = sub.add_parser("run", help="Run MI batch autopilot (Hands configured via mi config).")
     p_run.add_argument("task", help="User task for Codex to execute.")
     p_run.add_argument(
         "--cd",
@@ -116,10 +127,25 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     store = MindSpecStore(home_dir=args.home)
+    cfg = load_config(store.home_dir)
 
     if args.cmd == "version":
         print(__version__)
         return 0
+
+    if args.cmd == "config":
+        if args.config_cmd == "path":
+            print(str(config_path(store.home_dir)))
+            return 0
+        if args.config_cmd == "init":
+            path = init_config(store.home_dir, force=bool(args.force))
+            print(f"Wrote config to {path}")
+            return 0
+        if args.config_cmd == "show":
+            disp = config_for_display(cfg)
+            print(json.dumps(disp, indent=2, sort_keys=True))
+            return 0
+        return 2
 
     if args.cmd == "init":
         values = args.values
@@ -139,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
             base_template = store.load_base()
             base_template["values_text"] = values
 
-            llm = MiLlm(project_root=scratch, transcripts_dir=transcripts_dir)
+            llm = make_mind_provider(cfg, project_root=scratch, transcripts_dir=transcripts_dir)
             prompt = compile_mindspec_prompt(values_text=values, base_template=base_template)
             try:
                 compiled = llm.call(schema_filename="compile_mindspec.json", prompt=prompt, tag="compile_mindspec").obj
@@ -178,11 +204,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "run":
+        hands_exec, hands_resume = make_hands_functions(cfg)
+        project_root = Path(args.cd).resolve()
+        project_paths = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=project_paths.transcripts_dir)
         result = run_autopilot(
             task=args.task,
             project_root=args.cd,
             home_dir=args.home,
             max_batches=args.max_batches,
+            hands_exec=hands_exec,
+            hands_resume=hands_resume,
+            llm=llm,
         )
         if args.show:
             print(result.render_text())

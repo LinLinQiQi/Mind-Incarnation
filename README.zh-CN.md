@@ -9,7 +9,7 @@ Mind Incarnation（MI）是一个“心智层（mind layer）”：它位于执�
 - 在可能的情况下，基于「价值观 + 证据 + 记忆」替用户自动回答底层 agent 的问题
 - 持久化 EvidenceLog，避免上下文丢失，并支持 MI 自评是否形成闭环完成
 
-状态：V1（草案），基于 batch 的 Codex 自动推进器。
+状态：V1（草案），基于 batch 的 Hands 自动推进器（默认：Codex CLI）。
 
 ## 核心原则
 
@@ -26,7 +26,8 @@ Mind Incarnation（MI）是一个“心智层（mind layer）”：它位于执�
 ## 环境要求
 
 - Python 3.10+
-- 已安装并完成鉴权的 Codex CLI
+- 默认 providers：已安装并完成鉴权的 Codex CLI
+- 可选：通过 `mi config` 配置替代的 Mind/Hands providers（OpenAI 兼容 API、Anthropic、其他 agent CLI）
 
 ## 安装
 
@@ -44,13 +45,21 @@ mi version
 
 ## 快速开始
 
+初始化 providers 配置（默认写入 `~/.mind-incarnation/config.json`）：
+
+```bash
+mi config init
+mi config path
+mi config show
+```
+
 初始化全局价值观/偏好（默认写入 `~/.mind-incarnation/mindspec/base.json`）：
 
 ```bash
 mi init --values "我的偏好：尽量少问；默认行为不变重构；没有测试就停下来；非必要不联网/不安装依赖/不 push。"
 ```
 
-在 Codex 之上运行 MI（默认将 transcript + evidence 写入 `~/.mind-incarnation/projects/<id>/`）：
+在 Hands 之上运行 MI（默认将 transcript + evidence 写入 `~/.mind-incarnation/projects/<id>/`；默认 Hands=Codex）：
 
 ```bash
 mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。"

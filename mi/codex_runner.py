@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from .storage import atomic_write_text, ensure_dir, now_rfc3339
+from .storage import ensure_dir, now_rfc3339
+from .transcript_store import write_transcript_header, append_transcript_line
 
 
 def _is_inside_git_repo(start_dir: Path) -> bool:
@@ -98,16 +99,6 @@ def _should_interrupt_command(mode: str, command: str) -> bool:
     return any(m in lower for m in markers)
 
 
-def _write_transcript_header(path: Path, meta: dict[str, Any]) -> None:
-    ensure_dir(path.parent)
-    atomic_write_text(path, json.dumps({"type": "mi.transcript.header", **meta}) + "\n")
-
-
-def _append_transcript_line(path: Path, record: dict[str, Any]) -> None:
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, sort_keys=True) + "\n")
-
-
 def run_codex_exec(
     *,
     prompt: str,
@@ -133,7 +124,7 @@ def run_codex_exec(
     # Read prompt from stdin to avoid shell escaping/length issues.
     args.append("-")
 
-    _write_transcript_header(
+    write_transcript_header(
         transcript_path,
         {
             "ts": now_rfc3339(),
@@ -172,7 +163,7 @@ def run_codex_resume(
     args.append(thread_id)
     args.append("-")
 
-    _write_transcript_header(
+    write_transcript_header(
         transcript_path,
         {
             "ts": now_rfc3339(),
@@ -232,7 +223,7 @@ def _run_codex_process(
                 if sig is not None:
                     try:
                         proc.send_signal(sig)
-                        _append_transcript_line(
+                        append_transcript_line(
                             transcript_path,
                             {"ts": now_rfc3339(), "stream": "meta", "line": f"mi.interrupt.sent={sig_name}"},
                         )
@@ -248,7 +239,7 @@ def _run_codex_process(
                 sel.unregister(f)
                 continue
             line = line.rstrip("\n")
-            _append_transcript_line(
+            append_transcript_line(
                 transcript_path,
                 {"ts": now_rfc3339(), "stream": stream_name, "line": line},
             )
@@ -269,7 +260,7 @@ def _run_codex_process(
                                 interrupt_requested = True
                                 interrupt_requested_at = time.time()
                                 next_signal_idx = 0
-                                _append_transcript_line(
+                                append_transcript_line(
                                     transcript_path,
                                     {
                                         "ts": now_rfc3339(),
@@ -280,7 +271,7 @@ def _run_codex_process(
 
     exit_code = proc.wait()
     duration_ms = int((time.time() - start) * 1000)
-    _append_transcript_line(
+    append_transcript_line(
         transcript_path,
         {"ts": now_rfc3339(), "stream": "meta", "line": f"mi.codex.exit_code={exit_code} duration_ms={duration_ms}"},
     )

@@ -53,7 +53,7 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
     bid = str(obj.get("batch_id") or "")
 
     detail = ""
-    if kind == "codex_input":
+    if kind in ("codex_input", "hands_input"):
         detail = _truncate(str(obj.get("input") or "").strip().replace("\n", "\\n"), limit)
     elif kind == "check_plan":
         checks = obj.get("checks") if isinstance(obj.get("checks"), dict) else {}
@@ -120,7 +120,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                 bid = str(obj.get("batch_id") or "")
                 tid = obj.get("thread_id")
 
-                if kind == "codex_input" and bid:
+                if kind in ("codex_input", "hands_input") and bid:
                     last_bid = bid
                     bundle = {
                         "batch_id": bid,
@@ -160,4 +160,3 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
         return bundle
 
     return bundle
-

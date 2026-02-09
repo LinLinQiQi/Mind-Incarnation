@@ -1,11 +1,11 @@
-# Mind Incarnation (MI) - V1 Spec (Batch Autopilot for Codex)
+# Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-08
+Last updated: 2026-02-09
 
 ## Goal
 
-Build a "mind layer" that sits *above* an execution agent (V1: Codex CLI) and reduces user burden by:
+Build a "mind layer" that sits *above* an execution agent (Hands; V1 default: Codex CLI) and reduces user burden by:
 
 - Injecting a minimal values/preferences context into prompts ("light injection")
 - Reading the agent's raw output (transcript) and deciding what to do next via MI prompts
@@ -29,17 +29,17 @@ Non-negotiables (design intent):
 
 ## Hard Constraints (Aligned)
 
-- MI MUST NOT intercept or gate Codex tool execution (no tool proxy / no allow/deny for shell commands).
-- MI MUST NOT force Codex into step-by-step protocols (no mandatory "STEP_REPORT" schema; no artificial step slicing).
-- MI MAY provide an optional "interrupt/terminate Codex process" mode for risk containment.
+- MI MUST NOT intercept or gate Hands tool/command execution (no tool proxy / no allow/deny for shell commands).
+- MI MUST NOT force Hands into step-by-step protocols (no mandatory "STEP_REPORT" schema; no artificial step slicing).
+- MI MAY provide an optional "interrupt/terminate Hands process" mode for risk containment (implemented for Codex; best-effort for other CLIs).
 - "Refactor" intent is **behavior-preserving by default** unless the user explicitly requests behavior changes.
 - If a project has **no tests**, MI asks the user ONCE per project to pick a verification strategy, then reuses it.
 - "Closed loop" completion is evaluated by MI itself (no default user acceptance prompt).
 
 ## V1 Scope
 
-- Single Hands: Codex CLI
-- Operating unit: **batch** (one MI input -> one Codex run until natural pause -> MI reads output -> decide next batch)
+- Hands: Codex CLI by default (provider=`codex`). Experimental: wrap other agent CLIs via provider=`cli` (e.g., Claude Code) with a generic wrapper.
+- Operating unit: **batch** (one MI input -> one Hands run until natural pause -> MI reads output -> decide next batch)
 
 Non-goals for V1:
 
@@ -52,7 +52,7 @@ Non-goals for V1:
 flowchart TD
   U[User task + values prompt] --> S[Load MindSpec + ProjectOverlay + Learned]
   S --> I[Build light injection + task input]
-  I --> C[Run Codex (free execution)]
+  I --> C[Run Hands (free execution)]
   C --> T[Capture raw transcript + optional repo observation]
   T --> E[MI: extract_evidence]
   E --> P[MI: plan_min_checks]
@@ -68,36 +68,62 @@ flowchart TD
 
 Pre-action arbitration (deterministic, V1):
 
-- If `auto_answer_to_codex.needs_user_input=true`: ask the user with `ask_user_question`, then send the user's answer to Codex (optionally combined with minimal checks).
+- If `auto_answer_to_codex.needs_user_input=true`: ask the user with `ask_user_question`, then send the user's answer to Hands (optionally combined with minimal checks).
 - Else if `plan_min_checks.needs_testless_strategy=true` and ProjectOverlay has not chosen a strategy: ask the user once per project, persist it, then re-plan checks.
-- Else if `auto_answer_to_codex.should_answer=true` and/or `plan_min_checks.should_run_checks=true`: send `codex_answer_input` and/or `codex_check_input` to Codex (combined into one batch input when both exist).
+- Else if `auto_answer_to_codex.should_answer=true` and/or `plan_min_checks.should_run_checks=true`: send `codex_answer_input` and/or `codex_check_input` to Hands (combined into one batch input when both exist).
 - Otherwise: fall back to `decide_next`.
 
 Additionally, when `decide_next` outputs `next_action=ask_user`, MI may attempt `auto_answer_to_codex` on the `ask_user_question` before prompting the user (to further reduce user burden).
 
 Loop/stuck guard (deterministic, V1):
 
-- Whenever MI is about to send a next input to Codex, it computes a bounded signature of `(codex_last_message, next_input)`.
+- Whenever MI is about to send a next input to Hands, it computes a bounded signature of `(codex_last_message, next_input)` (field name is legacy, but it is "Hands last message").
 - If a loop-like repetition pattern is detected (AAA or ABAB), MI records `kind="loop_guard"` and either:
   - asks the user for an override instruction (if `defaults.ask_when_uncertain=true`), or
   - stops with `status=blocked` (if `defaults.ask_when_uncertain=false`).
 
-## Codex Integration (V1)
+## Hands + Mind Provider Integration (V1)
 
-- Hands runs use `codex exec --json --full-auto` (and `codex exec resume --json --full-auto` for continuation).
-- MI captures Codex's JSONL event stream (stdout) and logs (stderr) as the raw transcript.
-- MI prompt-pack calls are implemented by calling Codex in a separate "mind" run:
-  - `codex exec --sandbox read-only --json --output-schema <schema.json>`
-  - MI parses the final `agent_message` as strict JSON.
+MI has two provider roles:
 
-Schema note (important): Codex's `--output-schema` is effectively strict. For object schemas, every key in `properties` must appear in `required`. Optional fields must be expressed via `null` (e.g., `{"anyOf":[{"type":"null"},{...}]}`), not by omitting the key.
+- Hands: the execution agent MI drives (default: Codex CLI)
+- Mind: the model MI uses for its internal prompt-pack decisions (default: Codex CLI with `--output-schema`)
+
+These are configured via `config.json` under MI home (see "CLI Usage (V1)").
+
+Hands providers:
+
+- `hands.provider=codex` (default)
+  - Uses `codex exec --json --full-auto` (and `codex exec resume --json --full-auto` for continuation).
+  - Captures Codex's JSONL event stream (stdout) and logs (stderr) as the raw transcript.
+- `hands.provider=cli` (experimental)
+  - Runs arbitrary command argv configured by the user (wrapper mechanism).
+  - Captures raw stdout/stderr lines into MI-owned JSONL transcript records.
+  - Resume is optional; it depends on whether the underlying CLI supports a thread/session id.
+
+Mind providers:
+
+- `mind.provider=codex_schema` (default)
+  - Calls Codex in a separate "mind" run:
+    - `codex exec --sandbox read-only --json --output-schema <schema.json>`
+  - Parses the final `agent_message` as strict JSON.
+- `mind.provider=openai_compatible`
+  - Calls an OpenAI-compatible Chat Completions endpoint.
+  - Uses local JSON Schema validation + repair retries (best-effort across vendors).
+- `mind.provider=anthropic`
+  - Calls Anthropic Messages API.
+  - Uses local JSON Schema validation + repair retries.
+
+Context isolation (important): Mind and Hands do **not** share a session/thread context by default. Mind calls run as separate requests/runs and do not reuse Hands thread state.
+
+Schema note (Codex `--output-schema`): Codex's `--output-schema` is effectively strict. For object schemas, every key in `properties` must appear in `required`. Optional fields must be expressed via `null` (e.g., `{"anyOf":[{"type":"null"},{...}]}`), not by omitting the key.
 
 ## Transparency
 
 MI persists and exposes:
 
-- Raw Codex transcript (full stdout/stderr stream, timestamped)
-- EvidenceLog (JSONL): per-batch evidence, plus what MI sent to Codex and any repo observations
+- Raw Hands transcript (full stdout/stderr stream, timestamped)
+- EvidenceLog (JSONL): per-batch evidence, plus what MI sent to Hands and any repo observations
 
 The user can choose to view:
 
@@ -114,17 +140,17 @@ Because MI does not intercept tools, "external actions" are a **soft policy** en
 
 Optional interrupt mode:
 
-- MI may interrupt the Codex process when real-time transcript suggests a high-risk action is happening.
+- MI may interrupt the Hands process when real-time transcript suggests a high-risk action is happening (implemented for Codex; other CLIs are best-effort).
 - This behavior is controlled by MindSpec preferences (default can be off).
 
 ## Minimal Checks Policy (V1)
 
 MI can propose or generate "minimal checks" when evidence is insufficient, prioritizing:
 
-1) Existing project checks that Codex can run (tests/build/lint)
+1) Existing project checks that Hands can run (tests/build/lint; default Hands: Codex)
 2) Minimal new checks/tests (smoke test) **only if aligned with values/preferences**
 
-Execution preference (aligned): **Codex runs checks** (MI only suggests/plans via next batch input).
+Execution preference (aligned): **Hands runs checks** (MI only suggests/plans via next batch input).
 
 Implementation: MI records a `check_plan` after each batch. To reduce latency/cost, MI may **skip** the `plan_min_checks` model call when evidence indicates no uncertainty/risk/questions; in that case it records a default `check_plan` with `should_run_checks=false` and a short note explaining the skip.
 
@@ -140,7 +166,7 @@ MI uses the following internal prompts (all should return strict JSON):
      - concrete default knobs (interrupt/violation response/etc.)
 
 2) `extract_evidence` (implemented)
-   - Input: batch input MI sent to Codex, machine-extracted batch summary (incl. transcript event observation), and repo observation
+   - Input: batch input MI sent to Hands, machine-extracted batch summary (incl. transcript event observation), and repo observation
    - Output: `EvidenceItem` with `facts`, `actions`, `results`, `unknowns`, `risk_signals`
 
 3) `risk_judge` (implemented; post-hoc)
@@ -149,15 +175,15 @@ MI uses the following internal prompts (all should return strict JSON):
 
 4) `plan_min_checks` (implemented)
    - Input: `MindSpec`, `ProjectOverlay`, repo observation, recent `EvidenceLog`
-   - Output: a minimal check plan and (when needed) a single Codex instruction (`codex_check_input`) to execute the checks
+   - Output: a minimal check plan and (when needed) a single Hands instruction (`codex_check_input`, legacy name) to execute the checks
 
 5) `auto_answer_to_codex` (implemented)
-   - Input: `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional minimal check plan, and the raw Codex last message
-   - Output: an optional Codex reply (`codex_answer_input`) that answers Codex's question(s) using values + evidence; only asks the user when MI cannot answer
+   - Input: `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional minimal check plan, and the raw Hands last message (legacy prompt/schema naming uses "codex")
+   - Output: an optional Hands reply (`codex_answer_input`, legacy name) that answers Hands' question(s) using values + evidence; only asks the user when MI cannot answer
 
 6) `decide_next` (implemented)
    - Input: `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional risk judgement
-   - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Codex for that batch; in that case `decide_next` may be skipped for the iteration.
+   - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). `send_to_codex` is legacy naming and means "send the next batch input to Hands". This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
 
 Planned (not required for V1 loop to function; can be added incrementally):
 
@@ -233,11 +259,11 @@ Minimal shape:
 
 `evidence.jsonl` is append-only and may contain multiple record kinds:
 
-- `codex_input` (exact MI input + light injection sent to Codex for the batch)
+- `hands_input` (exact MI input + light injection sent to Hands for the batch; older logs may use `codex_input`)
 - `EvidenceItem` (extracted summary per batch)
 - `risk_event` (post-hoc judgement when heuristic risk signals are present)
 - `check_plan` (minimal checks proposed post-batch)
-- `auto_answer` (MI-generated reply to Codex questions, when possible)
+- `auto_answer` (MI-generated reply to Hands questions, when possible; prompt/schema names are Codex-legacy)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
 
@@ -277,11 +303,11 @@ Minimal shape:
 }
 ```
 
-`codex_input` record shape (what MI sent to Codex for a batch):
+`hands_input` record shape (what MI sent to Hands for a batch):
 
 ```json
 {
-  "kind": "codex_input",
+  "kind": "hands_input",
   "batch_id": "string",
   "ts": "RFC3339 timestamp",
   "thread_id": "string",
@@ -327,7 +353,7 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
 }
 ```
 
-`auto_answer` record shape (MI reply suggestion to Codex):
+`auto_answer` record shape (MI reply suggestion to Hands; field names are Codex-legacy):
 
 ```json
 {
@@ -423,6 +449,18 @@ Print MI version:
 mi version
 ```
 
+Provider config (Mind/Hands):
+
+- Location: `<home>/config.json` (defaults to `~/.mind-incarnation/config.json`)
+- Initialize: `mi config init` (then edit the JSON)
+- View (redacted): `mi config show`
+- Path: `mi config path`
+
+Key knobs (V1):
+
+- `mind.provider`: `codex_schema | openai_compatible | anthropic`
+- `hands.provider`: `codex | cli`
+
 Initialize/compile MindSpec:
 
 ```bash
@@ -491,8 +529,8 @@ Doc sections to keep aligned:
 
 ## Implementation Plan (V1)
 
-1) Implement an MI wrapper CLI that runs `codex` as a child process and captures the JSONL event stream (no step slicing).
+1) Implement an MI wrapper CLI that runs Hands as a child process (default: `codex`; optional generic `cli` wrapper) and captures transcripts (no step slicing).
 2) Persist artifacts per batch: transcripts and `EvidenceLog` (JSONL).
-3) Implement prompt-pack calls via `codex exec --output-schema` (strict JSON parsing with safe fallbacks).
+3) Implement prompt-pack calls via `codex exec --output-schema` (strict JSON parsing with safe fallbacks) and optional API-backed Mind providers with local schema validation.
 4) Add post-hoc risk monitoring + optional interrupt/terminate mode (configurable).
 5) Add project memory: store "no tests" verification strategy once per project and reuse.

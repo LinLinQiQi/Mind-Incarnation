@@ -9,7 +9,7 @@ Mind Incarnation (MI) is a values-driven "mind layer" that sits **above** execut
 - Auto-answer the agent's questions when possible (values + evidence + memory)
 - Persist an EvidenceLog to avoid context loss and support self-evaluation of completion
 
-Status: V1 (draft), batch autopilot for Codex.
+Status: V1 (draft), batch autopilot above Hands (default: Codex CLI).
 
 ## Key Principles
 
@@ -26,7 +26,8 @@ Status: V1 (draft), batch autopilot for Codex.
 ## Requirements
 
 - Python 3.10+
-- Codex CLI installed and authenticated
+- Default providers: Codex CLI installed and authenticated
+- Optional: configure alternative Mind/Hands providers via `mi config` (OpenAI-compatible APIs, Anthropic, other agent CLIs)
 
 ## Install
 
@@ -44,13 +45,21 @@ mi version
 
 ## Quickstart
 
+Initialize provider config (writes `~/.mind-incarnation/config.json` by default):
+
+```bash
+mi config init
+mi config path
+mi config show
+```
+
 Initialize global values/preferences (writes MindSpec to `~/.mind-incarnation/mindspec/base.json` by default):
 
 ```bash
 mi init --values "My values: minimize questions; prefer behavior-preserving refactors; stop when no tests exist; avoid network/install/push unless necessary."
 ```
 
-Run MI batch autopilot above Codex (stores transcripts + evidence under `~/.mind-incarnation/projects/<id>/`):
+Run MI batch autopilot above Hands (stores transcripts + evidence under `~/.mind-incarnation/projects/<id>/`):
 
 ```bash
 mi run --cd /path/to/your/project --show "Do X, then verify with minimal checks."

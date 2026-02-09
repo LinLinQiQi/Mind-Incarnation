@@ -20,6 +20,9 @@ from .storage import append_jsonl, now_rfc3339, ensure_dir
 from .transcript import summarize_codex_events
 
 
+_DEFAULT = object()
+
+
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -335,7 +338,7 @@ def run_autopilot(
     home_dir: str | None,
     max_batches: int,
     hands_exec: Any | None = None,
-    hands_resume: Any | None = None,
+    hands_resume: Any = _DEFAULT,
     llm: Any | None = None,
 ) -> AutopilotResult:
     project_path = Path(project_root).resolve()
@@ -352,7 +355,7 @@ def run_autopilot(
         llm = MiLlm(project_root=project_path, transcripts_dir=project_paths.transcripts_dir)
     if hands_exec is None:
         hands_exec = run_codex_exec
-    if hands_resume is None:
+    if hands_resume is _DEFAULT:
         hands_resume = run_codex_resume
 
     evidence_window: list[dict[str, Any]] = []
@@ -457,7 +460,7 @@ def run_autopilot(
         sent_ts = now_rfc3339()
         prompt_sha256 = hashlib.sha256(codex_prompt.encode("utf-8")).hexdigest()
 
-        if thread_id is None:
+        if thread_id is None or hands_resume is None or thread_id == "unknown":
             result = hands_exec(
                 prompt=codex_prompt,
                 project_root=project_path,
@@ -467,7 +470,8 @@ def run_autopilot(
                 output_schema_path=None,
                 interrupt=interrupt_cfg,
             )
-            thread_id = result.thread_id
+            if thread_id is None:
+                thread_id = result.thread_id
         else:
             result = hands_resume(
                 thread_id=thread_id,
@@ -479,6 +483,8 @@ def run_autopilot(
                 output_schema_path=None,
                 interrupt=interrupt_cfg,
             )
+            if getattr(result, "thread_id", ""):
+                thread_id = result.thread_id
 
         executed_batches += 1
 
@@ -486,7 +492,7 @@ def run_autopilot(
         append_jsonl(
             project_paths.evidence_log_path,
             {
-                "kind": "codex_input",
+                "kind": "hands_input",
                 "batch_id": batch_id,
                 "ts": sent_ts,
                 "thread_id": thread_id or result.thread_id,
@@ -513,7 +519,8 @@ def run_autopilot(
             "batch_id": batch_id,
             "ts": now_rfc3339(),
             "thread_id": thread_id,
-            "codex_transcript_ref": str(hands_transcript),
+            "hands_transcript_ref": str(hands_transcript),
+            "codex_transcript_ref": str(hands_transcript),  # legacy key (V1 early logs)
             "mi_input": batch_input,
             "transcript_observation": summary.get("transcript_observation") or {},
             "repo_observation": repo_obs,

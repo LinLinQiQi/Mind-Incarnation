@@ -63,13 +63,15 @@ mi config show
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+      "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "resume": ["claude", "-r", "{thread_id}", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\""
     }
   }
 }
 ```
 
-MI 会尽力解析 `stream-json` 输出，以提升证据提取与“最后一条消息”识别的可靠性。
+MI 会尽力解析 `stream-json` 输出，以提升证据提取、session id 识别与“最后一条消息”识别的可靠性。
 
 初始化全局价值观/偏好（默认写入 `~/.mind-incarnation/mindspec/base.json`）：
 

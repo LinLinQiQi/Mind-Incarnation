@@ -465,7 +465,7 @@ Key knobs (V1):
 
 Example: Hands = Claude Code (via `hands.provider=cli`)
 
-This uses Claude Code's `-c` (continue) + `-p` (print/non-interactive) mode. MI does not need to parse a session id in this mode.
+This uses Claude Code's `-p` (print/non-interactive) mode to start a session, then `-r {thread_id}` (resume by session id) for continuation between MI batches. MI will auto-extract `session_id` from JSON output (`stream-json`/`json`) when available.
 
 Edit `<home>/config.json`:
 
@@ -475,9 +475,9 @@ Edit `<home>/config.json`:
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
-      "resume": ["claude", "-c", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
-      "thread_id_regex": "",
+      "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "resume": ["claude", "-r", "{thread_id}", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\"",
       "env": {}
     }
   }
@@ -488,6 +488,8 @@ Notes:
 
 - If your Claude Code install requires env, set it in your shell (preferred) or under `hands.cli.env`.
 - `--output-format stream-json` is recommended: MI will parse JSON events (best-effort) to improve evidence extraction, last-message detection, and risk signals.
+- `thread_id_regex` is a fallback only. When Claude Code prints `session_id` in JSON (common for `stream-json` and `json` output), MI will auto-extract it without regex. If you use `--output-format text`, set `thread_id_regex` to a pattern that matches whatever session id the CLI prints (or switch to `stream-json`).
+- Alternative (no explicit resume id): set both `exec` and `resume` to `["claude","-c","-p","{prompt}", ...]` to always continue the most recent conversation in the current directory.
 
 Initialize/compile MindSpec:
 

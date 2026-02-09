@@ -63,13 +63,15 @@ Edit `~/.mind-incarnation/config.json`:
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+      "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "resume": ["claude", "-r", "{thread_id}", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\""
     }
   }
 }
 ```
 
-MI will parse `stream-json` output (best-effort) to improve evidence extraction and last-message detection.
+MI will parse `stream-json` output (best-effort) to improve evidence extraction, session id detection, and last-message detection.
 
 Initialize global values/preferences (writes MindSpec to `~/.mind-incarnation/mindspec/base.json` by default):
 

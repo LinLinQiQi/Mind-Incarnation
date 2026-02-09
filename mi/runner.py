@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import hashlib
 import shutil
@@ -17,7 +18,7 @@ from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_check
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
 from .storage import append_jsonl, now_rfc3339, ensure_dir
-from .transcript import summarize_codex_events
+from .transcript import summarize_codex_events, summarize_hands_transcript
 
 
 _DEFAULT = object()
@@ -40,7 +41,12 @@ def _batch_summary(result: CodexRunResult) -> dict[str, Any]:
             }
         )
 
-    transcript_observation = summarize_codex_events(result.events)
+    transcript_observation: dict[str, Any]
+    if isinstance(getattr(result, "events", None), list) and result.events:
+        transcript_observation = summarize_codex_events(result.events)
+    else:
+        tp = getattr(result, "raw_transcript_path", None)
+        transcript_observation = summarize_hands_transcript(Path(tp)) if tp else {}
 
     return {
         "thread_id": result.thread_id,
@@ -68,6 +74,60 @@ def _detect_risk_signals(result: CodexRunResult) -> list[str]:
             signals.append(f"delete: {cmd}")
         if "sudo " in lower:
             signals.append(f"privilege: {cmd}")
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in signals:
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _detect_risk_signals_from_transcript(transcript_path: Path) -> list[str]:
+    # Best-effort for non-Codex Hands providers: scan raw stdout/stderr text for risky markers.
+    signals: list[str] = []
+    try:
+        with transcript_path.open("r", encoding="utf-8") as f:
+            for row in f:
+                row = row.strip()
+                if not row:
+                    continue
+                try:
+                    rec = json.loads(row)
+                except Exception:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("stream") not in ("stdout", "stderr"):
+                    continue
+                raw = rec.get("line")
+                if not isinstance(raw, str):
+                    continue
+                line = raw.strip()
+                if not line:
+                    continue
+                lower = line.lower()
+
+                if "git push" in lower:
+                    signals.append(f"push: {_truncate(line, 200)}")
+                if "npm publish" in lower or "twine upload" in lower:
+                    signals.append(f"publish: {_truncate(line, 200)}")
+                if "pip install" in lower or "npm install" in lower or "pnpm install" in lower or "yarn add" in lower:
+                    signals.append(f"install: {_truncate(line, 200)}")
+                if "curl " in lower or "wget " in lower:
+                    signals.append(f"network: {_truncate(line, 200)}")
+                if "rm -rf" in lower or " rm -r" in lower:
+                    signals.append(f"delete: {_truncate(line, 200)}")
+                if "sudo " in lower:
+                    signals.append(f"privilege: {_truncate(line, 200)}")
+
+                if len(signals) >= 20:
+                    break
+    except Exception:
+        return []
+
     # Deduplicate while preserving order.
     seen: set[str] = set()
     out: list[str] = []
@@ -532,6 +592,8 @@ def run_autopilot(
 
         # Post-hoc risk judgement (LLM) when heuristic signals are present.
         risk_signals = _detect_risk_signals(result)
+        if not risk_signals and not (isinstance(getattr(result, "events", None), list) and result.events):
+            risk_signals = _detect_risk_signals_from_transcript(hands_transcript)
         if risk_signals:
             risk_prompt = risk_judge_prompt(
                 task=task,

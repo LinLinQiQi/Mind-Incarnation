@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,27 @@ def _looks_like_path(s: str) -> bool:
     if "." in s and not s.startswith(".") and " " not in s:
         return True
     return False
+
+
+def _extract_paths_from_text(text: str, *, limit: int) -> list[str]:
+    if limit <= 0:
+        return []
+    t = (text or "").strip()
+    if not t:
+        return []
+
+    # Split on common delimiters to find path-like tokens.
+    tokens = re.split(r"[ \t\r\n\"'`()<>\[\]{},;:]+", t)
+    out: list[str] = []
+    for tok in tokens:
+        if len(out) >= limit:
+            break
+        s = tok.strip().strip(".,")
+        if not s:
+            continue
+        if _looks_like_path(s):
+            out.append(s)
+    return out[:limit]
 
 
 def _collect_paths(obj: Any, *, limit: int, depth: int) -> list[str]:
@@ -176,6 +198,93 @@ def summarize_codex_events(
         "item_type_counts": item_type_counts,
         "file_paths": file_paths,
         "non_command_actions": non_command_actions[:max_non_command_actions],
+        "errors": errors,
+    }
+
+
+def summarize_hands_transcript(
+    transcript_path: Path,
+    *,
+    max_paths: int = 30,
+    max_non_command_actions: int = 20,
+    max_errors: int = 5,
+) -> dict[str, Any]:
+    """Summarize an MI-owned Hands transcript JSONL file (stdout/stderr lines).
+
+    This is used for non-Codex Hands providers (e.g., wrapping another agent CLI),
+    where we do not have Codex's structured --json event stream.
+    """
+
+    event_type_counts: dict[str, int] = {}
+    file_paths: list[str] = []
+    errors: list[str] = []
+
+    stdout_lines = 0
+    stderr_lines = 0
+    meta_lines = 0
+
+    try:
+        with transcript_path.open("r", encoding="utf-8") as f:
+            for row in f:
+                row = row.strip()
+                if not row:
+                    continue
+                try:
+                    rec = json.loads(row)
+                except Exception:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                stream = rec.get("stream")
+                if stream not in ("stdout", "stderr", "meta"):
+                    continue
+                line = rec.get("line")
+                s = str(line) if line is not None else ""
+                s2 = s.strip()
+
+                key = f"stream.{stream}"
+                event_type_counts[key] = event_type_counts.get(key, 0) + 1
+
+                if stream == "stdout":
+                    stdout_lines += 1
+                elif stream == "stderr":
+                    stderr_lines += 1
+                else:
+                    meta_lines += 1
+
+                if s2 and len(file_paths) < max_paths:
+                    file_paths.extend(_extract_paths_from_text(s2, limit=max_paths - len(file_paths)))
+
+                if len(errors) < max_errors:
+                    lower = s2.lower()
+                    if stream == "stderr" and s2:
+                        errors.append(_truncate(s2, 400))
+                    elif any(x in lower for x in ("traceback", "exception", "error:", "failed", "fatal", "panic")):
+                        errors.append(_truncate(s2, 400))
+
+    except FileNotFoundError:
+        return {
+            "event_type_counts": {},
+            "item_type_counts": {},
+            "file_paths": [],
+            "non_command_actions": [],
+            "errors": [],
+        }
+
+    file_paths = _dedup_preserve(file_paths)[:max_paths]
+    errors = _dedup_preserve(errors)[:max_errors]
+
+    non_command_actions = [
+        f"raw_transcript_lines={stdout_lines + stderr_lines + meta_lines}",
+        f"stdout_lines={stdout_lines}",
+        f"stderr_lines={stderr_lines}",
+    ][:max_non_command_actions]
+
+    return {
+        "event_type_counts": event_type_counts,
+        "item_type_counts": {},
+        "file_paths": file_paths,
+        "non_command_actions": non_command_actions,
         "errors": errors,
     }
 

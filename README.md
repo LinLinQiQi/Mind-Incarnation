@@ -53,6 +53,22 @@ mi config path
 mi config show
 ```
 
+Optional: Use Claude Code as Hands (wrapper)
+
+Edit `~/.mind-incarnation/config.json`:
+
+```json
+{
+  "hands": {
+    "provider": "cli",
+    "cli": {
+      "prompt_mode": "arg",
+      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "text"]
+    }
+  }
+}
+```
+
 Initialize global values/preferences (writes MindSpec to `~/.mind-incarnation/mindspec/base.json` by default):
 
 ```bash

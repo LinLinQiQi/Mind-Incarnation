@@ -100,6 +100,8 @@ Hands providers:
   - Runs arbitrary command argv configured by the user (wrapper mechanism).
   - Captures raw stdout/stderr lines into MI-owned JSONL transcript records.
   - Resume is optional; it depends on whether the underlying CLI supports a thread/session id.
+  - Evidence/risks are best-effort: MI derives `transcript_observation` by heuristically scanning captured text (paths/errors/etc.), and post-hoc risk signals are detected by scanning transcript text for risky markers.
+  - Interrupt is best-effort: MI can send signals to terminate the process, but it can only trigger based on observed output text (unlike Codex which exposes `command_execution` events).
 
 Mind providers:
 
@@ -460,6 +462,32 @@ Key knobs (V1):
 
 - `mind.provider`: `codex_schema | openai_compatible | anthropic`
 - `hands.provider`: `codex | cli`
+
+Example: Hands = Claude Code (via `hands.provider=cli`)
+
+This uses Claude Code's `-c` (continue) + `-p` (print/non-interactive) mode. MI does not need to parse a session id in this mode.
+
+Edit `<home>/config.json`:
+
+```json
+{
+  "hands": {
+    "provider": "cli",
+    "cli": {
+      "prompt_mode": "arg",
+      "exec": ["claude", "-c", "-p", "{prompt}", "--output-format", "text"],
+      "resume": ["claude", "-c", "-p", "{prompt}", "--output-format", "text"],
+      "thread_id_regex": "",
+      "env": {}
+    }
+  }
+}
+```
+
+Notes:
+
+- If your Claude Code install requires env, set it in your shell (preferred) or under `hands.cli.env`.
+- `--output-format stream-json` can be helpful for debugging/auditing, but MI currently treats CLI output as raw text.
 
 Initialize/compile MindSpec:
 

@@ -51,9 +51,14 @@ Initialize provider config (writes `~/.mind-incarnation/config.json` by default)
 mi config init
 mi config path
 mi config show
+mi config validate
 ```
 
-Optional: Use Claude Code as Hands (wrapper)
+Optional: Use another agent CLI as Hands (wrapper)
+
+MI can wrap most agent CLIs via `hands.provider=cli`. You provide the command + args for *your installed tool* (flags vary by version).
+
+Example: Claude Code (adjust flags/args to your version)
 
 Edit `~/.mind-incarnation/config.json`:
 
@@ -63,15 +68,18 @@ Edit `~/.mind-incarnation/config.json`:
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
-      "resume": ["claude", "-r", "{thread_id}", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "exec": ["claude", "...", "{prompt}", "..."],
+      "resume": ["claude", "...", "{thread_id}", "...", "{prompt}", "..."],
       "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\""
     }
   }
 }
 ```
 
-MI will parse `stream-json` output (best-effort) to improve evidence extraction, session id detection, and last-message detection.
+Notes:
+
+- Placeholders: `{project_root}`, `{prompt}`, `{thread_id}` (resume only).
+- If your CLI can output JSON events (e.g., "stream-json"), MI will parse them (best-effort) to improve evidence extraction, session id detection, and last-message detection.
 
 Initialize global values/preferences (writes MindSpec to `~/.mind-incarnation/mindspec/base.json` by default):
 
@@ -83,6 +91,13 @@ Run MI batch autopilot above Hands (stores transcripts + evidence under `~/.mind
 
 ```bash
 mi run --cd /path/to/your/project --show "Do X, then verify with minimal checks."
+```
+
+Optional: resume/reset Hands session across runs (best-effort):
+
+```bash
+mi run --cd /path/to/your/project --continue-hands "Continue the previous work."
+mi run --cd /path/to/your/project --reset-hands "Start a fresh session."
 ```
 
 Inspect the latest batch (what MI sent, last agent message, evidence pointers):

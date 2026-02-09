@@ -1,9 +1,10 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from mi.config import default_config, init_config, load_config, config_for_display
+from mi.config import default_config, init_config, load_config, config_for_display, validate_config
 from mi.schema_validate import validate_json_schema
 
 
@@ -60,7 +61,21 @@ class TestConfigAndSchema(unittest.TestCase):
         errs = validate_json_schema(bad, schema)
         self.assertTrue(errs)
 
+    def test_validate_config_reports_missing_commands_when_path_empty(self) -> None:
+        cfg = default_config()
+        old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = ""
+        try:
+            report = validate_config(cfg)
+        finally:
+            os.environ["PATH"] = old_path
+
+        self.assertIn("ok", report)
+        self.assertIn("errors", report)
+        self.assertIsInstance(report.get("errors"), list)
+        self.assertFalse(bool(report.get("ok")))
+        self.assertTrue(any("command not found" in str(e) for e in report.get("errors") or []))
+
 
 if __name__ == "__main__":
     unittest.main()
-

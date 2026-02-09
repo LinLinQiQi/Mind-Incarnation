@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +45,9 @@ def default_config() -> dict[str, Any]:
         "hands": {
             # V1 default: Codex CLI as Hands.
             "provider": "codex",  # codex|cli
+            # When true, MI will try to reuse the last stored Hands session/thread id across separate `mi run` invocations.
+            # (This is still best-effort; resume may fail if the underlying tool cannot resume by id.)
+            "continue_across_runs": False,
             "cli": {
                 # exec/resume argv are lists of strings. Placeholders supported:
                 # - {project_root}
@@ -116,3 +121,91 @@ def resolve_api_key(provider_cfg: dict[str, Any]) -> str:
             return v.strip()
     key = provider_cfg.get("api_key")
     return str(key or "").strip()
+
+
+def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Validate MI config.json (best-effort).
+
+    Returns: {"ok": bool, "errors": [...], "warnings": [...]}.
+    """
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not isinstance(cfg, dict):
+        return {"ok": False, "errors": ["config is not an object"], "warnings": []}
+
+    mind = cfg.get("mind") if isinstance(cfg.get("mind"), dict) else {}
+    hands = cfg.get("hands") if isinstance(cfg.get("hands"), dict) else {}
+
+    mind_provider = str(mind.get("provider") or "codex_schema").strip()
+    hands_provider = str(hands.get("provider") or "codex").strip()
+
+    def need_cmd(cmd: str, *, context: str) -> None:
+        if shutil.which(cmd) is None:
+            errors.append(f"{context}: command not found in PATH: {cmd!r}")
+
+    # Mind provider validation.
+    if mind_provider == "codex_schema":
+        need_cmd("codex", context="mind.provider=codex_schema")
+    elif mind_provider == "openai_compatible":
+        oc = mind.get("openai_compatible") if isinstance(mind.get("openai_compatible"), dict) else {}
+        model = str(oc.get("model") or "").strip()
+        if not model:
+            errors.append("mind.provider=openai_compatible: missing mind.openai_compatible.model")
+        api_key = resolve_api_key(oc if isinstance(oc, dict) else {})
+        if not api_key:
+            env_name = str(oc.get("api_key_env") or "OPENAI_API_KEY").strip()
+            errors.append(f"mind.provider=openai_compatible: missing API key (set ${env_name} or mind.openai_compatible.api_key)")
+    elif mind_provider == "anthropic":
+        ac = mind.get("anthropic") if isinstance(mind.get("anthropic"), dict) else {}
+        model = str(ac.get("model") or "").strip()
+        if not model:
+            errors.append("mind.provider=anthropic: missing mind.anthropic.model")
+        api_key = resolve_api_key(ac if isinstance(ac, dict) else {})
+        if not api_key:
+            env_name = str(ac.get("api_key_env") or "ANTHROPIC_API_KEY").strip()
+            errors.append(f"mind.provider=anthropic: missing API key (set ${env_name} or mind.anthropic.api_key)")
+    else:
+        errors.append(f"mind.provider: unknown provider {mind_provider!r}")
+
+    # Hands provider validation.
+    if hands_provider == "codex":
+        need_cmd("codex", context="hands.provider=codex")
+    elif hands_provider == "cli":
+        cc = hands.get("cli") if isinstance(hands.get("cli"), dict) else {}
+        exec_argv = list(cc.get("exec") or [])
+        if not exec_argv:
+            errors.append("hands.provider=cli: missing hands.cli.exec argv list")
+        else:
+            cmd0 = str(exec_argv[0])
+            if shutil.which(cmd0) is None and not Path(cmd0).exists():
+                warnings.append(f"hands.provider=cli: command may not exist: {cmd0!r}")
+
+        prompt_mode = str(cc.get("prompt_mode") or "stdin").strip()
+        if prompt_mode not in ("stdin", "arg"):
+            errors.append(f"hands.provider=cli: invalid hands.cli.prompt_mode={prompt_mode!r} (expected stdin|arg)")
+        if prompt_mode == "arg" and exec_argv and not any("{prompt}" in str(x) for x in exec_argv):
+            warnings.append("hands.provider=cli: prompt_mode=arg but hands.cli.exec has no {prompt}; MI will append the prompt as a final argv")
+
+        resume_argv = list(cc.get("resume") or [])
+        if resume_argv and not any("{thread_id}" in str(x) for x in resume_argv):
+            warnings.append("hands.provider=cli: hands.cli.resume is set but has no {thread_id}; resume will not use persisted thread/session id")
+
+        rx = str(cc.get("thread_id_regex") or "").strip()
+        if rx:
+            try:
+                re.compile(rx)
+            except Exception as e:
+                errors.append(f"hands.provider=cli: invalid hands.cli.thread_id_regex: {e}")
+
+        cont = bool(hands.get("continue_across_runs", False))
+        if cont and not resume_argv:
+            warnings.append(
+                "hands.continue_across_runs=true but hands.cli.resume is empty; MI cannot resume by stored id (consider configuring resume argv or using a CLI continue flag)"
+            )
+    else:
+        errors.append(f"hands.provider: unknown provider {hands_provider!r}")
+
+    ok = not errors
+    return {"ok": ok, "errors": errors, "warnings": warnings}

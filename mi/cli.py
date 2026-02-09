@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import config_for_display, init_config, load_config, config_path
+from .config import config_for_display, init_config, load_config, config_path, validate_config
 from .mindspec import MindSpecStore
 from .prompts import compile_mindspec_prompt
 from .runner import run_autopilot
@@ -41,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     p_ci = cfg_sub.add_parser("init", help="Write a default config.json to MI home.")
     p_ci.add_argument("--force", action="store_true", help="Overwrite existing config.json.")
     cfg_sub.add_parser("show", help="Show the current config (redacted).")
+    cfg_sub.add_parser("validate", help="Validate the current config.json (errors + warnings).")
+    cfg_sub.add_parser("doctor", help="Alias for validate (for discoverability).")
     cfg_sub.add_parser("path", help="Print the config.json path.")
 
     p_init = sub.add_parser("init", help="Initialize global values/preferences (MindSpec base).")
@@ -76,7 +78,17 @@ def main(argv: list[str] | None = None) -> int:
         "--max-batches",
         type=int,
         default=8,
-        help="Maximum number of Codex batches before stopping.",
+        help="Maximum number of Hands batches before stopping.",
+    )
+    p_run.add_argument(
+        "--continue-hands",
+        action="store_true",
+        help="Try to resume the last stored Hands thread/session id across separate `mi run` invocations (best-effort).",
+    )
+    p_run.add_argument(
+        "--reset-hands",
+        action="store_true",
+        help="Clear the stored Hands thread/session id for this project before running (forces a fresh Hands session).",
     )
     p_run.add_argument(
         "--show",
@@ -145,6 +157,27 @@ def main(argv: list[str] | None = None) -> int:
             disp = config_for_display(cfg)
             print(json.dumps(disp, indent=2, sort_keys=True))
             return 0
+        if args.config_cmd in ("validate", "doctor"):
+            report = validate_config(cfg)
+            ok = bool(report.get("ok", False))
+            errs = report.get("errors") if isinstance(report.get("errors"), list) else []
+            warns = report.get("warnings") if isinstance(report.get("warnings"), list) else []
+            if ok and not warns:
+                print("ok")
+                return 0
+            if errs:
+                print("errors:")
+                for e in errs:
+                    es = str(e).strip()
+                    if es:
+                        print(f"- {es}")
+            if warns:
+                print("warnings:")
+                for w in warns:
+                    ws = str(w).strip()
+                    if ws:
+                        print(f"- {ws}")
+            return 0 if ok else 1
         return 2
 
     if args.cmd == "init":
@@ -208,6 +241,12 @@ def main(argv: list[str] | None = None) -> int:
         project_root = Path(args.cd).resolve()
         project_paths = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
         llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=project_paths.transcripts_dir)
+        hands_provider = ""
+        hands_cfg = cfg.get("hands") if isinstance(cfg.get("hands"), dict) else {}
+        if isinstance(hands_cfg, dict):
+            hands_provider = str(hands_cfg.get("provider") or "").strip()
+        continue_default = bool(hands_cfg.get("continue_across_runs", False)) if isinstance(hands_cfg, dict) else False
+        continue_hands = bool(args.continue_hands or continue_default)
         result = run_autopilot(
             task=args.task,
             project_root=args.cd,
@@ -216,6 +255,9 @@ def main(argv: list[str] | None = None) -> int:
             hands_exec=hands_exec,
             hands_resume=hands_resume,
             llm=llm,
+            hands_provider=hands_provider,
+            continue_hands=continue_hands,
+            reset_hands=bool(args.reset_hands),
         )
         if args.show:
             print(result.render_text())

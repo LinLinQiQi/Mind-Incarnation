@@ -400,12 +400,42 @@ def run_autopilot(
     hands_exec: Any | None = None,
     hands_resume: Any = _DEFAULT,
     llm: Any | None = None,
+    hands_provider: str = "",
+    continue_hands: bool = False,
+    reset_hands: bool = False,
 ) -> AutopilotResult:
     project_path = Path(project_root).resolve()
     home = Path(home_dir) if home_dir else default_home_dir()
 
     store = MindSpecStore(home_dir=str(home))
     loaded = store.load(project_path)
+
+    # Cross-run Hands session persistence is stored in ProjectOverlay but only used when explicitly enabled.
+    overlay: dict[str, Any]
+    hands_state: dict[str, Any]
+
+    def _refresh_overlay_refs() -> None:
+        nonlocal overlay, hands_state
+        overlay = loaded.project_overlay if isinstance(loaded.project_overlay, dict) else {}
+        if not isinstance(overlay, dict):
+            overlay = {}
+        hs = overlay.get("hands_state")
+        if isinstance(hs, dict):
+            hands_state = hs
+        else:
+            hands_state = {}
+            overlay["hands_state"] = hands_state
+
+    _refresh_overlay_refs()
+
+    cur_provider = (hands_provider or str(hands_state.get("provider") or "")).strip()
+    if reset_hands:
+        hands_state["provider"] = cur_provider
+        hands_state["thread_id"] = ""
+        hands_state["updated_ts"] = now_rfc3339()
+        store.write_project_overlay(project_path, overlay)
+        loaded = store.load(project_path)
+        _refresh_overlay_refs()
 
     project_paths = ProjectPaths(home_dir=home, project_root=project_path)
     ensure_dir(project_paths.project_dir)
@@ -420,6 +450,13 @@ def run_autopilot(
 
     evidence_window: list[dict[str, Any]] = []
     thread_id: str | None = None
+    resumed_from_overlay = False
+    if continue_hands and not reset_hands and hands_resume is not None:
+        prev_tid = str(hands_state.get("thread_id") or "").strip()
+        prev_provider = str(hands_state.get("provider") or "").strip()
+        if prev_tid and prev_tid != "unknown" and (not cur_provider or not prev_provider or prev_provider == cur_provider):
+            thread_id = prev_tid
+            resumed_from_overlay = True
     next_input: str = task
 
     status = "not_done"
@@ -520,7 +557,10 @@ def run_autopilot(
         sent_ts = now_rfc3339()
         prompt_sha256 = hashlib.sha256(codex_prompt.encode("utf-8")).hexdigest()
 
-        if thread_id is None or hands_resume is None or thread_id == "unknown":
+        use_resume = thread_id is not None and hands_resume is not None and thread_id != "unknown"
+        attempted_overlay_resume = bool(use_resume and resumed_from_overlay and batch_idx == 0)
+
+        if not use_resume:
             result = hands_exec(
                 prompt=codex_prompt,
                 project_root=project_path,
@@ -530,8 +570,6 @@ def run_autopilot(
                 output_schema_path=None,
                 interrupt=interrupt_cfg,
             )
-            if thread_id is None:
-                thread_id = result.thread_id
         else:
             result = hands_resume(
                 thread_id=thread_id,
@@ -543,10 +581,54 @@ def run_autopilot(
                 output_schema_path=None,
                 interrupt=interrupt_cfg,
             )
-            if getattr(result, "thread_id", ""):
-                thread_id = result.thread_id
+
+            # If we resumed using a persisted thread id and it failed, fall back to a fresh exec.
+            if attempted_overlay_resume and int(getattr(result, "exit_code", 0) or 0) != 0:
+                append_jsonl(
+                    project_paths.evidence_log_path,
+                    {
+                        "kind": "hands_resume_failed",
+                        "batch_id": batch_id,
+                        "ts": now_rfc3339(),
+                        "thread_id": thread_id,
+                        "provider": cur_provider,
+                        "exit_code": getattr(result, "exit_code", None),
+                        "notes": "resume failed; falling back to exec",
+                        "transcript_path": str(hands_transcript),
+                    },
+                )
+                hands_transcript = project_paths.transcripts_dir / "hands" / f"{batch_ts}_b{batch_idx}_exec_after_resume_fail.jsonl"
+                result = hands_exec(
+                    prompt=codex_prompt,
+                    project_root=project_path,
+                    transcript_path=hands_transcript,
+                    full_auto=True,
+                    sandbox=None,
+                    output_schema_path=None,
+                    interrupt=interrupt_cfg,
+                )
+
+        # Prefer a non-unknown thread id when available.
+        res_tid = str(getattr(result, "thread_id", "") or "")
+        if res_tid and res_tid != "unknown":
+            thread_id = res_tid
+        elif thread_id is None:
+            thread_id = res_tid or "unknown"
 
         executed_batches += 1
+
+        # Persist last seen Hands thread id so future `mi run --continue-hands` can resume.
+        if thread_id and thread_id != "unknown":
+            hands_state = overlay.get("hands_state") if isinstance(overlay.get("hands_state"), dict) else {}
+            if not isinstance(hands_state, dict):
+                hands_state = {}
+                overlay["hands_state"] = hands_state
+            if cur_provider:
+                hands_state["provider"] = cur_provider
+            if str(hands_state.get("thread_id") or "") != thread_id or not str(hands_state.get("updated_ts") or ""):
+                hands_state["thread_id"] = thread_id
+                hands_state["updated_ts"] = now_rfc3339()
+                store.write_project_overlay(project_path, overlay)
 
         # Persist exactly what MI sent to Codex (transparency + later audit).
         append_jsonl(
@@ -629,6 +711,7 @@ def run_autopilot(
                     store.append_learned(project_root=project_path, scope=scope, text=text, rationale=rationale or "risk_judge")
 
             loaded = store.load(project_path)
+            _refresh_overlay_refs()
 
             # Optional immediate user escalation on high risk.
             vr = loaded.base.get("violation_response") or {}
@@ -785,6 +868,7 @@ def run_autopilot(
             }
             store.write_project_overlay(project_path, loaded.project_overlay)
             loaded = store.load(project_path)
+            _refresh_overlay_refs()
 
             # Re-plan checks now that the project has a strategy to follow.
             checks_prompt2 = plan_min_checks_prompt(
@@ -868,6 +952,7 @@ def run_autopilot(
 
         # Refresh loaded learned text after any new writes.
         loaded = store.load(project_path)
+        _refresh_overlay_refs()
 
         next_action = str(decision_obj.get("next_action") or "stop")
         status = str(decision_obj.get("status") or "not_done")
@@ -1000,6 +1085,7 @@ def run_autopilot(
                     store.append_learned(project_root=project_path, scope=scope, text=text, rationale=rationale or "auto")
 
             loaded = store.load(project_path)
+            _refresh_overlay_refs()
 
             next_action = str(decision_obj.get("next_action") or "stop")
             status = str(decision_obj.get("status") or "not_done")

@@ -29,7 +29,7 @@ If `.mi-project` is missing, do not apply this skill's workflow.
    - If expected doc updates are missing, explain why in the final response and confirm docs remain correct.
 5) Repo sync (when this repo has a GitHub remote configured):
    - Prefer committing logical changes with clear messages.
-   - After committing, push `main` to `origin` to keep the open-source repo up to date.
+   - After committing, push `main` to `origin` to keep the open-source repo up to date (use `git push -u origin main` when upstream isn't set).
    - Only prompt the user if push fails or no remote is configured.
 
 ## Reference

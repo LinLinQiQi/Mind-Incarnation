@@ -208,17 +208,53 @@ class MindSpecStore:
     def load_project_overlay(self, project_root: Path) -> dict[str, Any]:
         project_paths = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root)
         overlay = read_json(project_paths.overlay_path, default=None)
+        changed = False
         if overlay is None:
-            overlay = {
-                "project_id": project_paths.project_id,
-                "root_path": str(project_root.resolve()),
-                "stack_hints": [],
-                "testless_verification_strategy": {
-                    "chosen_once": False,
-                    "strategy": "",
-                    "rationale": "",
-                },
-            }
+            overlay = {}
+            changed = True
+
+        if not isinstance(overlay, dict):
+            overlay = {}
+            changed = True
+
+        def ensure_key(k: str, v: Any) -> None:
+            nonlocal changed
+            if k not in overlay:
+                overlay[k] = v
+                changed = True
+
+        ensure_key("project_id", project_paths.project_id)
+        ensure_key("root_path", str(project_root.resolve()))
+        ensure_key("stack_hints", [])
+        ensure_key(
+            "testless_verification_strategy",
+            {
+                "chosen_once": False,
+                "strategy": "",
+                "rationale": "",
+            },
+        )
+        ensure_key(
+            "hands_state",
+            {
+                "provider": "",
+                "thread_id": "",
+                "updated_ts": "",
+            },
+        )
+
+        # Patch nested keys for forward-compat.
+        hs = overlay.get("hands_state")
+        if not isinstance(hs, dict):
+            overlay["hands_state"] = {"provider": "", "thread_id": "", "updated_ts": ""}
+            changed = True
+        else:
+            for k, default_v in (("provider", ""), ("thread_id", ""), ("updated_ts", "")):
+                if k not in hs:
+                    hs[k] = default_v
+                    changed = True
+
+        if changed:
             write_json(project_paths.overlay_path, overlay)
         return overlay
 

@@ -51,9 +51,14 @@ mi version
 mi config init
 mi config path
 mi config show
+mi config validate
 ```
 
-可选：把 Claude Code 作为 Hands（wrapper）
+可选：用其他 agent CLI 作为 Hands（wrapper）
+
+MI 可以通过 `hands.provider=cli` 包装大多数 agent CLI。你需要提供 *你本机安装的工具* 的启动命令与参数（不同版本的 flags 可能不同）。
+
+示例：Claude Code（请按你本机版本调整 flags/args）
 
 编辑 `~/.mind-incarnation/config.json`：
 
@@ -63,15 +68,18 @@ mi config show
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
-      "resume": ["claude", "-r", "{thread_id}", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "exec": ["claude", "...", "{prompt}", "..."],
+      "resume": ["claude", "...", "{thread_id}", "...", "{prompt}", "..."],
       "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\""
     }
   }
 }
 ```
 
-MI 会尽力解析 `stream-json` 输出，以提升证据提取、session id 识别与“最后一条消息”识别的可靠性。
+说明：
+
+- 支持占位符：`{project_root}`、`{prompt}`、`{thread_id}`（仅 resume）。
+- 如果 CLI 能输出 JSON 事件（例如 “stream-json”），MI 会尽力解析，以提升证据提取、session id 识别与“最后一条消息”识别的可靠性。
 
 初始化全局价值观/偏好（默认写入 `~/.mind-incarnation/mindspec/base.json`）：
 
@@ -83,6 +91,13 @@ mi init --values "我的偏好：尽量少问；默认行为不变重构；没�
 
 ```bash
 mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。"
+```
+
+可选：跨多次运行恢复/重置 Hands 会话（best-effort）：
+
+```bash
+mi run --cd /path/to/your/project --continue-hands "继续上次的工作。"
+mi run --cd /path/to/your/project --reset-hands "重新开始一个新会话。"
 ```
 
 查看最近一次 batch（MI 发给 Codex 的输入、最后输出、证据与路径指针）：

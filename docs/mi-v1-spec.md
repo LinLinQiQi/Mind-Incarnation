@@ -253,6 +253,11 @@ Minimal shape:
     "chosen_once": true,
     "strategy": "string",
     "rationale": "string"
+  },
+  "hands_state": {
+    "provider": "string",
+    "thread_id": "string",
+    "updated_ts": "string"
   }
 }
 ```
@@ -268,6 +273,9 @@ Minimal shape:
 - `auto_answer` (MI-generated reply to Hands questions, when possible; prompt/schema names are Codex-legacy)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
+- `hands_resume_failed` (best-effort: resume by stored thread/session id failed; MI fell back to a fresh exec)
+
+Note: EvidenceLog is append-only and may include additional record kinds in newer versions.
 
 ```json
 {
@@ -456,12 +464,14 @@ Provider config (Mind/Hands):
 - Location: `<home>/config.json` (defaults to `~/.mind-incarnation/config.json`)
 - Initialize: `mi config init` (then edit the JSON)
 - View (redacted): `mi config show`
+- Validate: `mi config validate` (or `mi config doctor`)
 - Path: `mi config path`
 
 Key knobs (V1):
 
 - `mind.provider`: `codex_schema | openai_compatible | anthropic`
 - `hands.provider`: `codex | cli`
+- `hands.continue_across_runs`: when true, MI will try to reuse the last stored Hands thread/session id across separate `mi run` invocations (best-effort)
 
 Example: Hands = Claude Code (via `hands.provider=cli`)
 
@@ -508,6 +518,12 @@ Run batch autopilot:
 ```bash
 mi --home ~/.mind-incarnation run --cd <project_root> --show "<task>"
 ```
+
+Common run flags:
+
+- `--max-batches N`: cap the number of Hands batches
+- `--continue-hands`: try to resume the last stored Hands thread/session id for this project (best-effort)
+- `--reset-hands`: clear the stored Hands thread/session id for this project before running
 
 Inspect latest batch bundle (MI input + last agent message + evidence pointers):
 

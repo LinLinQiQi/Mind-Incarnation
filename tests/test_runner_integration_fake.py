@@ -482,6 +482,65 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             self.assertIn("mind_error", kinds)
             self.assertIn("risk_event", kinds)
 
+    def test_mind_circuit_opens_and_skips_further_mind_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            store = MindSpecStore(home_dir=home)
+            base = store.load_base()
+            base.setdefault("defaults", {})
+            base["defaults"]["ask_when_uncertain"] = False
+            store.write_base(base)
+
+            fake_hands = _FakeHands([_mk_result(thread_id="t8", last_message="Should I proceed?")])
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        MindCallError(
+                            "down",
+                            schema_filename="extract_evidence.json",
+                            tag="extract_b0",
+                            transcript_path=Path("mind_extract.jsonl"),
+                        )
+                    ],
+                    "plan_min_checks.json": [
+                        MindCallError(
+                            "down",
+                            schema_filename="plan_min_checks.json",
+                            tag="checks_b0",
+                            transcript_path=Path("mind_checks.jsonl"),
+                        )
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="x",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+
+            self.assertEqual(result.status, "blocked")
+            # Circuit should prevent further Mind calls (auto_answer/decide_next).
+            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "plan_min_checks.json"])
+
+            mind_error_n = 0
+            mind_circuit_n = 0
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if not isinstance(obj, dict):
+                        continue
+                    if obj.get("kind") == "mind_error":
+                        mind_error_n += 1
+                    if obj.get("kind") == "mind_circuit":
+                        mind_circuit_n += 1
+
+            self.assertEqual(mind_error_n, 2)
+            self.assertEqual(mind_circuit_n, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

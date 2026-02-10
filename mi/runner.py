@@ -488,6 +488,14 @@ def run_autopilot(
 
     sent_sigs: list[str] = []
 
+    # Mind circuit breaker:
+    # - After repeated consecutive Mind failures, stop issuing further Mind calls
+    #   in this `mi run` invocation and converge quickly to user override / blocked.
+    mind_failures_total = 0
+    mind_failures_consecutive = 0
+    mind_circuit_open = False
+    mind_circuit_threshold = 2
+
     def _log_decide_next(
         *,
         decision_obj: Any,
@@ -538,25 +546,56 @@ def run_autopilot(
             },
         )
 
+    def _log_mind_circuit_open(
+        *,
+        batch_id: str,
+        schema_filename: str,
+        tag: str,
+        error: str,
+    ) -> None:
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "mind_circuit",
+                "batch_id": batch_id,
+                "ts": now_rfc3339(),
+                "thread_id": thread_id,
+                "state": "open",
+                "threshold": mind_circuit_threshold,
+                "failures_total": mind_failures_total,
+                "failures_consecutive": mind_failures_consecutive,
+                "schema_filename": str(schema_filename),
+                "tag": str(tag),
+                "error": _truncate(str(error or ""), 2000),
+            },
+        )
+
     def _mind_call(
         *,
         schema_filename: str,
         prompt: str,
         tag: str,
         batch_id: str,
-    ) -> tuple[dict[str, Any] | None, str]:
+    ) -> tuple[dict[str, Any] | None, str, str]:
         """Best-effort Mind call wrapper.
 
         - Never raises (logs to EvidenceLog as kind=mind_error).
-        - Returns (obj, mind_transcript_ref). obj may be None on failure.
+        - Circuit breaker: after repeated failures, returns skipped without calling Mind.
+        - Returns (obj, mind_transcript_ref, state) where state is ok|error|skipped.
         """
+
+        nonlocal mind_failures_total, mind_failures_consecutive, mind_circuit_open
+
+        if mind_circuit_open:
+            return None, "", "skipped"
 
         try:
             res = llm.call(schema_filename=schema_filename, prompt=prompt, tag=tag)
             obj = getattr(res, "obj", None)
             tp = getattr(res, "transcript_path", None)
             mind_ref = str(tp) if tp else ""
-            return (obj if isinstance(obj, dict) else None), mind_ref
+            mind_failures_consecutive = 0
+            return (obj if isinstance(obj, dict) else None), mind_ref, "ok"
         except Exception as e:
             mind_ref = ""
 
@@ -567,6 +606,9 @@ def run_autopilot(
                 mind_ref = tp.strip()
             elif isinstance(e, MindCallError) and e.transcript_path:
                 mind_ref = str(e.transcript_path)
+
+            mind_failures_total += 1
+            mind_failures_consecutive += 1
 
             _log_mind_error(
                 batch_id=batch_id,
@@ -585,7 +627,23 @@ def run_autopilot(
                 }
             )
             evidence_window[:] = evidence_window[-8:]
-            return None, mind_ref
+
+            if not mind_circuit_open and mind_failures_consecutive >= mind_circuit_threshold:
+                mind_circuit_open = True
+                _log_mind_circuit_open(batch_id=batch_id, schema_filename=schema_filename, tag=tag, error=str(e))
+                evidence_window.append(
+                    {
+                        "kind": "mind_circuit",
+                        "batch_id": batch_id,
+                        "state": "open",
+                        "threshold": mind_circuit_threshold,
+                        "failures_consecutive": mind_failures_consecutive,
+                        "note": "opened due to repeated mind_error",
+                    }
+                )
+                evidence_window[:] = evidence_window[-8:]
+
+            return None, mind_ref, "error"
 
     def _queue_next_input(*, nxt: str, codex_last_message: str, batch_id: str, reason: str) -> bool:
         """Set next_input for the next Hands batch, with loop-guard and optional user intervention."""
@@ -770,14 +828,17 @@ def run_autopilot(
             codex_batch_summary=summary,
             repo_observation=repo_obs,
         )
-        evidence_obj, evidence_mind_ref = _mind_call(
+        evidence_obj, evidence_mind_ref, evidence_state = _mind_call(
             schema_filename="extract_evidence.json",
             prompt=extract_prompt,
             tag=f"extract_b{batch_idx}",
             batch_id=batch_id,
         )
         if evidence_obj is None:
-            evidence_obj = _empty_evidence_obj(note="mind_error: extract_evidence failed; see EvidenceLog kind=mind_error")
+            if evidence_state == "skipped":
+                evidence_obj = _empty_evidence_obj(note="mind_circuit_open: extract_evidence skipped")
+            else:
+                evidence_obj = _empty_evidence_obj(note="mind_error: extract_evidence failed; see EvidenceLog kind=mind_error")
         evidence_item = {
             "batch_id": batch_id,
             "ts": now_rfc3339(),
@@ -808,7 +869,7 @@ def run_autopilot(
                 risk_signals=risk_signals,
                 codex_last_message=result.last_agent_message(),
             )
-            risk_obj, risk_mind_ref = _mind_call(
+            risk_obj, risk_mind_ref, risk_state = _mind_call(
                 schema_filename="risk_judge.json",
                 prompt=risk_prompt,
                 tag=f"risk_b{batch_idx}",
@@ -829,7 +890,9 @@ def run_autopilot(
                     "category": cat,
                     "severity": sev,
                     "should_ask_user": True,
-                    "mitigation": ["mind_error: risk_judge failed; treat as high risk"],
+                    "mitigation": [
+                        ("mind_circuit_open: risk_judge skipped; treat as high risk" if risk_state == "skipped" else "mind_error: risk_judge failed; treat as high risk")
+                    ],
                     "learned_changes": [],
                 }
             append_jsonl(
@@ -917,7 +980,7 @@ def run_autopilot(
                 recent_evidence=evidence_window,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             )
-            checks_obj, checks_mind_ref = _mind_call(
+            checks_obj, checks_mind_ref, checks_state = _mind_call(
                 schema_filename="plan_min_checks.json",
                 prompt=checks_prompt,
                 tag=f"checks_b{batch_idx}",
@@ -925,7 +988,10 @@ def run_autopilot(
             )
             if checks_obj is None:
                 checks_obj = _empty_check_plan()
-                checks_obj["notes"] = "mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error"
+                if checks_state == "skipped":
+                    checks_obj["notes"] = "skipped: mind_circuit_open (plan_min_checks)"
+                else:
+                    checks_obj["notes"] = "mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error"
         else:
             checks_obj = _empty_check_plan()
             checks_obj["notes"] = "skipped: no uncertainty/risk/question detected"
@@ -959,7 +1025,7 @@ def run_autopilot(
                 codex_last_message=codex_last,
             )
             auto_answer_mind_ref = ""
-            aa_obj, auto_answer_mind_ref = _mind_call(
+            aa_obj, auto_answer_mind_ref, aa_state = _mind_call(
                 schema_filename="auto_answer_to_codex.json",
                 prompt=aa_prompt,
                 tag=f"autoanswer_b{batch_idx}",
@@ -967,7 +1033,10 @@ def run_autopilot(
             )
             if aa_obj is None:
                 auto_answer_obj = _empty_auto_answer()
-                auto_answer_obj["notes"] = "mind_error: auto_answer_to_codex failed; see EvidenceLog kind=mind_error"
+                if aa_state == "skipped":
+                    auto_answer_obj["notes"] = "skipped: mind_circuit_open (auto_answer_to_codex)"
+                else:
+                    auto_answer_obj["notes"] = "mind_error: auto_answer_to_codex failed; see EvidenceLog kind=mind_error"
             else:
                 auto_answer_obj = aa_obj
             append_jsonl(
@@ -1068,7 +1137,7 @@ def run_autopilot(
                 recent_evidence=evidence_window,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             )
-            checks_obj2, checks_mind_ref2 = _mind_call(
+            checks_obj2, checks_mind_ref2, checks_state2 = _mind_call(
                 schema_filename="plan_min_checks.json",
                 prompt=checks_prompt2,
                 tag=f"checks_after_tls_b{batch_idx}",
@@ -1076,7 +1145,10 @@ def run_autopilot(
             )
             if checks_obj2 is None:
                 checks_obj2 = _empty_check_plan()
-                checks_obj2["notes"] = "mind_error: plan_min_checks(after_testless) failed; see EvidenceLog kind=mind_error"
+                if checks_state2 == "skipped":
+                    checks_obj2["notes"] = "skipped: mind_circuit_open (plan_min_checks after_testless)"
+                else:
+                    checks_obj2["notes"] = "mind_error: plan_min_checks(after_testless) failed; see EvidenceLog kind=mind_error"
             checks_obj = checks_obj2
             append_jsonl(
                 project_paths.evidence_log_path,
@@ -1122,7 +1194,7 @@ def run_autopilot(
             check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             auto_answer=auto_answer_obj,
         )
-        decision_obj, decision_mind_ref = _mind_call(
+        decision_obj, decision_mind_ref, decision_state = _mind_call(
             schema_filename="decide_next.json",
             prompt=decision_prompt,
             tag=f"decide_b{batch_idx}",
@@ -1131,7 +1203,16 @@ def run_autopilot(
         if decision_obj is None:
             ask_when_uncertain = bool((loaded.base.get("defaults") or {}).get("ask_when_uncertain", True))
             if ask_when_uncertain:
-                q = "MI Mind failed to decide next action. Provide next instruction to send to Hands, or type 'stop' to end:"
+                if decision_state == "skipped":
+                    if _looks_like_user_question(codex_last):
+                        q = codex_last.strip()
+                    else:
+                        q = (
+                            "MI Mind circuit is OPEN (repeated failures). "
+                            "Provide the next instruction to send to Hands, or type 'stop' to end:"
+                        )
+                else:
+                    q = "MI Mind failed to decide next action. Provide next instruction to send to Hands, or type 'stop' to end:"
                 override = _read_user_answer(q)
                 append_jsonl(
                     project_paths.evidence_log_path,
@@ -1150,19 +1231,23 @@ def run_autopilot(
                 ov = (override or "").strip()
                 if not ov or ov.lower() in ("stop", "quit", "q"):
                     status = "blocked"
-                    notes = "stopped after mind_error(decide_next)"
+                    notes = "stopped after mind_circuit_open(decide_next)" if decision_state == "skipped" else "stopped after mind_error(decide_next)"
                     break
                 if not _queue_next_input(
                     nxt=ov,
                     codex_last_message=codex_last,
                     batch_id=f"b{batch_idx}",
-                    reason="mind_error(decide_next): user override",
+                    reason="mind_circuit_open(decide_next): user override" if decision_state == "skipped" else "mind_error(decide_next): user override",
                 ):
                     break
                 continue
 
             status = "blocked"
-            notes = "mind_error(decide_next): could not proceed (ask_when_uncertain=false)"
+            notes = (
+                "mind_circuit_open(decide_next): could not proceed (ask_when_uncertain=false)"
+                if decision_state == "skipped"
+                else "mind_error(decide_next): could not proceed (ask_when_uncertain=false)"
+            )
             break
 
         _log_decide_next(
@@ -1226,7 +1311,7 @@ def run_autopilot(
                     recent_evidence=evidence_window,
                     codex_last_message=q,
                 )
-                aa_obj2, aa2_mind_ref = _mind_call(
+                aa_obj2, aa2_mind_ref, aa2_state = _mind_call(
                     schema_filename="auto_answer_to_codex.json",
                     prompt=aa_prompt2,
                     tag=f"autoanswer_from_decide_b{batch_idx}",
@@ -1234,7 +1319,10 @@ def run_autopilot(
                 )
                 if aa_obj2 is None:
                     aa_from_decide = _empty_auto_answer()
-                    aa_from_decide["notes"] = "mind_error: auto_answer_to_codex(from decide_next) failed; see EvidenceLog kind=mind_error"
+                    if aa2_state == "skipped":
+                        aa_from_decide["notes"] = "skipped: mind_circuit_open (auto_answer_to_codex from decide_next)"
+                    else:
+                        aa_from_decide["notes"] = "mind_error: auto_answer_to_codex(from decide_next) failed; see EvidenceLog kind=mind_error"
                 else:
                     aa_from_decide = aa_obj2
 
@@ -1306,7 +1394,7 @@ def run_autopilot(
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 auto_answer=_empty_auto_answer(),
             )
-            decision_obj2, decision2_mind_ref = _mind_call(
+            decision_obj2, decision2_mind_ref, decision2_state = _mind_call(
                 schema_filename="decide_next.json",
                 prompt=decision_prompt2,
                 tag=f"decide_after_user_b{batch_idx}",
@@ -1323,7 +1411,11 @@ def run_autopilot(
                     nxt=combined_user2,
                     codex_last_message=codex_last,
                     batch_id=f"b{batch_idx}.after_user",
-                    reason="mind_error(decide_next after user): send user answer",
+                    reason=(
+                        "mind_circuit_open(decide_next after user): send user answer"
+                        if decision2_state == "skipped"
+                        else "mind_error(decide_next after user): send user answer"
+                    ),
                 ):
                     break
                 continue

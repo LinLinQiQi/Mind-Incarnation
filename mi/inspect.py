@@ -87,6 +87,19 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
         tag = str(obj.get("tag") or "")
         err = _truncate(str(obj.get("error") or "").strip().replace("\n", " "), 90)
         detail = " ".join([x for x in [schema, tag, err] if x]).strip()
+    elif kind == "mind_circuit":
+        state = str(obj.get("state") or "")
+        fc = obj.get("failures_consecutive")
+        ft = obj.get("failures_total")
+        try:
+            fc_s = str(int(fc)) if fc is not None else ""
+        except Exception:
+            fc_s = str(fc or "")
+        try:
+            ft_s = str(int(ft)) if ft is not None else ""
+        except Exception:
+            ft_s = str(ft or "")
+        detail = " ".join([x for x in [state, (f"consec={fc_s}" if fc_s else ""), (f"total={ft_s}" if ft_s else "")] if x]).strip()
     elif kind == "loop_guard":
         detail = f"pattern={obj.get('pattern')}"
     elif kind == "user_input":

@@ -85,6 +85,9 @@ Loop/stuck guard (deterministic, V1):
 Mind failure handling (deterministic, V1):
 
 - If a Mind prompt-pack call fails (network/config/schema/JSON parse/etc.), MI records `kind="mind_error"` in EvidenceLog with best-effort pointers to the mind transcript.
+- If Mind fails repeatedly (default: 2 consecutive failures), MI opens a simple circuit breaker:
+  - records `kind="mind_circuit"` (`state="open"`) once, and
+  - skips further Mind calls for the remainder of the current `mi run` invocation (to reduce repeated `mind_error` noise).
 - MI continues when possible (e.g., skip optional steps like `risk_judge` / `plan_min_checks` / `auto_answer_to_codex`), but if it cannot safely determine the next action (notably `decide_next`), MI will either:
   - ask the user for an override instruction (when `defaults.ask_when_uncertain=true`), or
   - stop with `status=blocked` (when `defaults.ask_when_uncertain=false`).
@@ -285,6 +288,7 @@ Minimal shape:
 - `hands_input` (exact MI input + light injection sent to Hands for the batch; older logs may use `codex_input`)
 - `EvidenceItem` (extracted summary per batch; includes a Mind transcript pointer for `extract_evidence`)
 - `mind_error` (a Mind prompt-pack call failed; includes schema/tag + error + best-effort transcript pointer)
+- `mind_circuit` (Mind circuit breaker state change; V1 emits `state="open"` when it stops attempting further Mind calls)
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
@@ -359,6 +363,24 @@ Note: EvidenceLog is append-only and may include additional record kinds in newe
   "schema_filename": "string",
   "tag": "string",
   "mind_transcript_ref": "path (best-effort, may be empty)",
+  "error": "string"
+}
+```
+
+`mind_circuit` record shape (when MI opens the circuit breaker after repeated failures):
+
+```json
+{
+  "kind": "mind_circuit",
+  "batch_id": "string",
+  "ts": "RFC3339 timestamp",
+  "thread_id": "string",
+  "state": "open",
+  "threshold": 2,
+  "failures_total": 0,
+  "failures_consecutive": 0,
+  "schema_filename": "string",
+  "tag": "string",
   "error": "string"
 }
 ```

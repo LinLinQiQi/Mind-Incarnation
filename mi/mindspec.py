@@ -18,14 +18,14 @@ def _default_base(values_text: str) -> dict[str, Any]:
         "values_summary": [],
         "decision_procedure": {
             "summary": (
-                "MI controls only input/output around Codex (no tool interception, no forced step slicing). "
+                "MI controls only input/output around Hands (no tool interception, no forced step slicing). "
                 "MI runs in batches, logs evidence, suggests minimal checks, and asks the user only when needed."
             ),
             "mermaid": (
                 "flowchart TD\n"
                 "  U[User task + values] --> S[Load MindSpec/Overlay/Learned]\n"
                 "  S --> I[Build light injection + task input]\n"
-                "  I --> C[Run Codex (free execution)]\n"
+                "  I --> C[Run Hands (free execution)]\n"
                 "  C --> T[Capture raw transcript]\n"
                 "  T --> E[Extract evidence]\n"
                 "  E --> D[Decide next / risk]\n"

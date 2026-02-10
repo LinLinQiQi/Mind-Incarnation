@@ -84,11 +84,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     p_run = sub.add_parser("run", help="Run MI batch autopilot (Hands configured via mi config).")
-    p_run.add_argument("task", help="User task for Codex to execute.")
+    p_run.add_argument("task", help="User task for Hands to execute.")
     p_run.add_argument(
         "--cd",
         default=os.getcwd(),
-        help="Working directory for the Codex run (project root).",
+        help="Working directory for the Hands run (project root).",
     )
     p_run.add_argument(
         "--max-batches",
@@ -388,7 +388,8 @@ def main(argv: list[str] | None = None) -> int:
         if out["mi_input"].strip():
             print("\nmi_input:\n" + out["mi_input"].strip())
         if out["codex_last_message"].strip():
-            print("\ncodex_last_message:\n" + out["codex_last_message"].strip())
+            # Legacy key name in JSON output: "codex_last_message" means Hands last message.
+            print("\nhands_last_message:\n" + out["codex_last_message"].strip())
         if isinstance(decide_next_out, dict) and decide_next_out:
             st = str(decide_next_out.get("status") or "")
             na = str(decide_next_out.get("next_action") or "")

@@ -142,6 +142,8 @@ mi last --cd /path/to/your/project
 mi last --cd /path/to/your/project --redact
 ```
 
+说明：为了兼容旧版本，`--json` 输出里保留了一些 legacy 字段名（例如 `codex_last_message`、`next_codex_input`），它们实际指的是 Hands。
+
 查看 EvidenceLog / 展示原始 transcript：
 
 ```bash

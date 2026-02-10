@@ -503,7 +503,7 @@ def run_autopilot(
         )
 
     def _queue_next_input(*, nxt: str, codex_last_message: str, batch_id: str, reason: str) -> bool:
-        """Set next_input for the next Codex batch, with loop-guard and optional user intervention."""
+        """Set next_input for the next Hands batch, with loop-guard and optional user intervention."""
         nonlocal next_input, status, notes, sent_sigs
 
         candidate = (nxt or "").strip()
@@ -539,7 +539,7 @@ def run_autopilot(
                 q = (
                     "MI detected a repeated loop (pattern="
                     + pattern
-                    + "). Provide a new instruction to send to Codex, or type 'stop' to end:"
+                    + "). Provide a new instruction to send to Hands, or type 'stop' to end:"
                 )
                 override = _read_user_answer(q)
                 append_jsonl(
@@ -658,7 +658,7 @@ def run_autopilot(
                 hands_state["updated_ts"] = now_rfc3339()
                 store.write_project_overlay(project_path, overlay)
 
-        # Persist exactly what MI sent to Codex (transparency + later audit).
+        # Persist exactly what MI sent to Hands (transparency + later audit).
         append_jsonl(
             project_paths.evidence_log_path,
             {
@@ -830,7 +830,7 @@ def run_autopilot(
         evidence_window.append({"kind": "check_plan", "batch_id": f"b{batch_idx}", **checks_obj})
         evidence_window = evidence_window[-8:]
 
-        # Auto-answer Codex when it is asking the user questions; only ask the user if MI cannot answer.
+        # Auto-answer Hands when it is asking the user questions; only ask the user if MI cannot answer.
         auto_answer_obj = _empty_auto_answer()
         if _looks_like_user_question(codex_last):
             aa_prompt = auto_answer_to_codex_prompt(
@@ -868,9 +868,9 @@ def run_autopilot(
             evidence_window = evidence_window[-8:]
 
         # Deterministic pre-action arbitration to minimize user burden:
-        # 1) If auto_answer requires user input -> ask user, then send answer to Codex (optionally with checks).
+        # 1) If auto_answer requires user input -> ask user, then send answer to Hands (optionally with checks).
         # 2) If minimal checks require a testless verification strategy and it hasn't been chosen -> ask once and persist.
-        # 3) If MI can answer Codex and/or run minimal checks -> send to Codex (skip decide_next for this iteration).
+        # 3) If MI can answer Hands and/or run minimal checks -> send to Hands (skip decide_next for this iteration).
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("needs_user_input", False)):
             q = str(auto_answer_obj.get("ask_user_question") or "").strip() or codex_last.strip() or "Need more information:"
             answer = _read_user_answer(q)
@@ -981,7 +981,7 @@ def run_autopilot(
                 nxt=combined,
                 codex_last_message=codex_last,
                 batch_id=f"b{batch_idx}",
-                reason="sent auto-answer/checks to Codex",
+                reason="sent auto-answer/checks to Hands",
             ):
                 break
             continue
@@ -1131,7 +1131,7 @@ def run_autopilot(
             evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
             evidence_window = evidence_window[-8:]
 
-            # Re-decide with the user input included (no extra Codex run yet).
+            # Re-decide with the user input included (no extra Hands run yet).
             decision_prompt2 = decide_next_prompt(
                 task=task,
                 hands_provider=cur_provider,

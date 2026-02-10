@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from .schema_validate import validate_json_schema
 from .storage import ensure_dir, now_rfc3339
+from .mind_errors import MindCallError
 
 
 def _schema_path(name: str) -> Path:
@@ -118,9 +119,17 @@ class AnthropicMindProvider:
 
     def call(self, *, schema_filename: str, prompt: str, tag: str) -> MindResult:
         if not self._model.strip():
-            raise ValueError("anthropic mind provider requires mind.anthropic.model")
+            raise MindCallError(
+                "anthropic mind provider requires mind.anthropic.model",
+                schema_filename=schema_filename,
+                tag=tag,
+            )
         if not self._api_key.strip():
-            raise ValueError("anthropic mind provider requires an API key (env or config)")
+            raise MindCallError(
+                "anthropic mind provider requires an API key (env or config)",
+                schema_filename=schema_filename,
+                tag=tag,
+            )
 
         schema_path = _schema_path(schema_filename)
         schema_text = schema_path.read_text(encoding="utf-8")
@@ -160,78 +169,93 @@ class AnthropicMindProvider:
         last_text = ""
         last_errors: list[str] = []
 
-        for attempt in range(self._max_retries + 1):
-            if attempt == 0:
-                messages = [{"role": "user", "content": user}]
-            else:
-                repair = (
-                    "Your previous output did NOT match the JSON Schema.\n"
-                    "Fix it and output ONLY the corrected JSON object.\n"
-                    "Validation errors:\n- "
-                    + "\n- ".join(last_errors[:20])
-                    + "\n\nPrevious output:\n"
-                    + (last_text[:4000] if last_text else "(empty)")
+        try:
+            for attempt in range(self._max_retries + 1):
+                if attempt == 0:
+                    messages = [{"role": "user", "content": user}]
+                else:
+                    repair = (
+                        "Your previous output did NOT match the JSON Schema.\n"
+                        "Fix it and output ONLY the corrected JSON object.\n"
+                        "Validation errors:\n- "
+                        + "\n- ".join(last_errors[:20])
+                        + "\n\nPrevious output:\n"
+                        + (last_text[:4000] if last_text else "(empty)")
+                    )
+                    messages = [
+                        {"role": "user", "content": user},
+                        {"role": "assistant", "content": last_text[:4000] if last_text else ""},
+                        {"role": "user", "content": repair},
+                    ]
+
+                body = {
+                    "model": self._model,
+                    "max_tokens": self._max_tokens,
+                    "messages": messages,
+                    "system": system,
+                    "temperature": 0,
+                }
+
+                _append_jsonl(
+                    transcript_path,
+                    {
+                        "type": "mi.mind_transcript.request",
+                        "ts": now_rfc3339(),
+                        "attempt": attempt,
+                        "url": url,
+                        "body": body,
+                    },
                 )
-                messages = [
-                    {"role": "user", "content": user},
-                    {"role": "assistant", "content": last_text[:4000] if last_text else ""},
-                    {"role": "user", "content": repair},
-                ]
 
-            body = {
-                "model": self._model,
-                "max_tokens": self._max_tokens,
-                "messages": messages,
-                "system": system,
-                "temperature": 0,
-            }
+                t0 = time.time()
+                payload = self._http_post_json(url, body, headers, self._timeout_s)
+                dt_ms = int((time.time() - t0) * 1000)
 
-            _append_jsonl(
-                transcript_path,
-                {
-                    "type": "mi.mind_transcript.request",
-                    "ts": now_rfc3339(),
-                    "attempt": attempt,
-                    "url": url,
-                    "body": body,
-                },
+                _append_jsonl(
+                    transcript_path,
+                    {
+                        "type": "mi.mind_transcript.response",
+                        "ts": now_rfc3339(),
+                        "attempt": attempt,
+                        "duration_ms": dt_ms,
+                        "body": payload,
+                    },
+                )
+
+                text = _extract_text_from_anthropic(payload).strip()
+                last_text = text
+
+                try:
+                    obj = _extract_json(text)
+                except Exception as e:
+                    last_errors = [f"json_parse: {e}"]
+                    obj = None
+
+                if isinstance(obj, dict):
+                    errs = validate_json_schema(obj, schema_obj)
+                    if not errs:
+                        return MindResult(obj=obj, transcript_path=transcript_path)
+                    last_errors = errs
+                else:
+                    if not last_errors:
+                        last_errors = ["output was not a JSON object"]
+
+                if attempt >= self._max_retries:
+                    break
+        except MindCallError:
+            raise
+        except Exception as e:
+            raise MindCallError(
+                f"anthropic mind call failed: {e}",
+                schema_filename=schema_filename,
+                tag=tag,
+                transcript_path=transcript_path,
+                cause=e,
             )
 
-            t0 = time.time()
-            payload = self._http_post_json(url, body, headers, self._timeout_s)
-            dt_ms = int((time.time() - t0) * 1000)
-
-            _append_jsonl(
-                transcript_path,
-                {
-                    "type": "mi.mind_transcript.response",
-                    "ts": now_rfc3339(),
-                    "attempt": attempt,
-                    "duration_ms": dt_ms,
-                    "body": payload,
-                },
-            )
-
-            text = _extract_text_from_anthropic(payload).strip()
-            last_text = text
-
-            try:
-                obj = _extract_json(text)
-            except Exception as e:
-                last_errors = [f"json_parse: {e}"]
-                obj = None
-
-            if isinstance(obj, dict):
-                errs = validate_json_schema(obj, schema_obj)
-                if not errs:
-                    return MindResult(obj=obj, transcript_path=transcript_path)
-                last_errors = errs
-            else:
-                if not last_errors:
-                    last_errors = ["output was not a JSON object"]
-
-            if attempt >= self._max_retries:
-                break
-
-        raise ValueError("mind provider output failed schema validation: " + "; ".join(last_errors[:10]))
-
+        raise MindCallError(
+            "mind provider output failed schema validation: " + "; ".join(last_errors[:10]),
+            schema_filename=schema_filename,
+            tag=tag,
+            transcript_path=transcript_path,
+        )

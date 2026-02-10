@@ -82,6 +82,13 @@ Loop/stuck guard (deterministic, V1):
   - asks the user for an override instruction (if `defaults.ask_when_uncertain=true`), or
   - stops with `status=blocked` (if `defaults.ask_when_uncertain=false`).
 
+Mind failure handling (deterministic, V1):
+
+- If a Mind prompt-pack call fails (network/config/schema/JSON parse/etc.), MI records `kind="mind_error"` in EvidenceLog with best-effort pointers to the mind transcript.
+- MI continues when possible (e.g., skip optional steps like `risk_judge` / `plan_min_checks` / `auto_answer_to_codex`), but if it cannot safely determine the next action (notably `decide_next`), MI will either:
+  - ask the user for an override instruction (when `defaults.ask_when_uncertain=true`), or
+  - stop with `status=blocked` (when `defaults.ask_when_uncertain=false`).
+
 ## Hands + Mind Provider Integration (V1)
 
 MI has two provider roles:
@@ -272,6 +279,7 @@ Minimal shape:
 
 - `hands_input` (exact MI input + light injection sent to Hands for the batch; older logs may use `codex_input`)
 - `EvidenceItem` (extracted summary per batch; includes a Mind transcript pointer for `extract_evidence`)
+- `mind_error` (a Mind prompt-pack call failed; includes schema/tag + error + best-effort transcript pointer)
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
@@ -332,6 +340,21 @@ Note: EvidenceLog is append-only and may include additional record kinds in newe
   "input": "string",
   "light_injection": "string",
   "prompt_sha256": "string"
+}
+```
+
+`mind_error` record shape (when a Mind prompt-pack call fails):
+
+```json
+{
+  "kind": "mind_error",
+  "batch_id": "string",
+  "ts": "RFC3339 timestamp",
+  "thread_id": "string",
+  "schema_filename": "string",
+  "tag": "string",
+  "mind_transcript_ref": "path (best-effort, may be empty)",
+  "error": "string"
 }
 ```
 

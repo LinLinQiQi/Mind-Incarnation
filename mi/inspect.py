@@ -82,6 +82,11 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
         cat = str(risk.get("category") or "")
         sev = str(risk.get("severity") or "")
         detail = f"{cat}:{sev}".strip(":")
+    elif kind == "mind_error":
+        schema = str(obj.get("schema_filename") or "")
+        tag = str(obj.get("tag") or "")
+        err = _truncate(str(obj.get("error") or "").strip().replace("\n", " "), 90)
+        detail = " ".join([x for x in [schema, tag, err] if x]).strip()
     elif kind == "loop_guard":
         detail = f"pattern={obj.get('pattern')}"
     elif kind == "user_input":

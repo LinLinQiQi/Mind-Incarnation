@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .codex_runner import run_codex_exec
+from .mind_errors import MindCallError
 from .storage import now_rfc3339
 
 
@@ -49,17 +50,42 @@ class MiLlm:
         schema_path = _schema_path(schema_filename)
         ts = now_rfc3339().replace(":", "").replace("-", "")
         transcript_path = self._transcripts_dir / "mind" / f"{ts}_{tag}.jsonl"
-        result = run_codex_exec(
-            prompt=prompt,
-            project_root=self._project_root,
-            transcript_path=transcript_path,
-            full_auto=False,
-            sandbox="read-only",
-            output_schema_path=schema_path,
-        )
-        msg = result.last_agent_message()
-        obj = _extract_json(msg)
-        if not isinstance(obj, dict):
-            raise ValueError("schema output was not a JSON object")
-        return MiPromptResult(obj=obj, transcript_path=transcript_path)
+        try:
+            result = run_codex_exec(
+                prompt=prompt,
+                project_root=self._project_root,
+                transcript_path=transcript_path,
+                full_auto=False,
+                sandbox="read-only",
+                output_schema_path=schema_path,
+            )
+        except Exception as e:
+            raise MindCallError(
+                f"codex_schema mind exec failed: {e}",
+                schema_filename=schema_filename,
+                tag=tag,
+                transcript_path=transcript_path,
+                cause=e,
+            )
 
+        try:
+            msg = result.last_agent_message()
+            obj = _extract_json(msg)
+        except Exception as e:
+            raise MindCallError(
+                f"codex_schema mind output parse failed: {e}",
+                schema_filename=schema_filename,
+                tag=tag,
+                transcript_path=transcript_path,
+                cause=e,
+            )
+
+        if not isinstance(obj, dict):
+            raise MindCallError(
+                "schema output was not a JSON object",
+                schema_filename=schema_filename,
+                tag=tag,
+                transcript_path=transcript_path,
+            )
+
+        return MiPromptResult(obj=obj, transcript_path=transcript_path)

@@ -12,6 +12,7 @@ from typing import Any
 from .codex_runner import run_codex_exec, run_codex_resume, CodexRunResult
 from .codex_runner import InterruptConfig
 from .llm import MiLlm
+from .mind_errors import MindCallError
 from .mindspec import MindSpecStore
 from .paths import ProjectPaths, default_home_dir
 from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt
@@ -178,6 +179,19 @@ def _empty_auto_answer() -> dict[str, Any]:
         "ask_user_question": "",
         "unanswered_questions": [],
         "notes": "",
+    }
+
+
+def _empty_evidence_obj(*, note: str = "") -> dict[str, Any]:
+    unknowns: list[str] = []
+    if note.strip():
+        unknowns.append(note.strip())
+    return {
+        "facts": [],
+        "actions": [],
+        "results": [],
+        "unknowns": unknowns,
+        "risk_signals": [],
     }
 
 def _empty_check_plan() -> dict[str, Any]:
@@ -502,6 +516,77 @@ def run_autopilot(
             },
         )
 
+    def _log_mind_error(
+        *,
+        batch_id: str,
+        schema_filename: str,
+        tag: str,
+        error: str,
+        mind_transcript_ref: str,
+    ) -> None:
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "mind_error",
+                "batch_id": batch_id,
+                "ts": now_rfc3339(),
+                "thread_id": thread_id,
+                "schema_filename": str(schema_filename),
+                "tag": str(tag),
+                "mind_transcript_ref": str(mind_transcript_ref or ""),
+                "error": _truncate(str(error or ""), 2000),
+            },
+        )
+
+    def _mind_call(
+        *,
+        schema_filename: str,
+        prompt: str,
+        tag: str,
+        batch_id: str,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """Best-effort Mind call wrapper.
+
+        - Never raises (logs to EvidenceLog as kind=mind_error).
+        - Returns (obj, mind_transcript_ref). obj may be None on failure.
+        """
+
+        try:
+            res = llm.call(schema_filename=schema_filename, prompt=prompt, tag=tag)
+            obj = getattr(res, "obj", None)
+            tp = getattr(res, "transcript_path", None)
+            mind_ref = str(tp) if tp else ""
+            return (obj if isinstance(obj, dict) else None), mind_ref
+        except Exception as e:
+            mind_ref = ""
+
+            tp = getattr(e, "transcript_path", None)
+            if isinstance(tp, Path):
+                mind_ref = str(tp)
+            elif isinstance(tp, str) and tp.strip():
+                mind_ref = tp.strip()
+            elif isinstance(e, MindCallError) and e.transcript_path:
+                mind_ref = str(e.transcript_path)
+
+            _log_mind_error(
+                batch_id=batch_id,
+                schema_filename=schema_filename,
+                tag=tag,
+                error=str(e),
+                mind_transcript_ref=mind_ref,
+            )
+            evidence_window.append(
+                {
+                    "kind": "mind_error",
+                    "batch_id": batch_id,
+                    "schema_filename": schema_filename,
+                    "tag": tag,
+                    "error": _truncate(str(e), 400),
+                }
+            )
+            evidence_window[:] = evidence_window[-8:]
+            return None, mind_ref
+
     def _queue_next_input(*, nxt: str, codex_last_message: str, batch_id: str, reason: str) -> bool:
         """Set next_input for the next Hands batch, with loop-guard and optional user intervention."""
         nonlocal next_input, status, notes, sent_sigs
@@ -685,10 +770,14 @@ def run_autopilot(
             codex_batch_summary=summary,
             repo_observation=repo_obs,
         )
-        evidence_res = llm.call(schema_filename="extract_evidence.json", prompt=extract_prompt, tag=f"extract_b{batch_idx}")
-        evidence_obj = evidence_res.obj
-        evidence_mind_tp = getattr(evidence_res, "transcript_path", None)
-        evidence_mind_ref = str(evidence_mind_tp) if evidence_mind_tp else ""
+        evidence_obj, evidence_mind_ref = _mind_call(
+            schema_filename="extract_evidence.json",
+            prompt=extract_prompt,
+            tag=f"extract_b{batch_idx}",
+            batch_id=batch_id,
+        )
+        if evidence_obj is None:
+            evidence_obj = _empty_evidence_obj(note="mind_error: extract_evidence failed; see EvidenceLog kind=mind_error")
         evidence_item = {
             "batch_id": batch_id,
             "ts": now_rfc3339(),
@@ -719,10 +808,30 @@ def run_autopilot(
                 risk_signals=risk_signals,
                 codex_last_message=result.last_agent_message(),
             )
-            risk_res = llm.call(schema_filename="risk_judge.json", prompt=risk_prompt, tag=f"risk_b{batch_idx}")
-            risk_obj = risk_res.obj
-            risk_mind_tp = getattr(risk_res, "transcript_path", None)
-            risk_mind_ref = str(risk_mind_tp) if risk_mind_tp else ""
+            risk_obj, risk_mind_ref = _mind_call(
+                schema_filename="risk_judge.json",
+                prompt=risk_prompt,
+                tag=f"risk_b{batch_idx}",
+                batch_id=batch_id,
+            )
+            if risk_obj is None:
+                # Conservative fallback when Mind cannot evaluate a risky signal.
+                cat = "other"
+                sev = "high"
+                for s in risk_signals:
+                    prefix = s.split(":", 1)[0].strip().lower()
+                    if prefix in ("network", "install", "push", "delete"):
+                        cat = prefix
+                        break
+                if cat == "delete":
+                    sev = "critical"
+                risk_obj = {
+                    "category": cat,
+                    "severity": sev,
+                    "should_ask_user": True,
+                    "mitigation": ["mind_error: risk_judge failed; treat as high risk"],
+                    "learned_changes": [],
+                }
             append_jsonl(
                 project_paths.evidence_log_path,
                 {
@@ -808,10 +917,15 @@ def run_autopilot(
                 recent_evidence=evidence_window,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             )
-            checks_res = llm.call(schema_filename="plan_min_checks.json", prompt=checks_prompt, tag=f"checks_b{batch_idx}")
-            checks_obj = checks_res.obj
-            checks_mind_tp = getattr(checks_res, "transcript_path", None)
-            checks_mind_ref = str(checks_mind_tp) if checks_mind_tp else ""
+            checks_obj, checks_mind_ref = _mind_call(
+                schema_filename="plan_min_checks.json",
+                prompt=checks_prompt,
+                tag=f"checks_b{batch_idx}",
+                batch_id=batch_id,
+            )
+            if checks_obj is None:
+                checks_obj = _empty_check_plan()
+                checks_obj["notes"] = "mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error"
         else:
             checks_obj = _empty_check_plan()
             checks_obj["notes"] = "skipped: no uncertainty/risk/question detected"
@@ -845,14 +959,17 @@ def run_autopilot(
                 codex_last_message=codex_last,
             )
             auto_answer_mind_ref = ""
-            try:
-                aa_res = llm.call(schema_filename="auto_answer_to_codex.json", prompt=aa_prompt, tag=f"autoanswer_b{batch_idx}")
-                auto_answer_obj = aa_res.obj
-                aa_tp = getattr(aa_res, "transcript_path", None)
-                auto_answer_mind_ref = str(aa_tp) if aa_tp else ""
-            except Exception as e:
+            aa_obj, auto_answer_mind_ref = _mind_call(
+                schema_filename="auto_answer_to_codex.json",
+                prompt=aa_prompt,
+                tag=f"autoanswer_b{batch_idx}",
+                batch_id=batch_id,
+            )
+            if aa_obj is None:
                 auto_answer_obj = _empty_auto_answer()
-                auto_answer_obj["notes"] = f"auto_answer_to_codex failed: {e}"
+                auto_answer_obj["notes"] = "mind_error: auto_answer_to_codex failed; see EvidenceLog kind=mind_error"
+            else:
+                auto_answer_obj = aa_obj
             append_jsonl(
                 project_paths.evidence_log_path,
                 {
@@ -951,10 +1068,16 @@ def run_autopilot(
                 recent_evidence=evidence_window,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             )
-            checks_res2 = llm.call(schema_filename="plan_min_checks.json", prompt=checks_prompt2, tag=f"checks_after_tls_b{batch_idx}")
-            checks_obj = checks_res2.obj
-            checks_mind_tp2 = getattr(checks_res2, "transcript_path", None)
-            checks_mind_ref2 = str(checks_mind_tp2) if checks_mind_tp2 else ""
+            checks_obj2, checks_mind_ref2 = _mind_call(
+                schema_filename="plan_min_checks.json",
+                prompt=checks_prompt2,
+                tag=f"checks_after_tls_b{batch_idx}",
+                batch_id=f"b{batch_idx}.after_testless",
+            )
+            if checks_obj2 is None:
+                checks_obj2 = _empty_check_plan()
+                checks_obj2["notes"] = "mind_error: plan_min_checks(after_testless) failed; see EvidenceLog kind=mind_error"
+            checks_obj = checks_obj2
             append_jsonl(
                 project_paths.evidence_log_path,
                 {
@@ -999,13 +1122,54 @@ def run_autopilot(
             check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             auto_answer=auto_answer_obj,
         )
-        decision_res = llm.call(schema_filename="decide_next.json", prompt=decision_prompt, tag=f"decide_b{batch_idx}")
-        decision_obj = decision_res.obj
+        decision_obj, decision_mind_ref = _mind_call(
+            schema_filename="decide_next.json",
+            prompt=decision_prompt,
+            tag=f"decide_b{batch_idx}",
+            batch_id=batch_id,
+        )
+        if decision_obj is None:
+            ask_when_uncertain = bool((loaded.base.get("defaults") or {}).get("ask_when_uncertain", True))
+            if ask_when_uncertain:
+                q = "MI Mind failed to decide next action. Provide next instruction to send to Hands, or type 'stop' to end:"
+                override = _read_user_answer(q)
+                append_jsonl(
+                    project_paths.evidence_log_path,
+                    {
+                        "kind": "user_input",
+                        "batch_id": f"b{batch_idx}",
+                        "ts": now_rfc3339(),
+                        "thread_id": thread_id,
+                        "question": q,
+                        "answer": override,
+                    },
+                )
+                evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": override})
+                evidence_window = evidence_window[-8:]
+
+                ov = (override or "").strip()
+                if not ov or ov.lower() in ("stop", "quit", "q"):
+                    status = "blocked"
+                    notes = "stopped after mind_error(decide_next)"
+                    break
+                if not _queue_next_input(
+                    nxt=ov,
+                    codex_last_message=codex_last,
+                    batch_id=f"b{batch_idx}",
+                    reason="mind_error(decide_next): user override",
+                ):
+                    break
+                continue
+
+            status = "blocked"
+            notes = "mind_error(decide_next): could not proceed (ask_when_uncertain=false)"
+            break
+
         _log_decide_next(
             decision_obj=decision_obj,
             batch_id=f"b{batch_idx}",
             phase="initial",
-            mind_transcript_ref=str(getattr(decision_res, "transcript_path", "") or ""),
+            mind_transcript_ref=decision_mind_ref,
         )
 
         # Apply project overlay updates (e.g., testless verification strategy).
@@ -1062,19 +1226,17 @@ def run_autopilot(
                     recent_evidence=evidence_window,
                     codex_last_message=q,
                 )
-                aa2_mind_ref = ""
-                try:
-                    aa_res2 = llm.call(
-                        schema_filename="auto_answer_to_codex.json",
-                        prompt=aa_prompt2,
-                        tag=f"autoanswer_from_decide_b{batch_idx}",
-                    )
-                    aa_from_decide = aa_res2.obj
-                    aa2_tp = getattr(aa_res2, "transcript_path", None)
-                    aa2_mind_ref = str(aa2_tp) if aa2_tp else ""
-                except Exception as e:
+                aa_obj2, aa2_mind_ref = _mind_call(
+                    schema_filename="auto_answer_to_codex.json",
+                    prompt=aa_prompt2,
+                    tag=f"autoanswer_from_decide_b{batch_idx}",
+                    batch_id=f"b{batch_idx}.from_decide",
+                )
+                if aa_obj2 is None:
                     aa_from_decide = _empty_auto_answer()
-                    aa_from_decide["notes"] = f"auto_answer_to_codex(from decide_next) failed: {e}"
+                    aa_from_decide["notes"] = "mind_error: auto_answer_to_codex(from decide_next) failed; see EvidenceLog kind=mind_error"
+                else:
+                    aa_from_decide = aa_obj2
 
                 append_jsonl(
                     project_paths.evidence_log_path,
@@ -1144,17 +1306,34 @@ def run_autopilot(
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 auto_answer=_empty_auto_answer(),
             )
-            decision_res2 = llm.call(
+            decision_obj2, decision2_mind_ref = _mind_call(
                 schema_filename="decide_next.json",
                 prompt=decision_prompt2,
                 tag=f"decide_after_user_b{batch_idx}",
+                batch_id=f"b{batch_idx}.after_user",
             )
-            decision_obj = decision_res2.obj
+            if decision_obj2 is None:
+                # Safe fallback: send the user answer to Hands (optionally with checks),
+                # rather than blocking on a missing post-user decision.
+                chk_text2 = ""
+                if isinstance(checks_obj, dict) and bool(checks_obj.get("should_run_checks", False)):
+                    chk_text2 = str(checks_obj.get("codex_check_input") or "").strip()
+                combined_user2 = "\n\n".join([x for x in [answer.strip(), chk_text2] if x])
+                if not _queue_next_input(
+                    nxt=combined_user2,
+                    codex_last_message=codex_last,
+                    batch_id=f"b{batch_idx}.after_user",
+                    reason="mind_error(decide_next after user): send user answer",
+                ):
+                    break
+                continue
+
+            decision_obj = decision_obj2
             _log_decide_next(
                 decision_obj=decision_obj,
                 batch_id=f"b{batch_idx}",
                 phase="after_user",
-                mind_transcript_ref=str(getattr(decision_res2, "transcript_path", "") or ""),
+                mind_transcript_ref=decision2_mind_ref,
             )
 
             # Apply overlay + learned from the post-user decision.

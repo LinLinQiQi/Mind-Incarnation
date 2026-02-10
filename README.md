@@ -52,6 +52,8 @@ mi config init
 mi config path
 mi config show
 mi config validate
+mi config examples
+mi config template mind.openai_compatible
 ```
 
 Optional: Use an OpenAI-compatible API as Mind (OpenAI/DeepSeek/Qwen/GLM/etc.)

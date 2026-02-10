@@ -4,7 +4,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.config import default_config, init_config, load_config, config_for_display, validate_config
+from mi.config import (
+    default_config,
+    init_config,
+    load_config,
+    config_for_display,
+    validate_config,
+    list_config_templates,
+    get_config_template,
+)
 from mi.schema_validate import validate_json_schema
 
 
@@ -75,6 +83,15 @@ class TestConfigAndSchema(unittest.TestCase):
         self.assertIsInstance(report.get("errors"), list)
         self.assertFalse(bool(report.get("ok")))
         self.assertTrue(any("command not found" in str(e) for e in report.get("errors") or []))
+
+    def test_config_templates_roundtrip(self) -> None:
+        names = list_config_templates()
+        self.assertTrue(names)
+        for n in names:
+            tmpl = get_config_template(n)
+            self.assertIsInstance(tmpl, dict)
+        with self.assertRaises(KeyError):
+            _ = get_config_template("does.not.exist")
 
 
 if __name__ == "__main__":

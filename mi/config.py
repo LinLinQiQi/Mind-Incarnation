@@ -209,3 +209,86 @@ def validate_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
     ok = not errors
     return {"ok": ok, "errors": errors, "warnings": warnings}
+
+
+def list_config_templates() -> list[str]:
+    # Keep names stable; treat as public CLI surface.
+    return [
+        "mind.openai_compatible",
+        "mind.anthropic",
+        "hands.cli.generic",
+        "hands.cli.claude_code_placeholder",
+    ]
+
+
+def get_config_template(name: str) -> dict[str, Any]:
+    """Return a JSON snippet users can merge into config.json."""
+
+    key = str(name or "").strip()
+    if not key:
+        raise KeyError("empty template name")
+
+    if key == "mind.openai_compatible":
+        return {
+            "mind": {
+                "provider": "openai_compatible",
+                "openai_compatible": {
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "<model>",
+                    "api_key_env": "OPENAI_API_KEY",
+                    "api_key": "",
+                    "timeout_s": 60,
+                    "max_retries": 2,
+                },
+            }
+        }
+
+    if key == "mind.anthropic":
+        return {
+            "mind": {
+                "provider": "anthropic",
+                "anthropic": {
+                    "base_url": "https://api.anthropic.com",
+                    "model": "<model>",
+                    "api_key_env": "ANTHROPIC_API_KEY",
+                    "api_key": "",
+                    "timeout_s": 60,
+                    "max_retries": 2,
+                    "anthropic_version": "2023-06-01",
+                    "max_tokens": 2048,
+                },
+            }
+        }
+
+    if key == "hands.cli.generic":
+        return {
+            "hands": {
+                "provider": "cli",
+                "continue_across_runs": False,
+                "cli": {
+                    "prompt_mode": "stdin",
+                    "exec": ["<your_agent_cli>", "..."],
+                    "resume": [],
+                    "thread_id_regex": "",
+                    "env": {},
+                },
+            }
+        }
+
+    if key == "hands.cli.claude_code_placeholder":
+        return {
+            "hands": {
+                "provider": "cli",
+                "continue_across_runs": False,
+                "cli": {
+                    "prompt_mode": "arg",
+                    # Adjust flags to your local Claude Code version.
+                    "exec": ["claude", "...", "{prompt}", "..."],
+                    "resume": ["claude", "...", "{thread_id}", "...", "{prompt}", "..."],
+                    "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\"",
+                    "env": {},
+                },
+            }
+        }
+
+    raise KeyError(f"unknown template: {key}")

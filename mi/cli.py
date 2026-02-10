@@ -5,7 +5,15 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import config_for_display, init_config, load_config, config_path, validate_config
+from .config import (
+    config_for_display,
+    init_config,
+    load_config,
+    config_path,
+    validate_config,
+    list_config_templates,
+    get_config_template,
+)
 from .mindspec import MindSpecStore
 from .prompts import compile_mindspec_prompt
 from .runner import run_autopilot
@@ -43,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg_sub.add_parser("show", help="Show the current config (redacted).")
     cfg_sub.add_parser("validate", help="Validate the current config.json (errors + warnings).")
     cfg_sub.add_parser("doctor", help="Alias for validate (for discoverability).")
+    cfg_sub.add_parser("examples", help="List config template names.")
+    p_ct = cfg_sub.add_parser("template", help="Print a config template as JSON (merge into config.json).")
+    p_ct.add_argument("name", help="Template name (see `mi config examples`).")
     cfg_sub.add_parser("path", help="Print the config.json path.")
 
     p_init = sub.add_parser("init", help="Initialize global values/preferences (MindSpec base).")
@@ -156,6 +167,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.config_cmd == "show":
             disp = config_for_display(cfg)
             print(json.dumps(disp, indent=2, sort_keys=True))
+            return 0
+        if args.config_cmd == "examples":
+            for name in list_config_templates():
+                print(name)
+            return 0
+        if args.config_cmd == "template":
+            try:
+                tmpl = get_config_template(str(args.name))
+            except Exception as e:
+                print(f"unknown template: {args.name}", file=sys.stderr)
+                print("available:", file=sys.stderr)
+                for name in list_config_templates():
+                    print(f"- {name}", file=sys.stderr)
+                return 2
+            print(json.dumps(tmpl, indent=2, sort_keys=True))
             return 0
         if args.config_cmd in ("validate", "doctor"):
             report = validate_config(cfg)

@@ -499,6 +499,8 @@ Provider config (Mind/Hands):
 - Initialize: `mi config init` (then edit the JSON)
 - View (redacted): `mi config show`
 - Validate: `mi config validate` (or `mi config doctor`)
+- Examples: `mi config examples`
+- Template: `mi config template <name>` (prints a JSON snippet to merge into `config.json`)
 - Path: `mi config path`
 
 Key knobs (V1):
@@ -509,7 +511,7 @@ Key knobs (V1):
 
 Example: Hands = Claude Code (via `hands.provider=cli`)
 
-This uses Claude Code's `-p` (print/non-interactive) mode to start a session, then `-r {thread_id}` (resume by session id) for continuation between MI batches. MI will auto-extract `session_id` from JSON output (`stream-json`/`json`) when available.
+MI wraps an agent CLI by capturing stdout/stderr into an MI-owned transcript. Command flags vary by tool/version; treat this as a placeholder example.
 
 Edit `<home>/config.json`:
 
@@ -519,8 +521,8 @@ Edit `<home>/config.json`:
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
-      "resume": ["claude", "-r", "{thread_id}", "-p", "{prompt}", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
+      "exec": ["claude", "...", "{prompt}", "..."],
+      "resume": ["claude", "...", "{thread_id}", "...", "{prompt}", "..."],
       "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\"",
       "env": {}
     }
@@ -531,9 +533,8 @@ Edit `<home>/config.json`:
 Notes:
 
 - If your Claude Code install requires env, set it in your shell (preferred) or under `hands.cli.env`.
-- `--output-format stream-json` is recommended: MI will parse JSON events (best-effort) to improve evidence extraction, last-message detection, and risk signals.
-- `thread_id_regex` is a fallback only. When Claude Code prints `session_id` in JSON (common for `stream-json` and `json` output), MI will auto-extract it without regex. If you use `--output-format text`, set `thread_id_regex` to a pattern that matches whatever session id the CLI prints (or switch to `stream-json`).
-- Alternative (no explicit resume id): set both `exec` and `resume` to `["claude","-c","-p","{prompt}", ...]` to always continue the most recent conversation in the current directory.
+- If your CLI can output JSON events (e.g., "stream-json"/"json"), MI will parse them (best-effort) to improve evidence extraction, last-message detection, and session id extraction.
+- `thread_id_regex` is a fallback only: it extracts an id from raw text if no JSON session id is available.
 
 Initialize/compile MindSpec:
 

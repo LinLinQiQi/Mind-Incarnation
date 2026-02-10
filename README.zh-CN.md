@@ -52,6 +52,8 @@ mi config init
 mi config path
 mi config show
 mi config validate
+mi config examples
+mi config template mind.openai_compatible
 ```
 
 可选：把 Mind 切换到 OpenAI 兼容 API（OpenAI/DeepSeek/Qwen/GLM 等）

@@ -43,6 +43,20 @@ pip install -e .
 mi version
 ```
 
+## 开发
+
+运行单元测试：
+
+```bash
+make check
+```
+
+如果没有 `make`：
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
 ## 快速开始
 
 初始化 providers 配置（默认写入 `~/.mind-incarnation/config.json`）：

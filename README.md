@@ -43,6 +43,20 @@ This provides the `mi` command (you can still use `python -m mi`).
 mi version
 ```
 
+## Development
+
+Run unit tests:
+
+```bash
+make check
+```
+
+Or without `make`:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
 ## Quickstart
 
 Initialize provider config (writes `~/.mind-incarnation/config.json` by default):

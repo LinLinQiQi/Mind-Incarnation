@@ -54,6 +54,23 @@ mi config show
 mi config validate
 ```
 
+可选：把 Mind 切换到 OpenAI 兼容 API（OpenAI/DeepSeek/Qwen/GLM 等）
+
+编辑 `~/.mind-incarnation/config.json`：
+
+```json
+{
+  "mind": {
+    "provider": "openai_compatible",
+    "openai_compatible": {
+      "base_url": "https://api.openai.com/v1",
+      "model": "<model>",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  }
+}
+```
+
 可选：用其他 agent CLI 作为 Hands（wrapper）
 
 MI 可以通过 `hands.provider=cli` 包装大多数 agent CLI。你需要提供 *你本机安装的工具* 的启动命令与参数（不同版本的 flags 可能不同）。

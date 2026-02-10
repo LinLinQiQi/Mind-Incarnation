@@ -54,6 +54,23 @@ mi config show
 mi config validate
 ```
 
+Optional: Use an OpenAI-compatible API as Mind (OpenAI/DeepSeek/Qwen/GLM/etc.)
+
+Edit `~/.mind-incarnation/config.json`:
+
+```json
+{
+  "mind": {
+    "provider": "openai_compatible",
+    "openai_compatible": {
+      "base_url": "https://api.openai.com/v1",
+      "model": "<model>",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  }
+}
+```
+
 Optional: Use another agent CLI as Hands (wrapper)
 
 MI can wrap most agent CLIs via `hands.provider=cli`. You provide the command + args for *your installed tool* (flags vary by version).

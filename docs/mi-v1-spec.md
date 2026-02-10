@@ -112,6 +112,7 @@ Mind providers:
 - `mind.provider=openai_compatible`
   - Calls an OpenAI-compatible Chat Completions endpoint.
   - Uses local JSON Schema validation + repair retries (best-effort across vendors).
+  - Works with many vendors (e.g., DeepSeek/Qwen/GLM) as long as they expose an OpenAI-compatible endpoint; configure `base_url` + `model` + API key env in `config.json`.
 - `mind.provider=anthropic`
   - Calls Anthropic Messages API.
   - Uses local JSON Schema validation + repair retries.

@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .paths import GlobalPaths, ProjectPaths, default_home_dir
+from .paths import GlobalPaths, ProjectPaths, default_home_dir, project_identity
 from .storage import append_jsonl, now_rfc3339, read_json, write_json, iter_jsonl
 
 
@@ -246,8 +246,34 @@ class MindSpecStore:
                 "provider": "",
                 "thread_id": "",
                 "updated_ts": "",
-            },
+                },
         )
+
+        # Update derived identity fields (used for stable cross-path resolution).
+        ident = project_identity(project_root)
+        identity_key = str(ident.get("key") or "").strip()
+        ensure_key("identity_key", identity_key)
+        ensure_key("identity", ident if isinstance(ident, dict) else {})
+
+        if str(overlay.get("project_id") or "").strip() != project_paths.project_id:
+            overlay["project_id"] = project_paths.project_id
+            changed = True
+
+        cur_root_path = str(project_root.resolve())
+        if str(overlay.get("root_path") or "").strip() != cur_root_path:
+            overlay["root_path"] = cur_root_path
+            changed = True
+
+        if identity_key and str(overlay.get("identity_key") or "").strip() != identity_key:
+            overlay["identity_key"] = identity_key
+            changed = True
+        if isinstance(overlay.get("identity"), dict):
+            if overlay.get("identity") != ident:
+                overlay["identity"] = ident
+                changed = True
+        else:
+            overlay["identity"] = ident
+            changed = True
 
         # Patch nested keys for forward-compat.
         hs = overlay.get("hands_state")

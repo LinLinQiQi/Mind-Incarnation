@@ -259,6 +259,11 @@ Minimal shape:
 {
   "project_id": "string",
   "root_path": "string",
+  "identity_key": "string",
+  "identity": {
+    "kind": "git|path",
+    "key": "string"
+  },
   "stack_hints": ["string"],
   "testless_verification_strategy": {
     "chosen_once": true,
@@ -495,12 +500,16 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
 - Global:
   - `mindspec/base.json`
   - `mindspec/learned.jsonl`
-- Per project (keyed by hash of root path):
+- Project index (stable identity -> project_id mapping):
+  - `projects/index.json`
+- Per project (keyed by a resolved `project_id`):
   - `projects/<project_id>/overlay.json`
   - `projects/<project_id>/learned.jsonl`
   - `projects/<project_id>/evidence.jsonl`
   - `projects/<project_id>/transcripts/hands/*.jsonl`
   - `projects/<project_id>/transcripts/mind/*.jsonl`
+
+Note: `project_id` is legacy-compatible (historically a hash of the root path), but MI also stores an `identity_key` in ProjectOverlay and maintains a `projects/index.json` mapping so the same project can be recognized across path moves/clones (best-effort; especially effective for git repos).
 
 ## CLI Usage (V1)
 

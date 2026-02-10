@@ -160,6 +160,13 @@ mi transcript show --cd /path/to/your/project -n 200
 mi transcript show --cd /path/to/your/project -n 200 --redact
 ```
 
+Optional: archive older transcripts (gzip + stubs; default is dry-run):
+
+```bash
+mi gc transcripts --cd /path/to/your/project
+mi gc transcripts --cd /path/to/your/project --apply
+```
+
 ## What You Get
 
 - Raw Hands transcript: `~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`

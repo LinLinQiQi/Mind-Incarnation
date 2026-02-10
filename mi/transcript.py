@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import gzip
 import json
 import re
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +117,80 @@ def _collect_paths(obj: Any, *, limit: int, depth: int) -> list[str]:
                     add(v)
 
     return out[:limit]
+
+
+_ARCHIVE_STUB_TYPE = "mi.transcript.archived"
+
+
+def resolve_transcript_path(transcript_path: Path) -> Path:
+    """Resolve a transcript path to its underlying storage path.
+
+    If the path is an archive stub (type=mi.transcript.archived), return the
+    archived_path when it exists; otherwise return the original path.
+    """
+
+    try:
+        with transcript_path.open("r", encoding="utf-8", errors="replace") as f:
+            for _ in range(5):
+                line = f.readline()
+                if not line:
+                    break
+                s = line.strip()
+                if not (s.startswith("{") and s.endswith("}")):
+                    continue
+                try:
+                    obj = json.loads(s)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if str(obj.get("type") or "") != _ARCHIVE_STUB_TYPE:
+                    continue
+                ap = obj.get("archived_path")
+                if isinstance(ap, str) and ap.strip():
+                    cand = Path(ap.strip()).expanduser()
+                    if cand.exists():
+                        return cand
+                break
+    except FileNotFoundError:
+        return transcript_path
+    except Exception:
+        return transcript_path
+
+    return transcript_path
+
+
+@contextmanager
+def open_transcript_text(transcript_path: Path):
+    """Open a transcript for reading as text, following archive stubs and .gz files."""
+
+    real = resolve_transcript_path(transcript_path)
+    if real.suffix == ".gz":
+        f = gzip.open(real, "rt", encoding="utf-8", errors="replace")
+    else:
+        f = real.open("r", encoding="utf-8", errors="replace")
+    try:
+        yield f
+    finally:
+        try:
+            f.close()
+        except Exception:
+            pass
+
+
+def tail_transcript_lines(transcript_path: Path, n: int) -> list[str]:
+    if n <= 0:
+        return []
+    dq: deque[str] = deque(maxlen=n)
+    try:
+        with open_transcript_text(transcript_path) as f:
+            for line in f:
+                dq.append(line.rstrip("\n"))
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+    return list(dq)
 
 
 def _summarize_non_command_item(item: dict[str, Any], paths: list[str]) -> str:
@@ -245,7 +321,7 @@ def summarize_hands_transcript(
         return obj if isinstance(obj, dict) else None
 
     try:
-        with transcript_path.open("r", encoding="utf-8") as f:
+        with open_transcript_text(transcript_path) as f:
             for row in f:
                 row = row.strip()
                 if not row:
@@ -374,7 +450,7 @@ def last_agent_message_from_transcript(transcript_path: Path, *, limit_chars: in
     stream_len = 0
     stream_max = max(2000, int(limit_chars) * 2)
     try:
-        with transcript_path.open("r", encoding="utf-8") as f:
+        with open_transcript_text(transcript_path) as f:
             for row in f:
                 row = row.strip()
                 if not row:

@@ -21,9 +21,10 @@ from .prompts import compile_mindspec_prompt
 from .runner import run_autopilot
 from .paths import ProjectPaths, default_home_dir, project_index_path
 from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
-from .transcript import last_agent_message_from_transcript
+from .transcript import last_agent_message_from_transcript, tail_transcript_lines, resolve_transcript_path
 from .redact import redact_text
 from .provider_factory import make_hands_functions, make_mind_provider
+from .gc import archive_project_transcripts
 
 
 def _read_stdin_text() -> str:
@@ -158,6 +159,15 @@ def main(argv: list[str] | None = None) -> int:
     p_ps.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
     p_ps.add_argument("--json", action="store_true", help="Print as JSON.")
     p_ps.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
+
+    p_gc = sub.add_parser("gc", help="Garbage collect / archive MI artifacts (optional).")
+    gc_sub = p_gc.add_subparsers(dest="gc_cmd", required=True)
+    p_gct = gc_sub.add_parser("transcripts", help="Archive older transcripts to reduce disk usage (safe, reversible).")
+    p_gct.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_gct.add_argument("--keep-hands", type=int, default=50, help="Keep N most recent raw Hands transcripts.")
+    p_gct.add_argument("--keep-mind", type=int, default=200, help="Keep N most recent raw Mind transcripts.")
+    p_gct.add_argument("--apply", action="store_true", help="Apply changes (default is dry-run).")
+    p_gct.add_argument("--json", action="store_true", help="Print result as JSON.")
 
     args = parser.parse_args(argv)
 
@@ -487,8 +497,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Transcript not found: {tp}", file=sys.stderr)
                 return 2
 
-            lines = tail_raw_lines(tp, args.lines)
+            real_tp = resolve_transcript_path(tp)
+            lines = tail_transcript_lines(tp, args.lines)
             print(str(tp))
+            if real_tp != tp:
+                print(f"(archived -> {real_tp})")
             if args.jsonl:
                 for line in lines:
                     print(redact_text(line) if args.redact else line)
@@ -577,6 +590,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"learned_path={out['learned_path']}")
         print(f"transcripts_dir={out['transcripts_dir']}")
         return 0
+
+    if args.cmd == "gc":
+        if args.gc_cmd == "transcripts":
+            project_root = Path(args.cd).resolve()
+            home = Path(args.home) if args.home else default_home_dir()
+            pp = ProjectPaths(home_dir=home, project_root=project_root)
+            res = archive_project_transcripts(
+                transcripts_dir=pp.transcripts_dir,
+                keep_hands=int(args.keep_hands),
+                keep_mind=int(args.keep_mind),
+                dry_run=not bool(args.apply),
+            )
+            if args.json:
+                print(json.dumps(res, indent=2, sort_keys=True))
+                return 0
+
+            mode = "dry-run" if res.get("dry_run") else "applied"
+            hands = res.get("hands") if isinstance(res.get("hands"), dict) else {}
+            mind = res.get("mind") if isinstance(res.get("mind"), dict) else {}
+            print(f"{mode} project_dir={pp.project_dir}")
+            print(f"hands: keep={hands.get('keep')} planned={hands.get('planned')}")
+            print(f"mind: keep={mind.get('keep')} planned={mind.get('planned')}")
+            if not bool(args.apply):
+                print("Re-run with --apply to archive.")
+            return 0
 
     if args.cmd == "learned":
         project_root = Path(args.cd).resolve()

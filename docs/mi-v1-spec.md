@@ -507,9 +507,17 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/<project_id>/learned.jsonl`
   - `projects/<project_id>/evidence.jsonl`
   - `projects/<project_id>/transcripts/hands/*.jsonl`
+  - `projects/<project_id>/transcripts/hands/archive/*.jsonl.gz` (optional; created by `mi gc transcripts`)
   - `projects/<project_id>/transcripts/mind/*.jsonl`
+  - `projects/<project_id>/transcripts/mind/archive/*.jsonl.gz` (optional; created by `mi gc transcripts`)
 
 Note: `project_id` is legacy-compatible (historically a hash of the root path), but MI also stores an `identity_key` in ProjectOverlay and maintains a `projects/index.json` mapping so the same project can be recognized across path moves/clones (best-effort; especially effective for git repos).
+
+Transcript archiving (optional): `mi gc transcripts` can gzip older transcripts into `archive/` and replace the original `.jsonl` with a small JSONL stub record:
+
+```json
+{"type":"mi.transcript.archived","archived_path":".../archive/<name>.jsonl.gz", "...":"..."}
+```
 
 ## CLI Usage (V1)
 
@@ -630,6 +638,13 @@ Show raw transcript (defaults to latest Hands transcript; Mind transcripts optio
 mi --home ~/.mind-incarnation transcript show --cd <project_root> -n 200
 mi --home ~/.mind-incarnation transcript show --cd <project_root> --mind -n 200
 mi --home ~/.mind-incarnation transcript show --cd <project_root> -n 200 --redact
+```
+
+Optional: archive older transcripts (gzip + stubs; default is dry-run):
+
+```bash
+mi --home ~/.mind-incarnation gc transcripts --cd <project_root>
+mi --home ~/.mind-incarnation gc transcripts --cd <project_root> --apply
 ```
 
 Inspect/rollback learned preferences:

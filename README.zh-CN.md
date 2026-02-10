@@ -160,6 +160,13 @@ mi transcript show --cd /path/to/your/project -n 200
 mi transcript show --cd /path/to/your/project -n 200 --redact
 ```
 
+可选：归档旧 transcript（gzip + stub；默认 dry-run）：
+
+```bash
+mi gc transcripts --cd /path/to/your/project
+mi gc transcripts --cd /path/to/your/project --apply
+```
+
 ## 你会得到什么
 
 - Hands 原始 transcript：`~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`

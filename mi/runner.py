@@ -19,7 +19,7 @@ from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_check
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
 from .storage import append_jsonl, now_rfc3339, ensure_dir
-from .transcript import summarize_codex_events, summarize_hands_transcript
+from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
 
 
 _DEFAULT = object()
@@ -90,7 +90,7 @@ def _detect_risk_signals_from_transcript(transcript_path: Path) -> list[str]:
     # Best-effort for non-Codex Hands providers: scan raw stdout/stderr text for risky markers.
     signals: list[str] = []
     try:
-        with transcript_path.open("r", encoding="utf-8") as f:
+        with open_transcript_text(transcript_path) as f:
             for row in f:
                 row = row.strip()
                 if not row:

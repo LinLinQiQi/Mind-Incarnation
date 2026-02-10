@@ -68,6 +68,8 @@ mi config show
 mi config validate
 mi config examples
 mi config template mind.openai_compatible
+mi config apply-template mind.openai_compatible
+mi config rollback
 ```
 
 Optional: Use an OpenAI-compatible API as Mind (OpenAI/DeepSeek/Qwen/GLM/etc.)

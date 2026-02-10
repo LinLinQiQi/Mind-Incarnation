@@ -12,6 +12,8 @@ from mi.config import (
     validate_config,
     list_config_templates,
     get_config_template,
+    apply_config_template,
+    rollback_config,
 )
 from mi.schema_validate import validate_json_schema
 
@@ -92,6 +94,21 @@ class TestConfigAndSchema(unittest.TestCase):
             self.assertIsInstance(tmpl, dict)
         with self.assertRaises(KeyError):
             _ = get_config_template("does.not.exist")
+
+    def test_apply_template_and_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            init_config(home, force=True)
+
+            before = json.loads((home / "config.json").read_text(encoding="utf-8"))
+            res = apply_config_template(home, name="mind.openai_compatible")
+            self.assertIn("backup_path", res)
+            after = json.loads((home / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(after.get("mind", {}).get("provider"), "openai_compatible")
+
+            _ = rollback_config(home)
+            rolled = json.loads((home / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(rolled, before)
 
 
 if __name__ == "__main__":

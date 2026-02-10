@@ -13,6 +13,8 @@ from .config import (
     validate_config,
     list_config_templates,
     get_config_template,
+    apply_config_template,
+    rollback_config,
 )
 from .mindspec import MindSpecStore
 from .prompts import compile_mindspec_prompt
@@ -54,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg_sub.add_parser("examples", help="List config template names.")
     p_ct = cfg_sub.add_parser("template", help="Print a config template as JSON (merge into config.json).")
     p_ct.add_argument("name", help="Template name (see `mi config examples`).")
+    p_cat = cfg_sub.add_parser("apply-template", help="Deep-merge a template into config.json (writes a rollback backup).")
+    p_cat.add_argument("name", help="Template name (see `mi config examples`).")
+    cfg_sub.add_parser("rollback", help="Rollback config.json to the last apply-template backup.")
     cfg_sub.add_parser("path", help="Print the config.json path.")
 
     p_init = sub.add_parser("init", help="Initialize global values/preferences (MindSpec base).")
@@ -182,6 +187,25 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"- {name}", file=sys.stderr)
                 return 2
             print(json.dumps(tmpl, indent=2, sort_keys=True))
+            return 0
+        if args.config_cmd == "apply-template":
+            try:
+                res = apply_config_template(store.home_dir, name=str(args.name))
+            except Exception as e:
+                print(f"apply-template failed: {e}", file=sys.stderr)
+                return 2
+            print(f"Applied template: {args.name}")
+            print(f"Backup: {res.get('backup_path')}")
+            print(f"Config: {res.get('config_path')}")
+            return 0
+        if args.config_cmd == "rollback":
+            try:
+                res = rollback_config(store.home_dir)
+            except Exception as e:
+                print(f"rollback failed: {e}", file=sys.stderr)
+                return 2
+            print(f"Rolled back config to: {res.get('backup_path')}")
+            print(f"Config: {res.get('config_path')}")
             return 0
         if args.config_cmd in ("validate", "doctor"):
             report = validate_config(cfg)

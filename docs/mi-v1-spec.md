@@ -505,6 +505,8 @@ Provider config (Mind/Hands):
 - Validate: `mi config validate` (or `mi config doctor`)
 - Examples: `mi config examples`
 - Template: `mi config template <name>` (prints a JSON snippet to merge into `config.json`)
+- Apply template: `mi config apply-template <name>` (deep-merge into `config.json`, writes a rollback backup)
+- Rollback: `mi config rollback` (restore the last apply-template backup)
 - Path: `mi config path`
 
 Key knobs (V1):

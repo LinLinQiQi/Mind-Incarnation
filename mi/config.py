@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .storage import ensure_dir, read_json, write_json
+from .storage import ensure_dir, read_json, write_json, now_rfc3339
 
 
 def config_path(home_dir: Path) -> Path:
@@ -89,6 +89,67 @@ def init_config(home_dir: Path, *, force: bool) -> Path:
     ensure_dir(home_dir)
     write_json(path, default_config())
     return path
+
+
+def load_config_raw(home_dir: Path) -> dict[str, Any]:
+    cfg = read_json(config_path(home_dir), default=None)
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _backups_dir(home_dir: Path) -> Path:
+    return home_dir / "backups"
+
+
+def _last_backup_marker_path(home_dir: Path) -> Path:
+    return _backups_dir(home_dir) / "config.last_backup"
+
+
+def apply_config_template(home_dir: Path, *, name: str) -> dict[str, str]:
+    """Deep-merge a named template into config.json, writing a rollback backup.
+
+    Returns {"config_path": "...", "backup_path": "..."}.
+    """
+
+    tmpl = get_config_template(name)
+
+    path = config_path(home_dir)
+    raw = load_config_raw(home_dir)
+
+    ts = now_rfc3339().replace(":", "").replace("-", "")
+    backups = _backups_dir(home_dir)
+    ensure_dir(backups)
+    backup_path = backups / f"config.json.{ts}.bak"
+    write_json(backup_path, raw)
+    _last_backup_marker_path(home_dir).write_text(str(backup_path), encoding="utf-8")
+
+    merged = _deep_merge(raw, tmpl)
+    if "version" not in merged:
+        merged["version"] = "v1"
+    write_json(path, merged)
+
+    return {"config_path": str(path), "backup_path": str(backup_path)}
+
+
+def rollback_config(home_dir: Path) -> dict[str, str]:
+    """Rollback config.json to the last apply-template backup.
+
+    Returns {"config_path": "...", "backup_path": "..."}.
+    """
+
+    marker = _last_backup_marker_path(home_dir)
+    try:
+        backup_s = marker.read_text(encoding="utf-8").strip()
+    except FileNotFoundError as e:
+        raise FileNotFoundError("no rollback backup found (run `mi config apply-template ...` first)") from e
+
+    backup_path = Path(backup_s).expanduser()
+    data = read_json(backup_path, default=None)
+    if not isinstance(data, dict):
+        raise ValueError(f"backup file is not a JSON object: {backup_path}")
+
+    path = config_path(home_dir)
+    write_json(path, data)
+    return {"config_path": str(path), "backup_path": str(backup_path)}
 
 
 def _redact_obj(obj: Any) -> Any:

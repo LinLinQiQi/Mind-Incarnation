@@ -142,6 +142,14 @@ mi last --cd /path/to/your/project
 mi last --cd /path/to/your/project --redact
 ```
 
+Show per-project overlay + resolved storage paths:
+
+```bash
+mi project show --cd /path/to/your/project
+mi project show --cd /path/to/your/project --json
+mi project show --cd /path/to/your/project --redact
+```
+
 Note: JSON outputs keep some legacy key names (e.g., `codex_last_message`, `next_codex_input`) for backward compatibility; they refer to Hands.
 
 Tail EvidenceLog / show raw transcript:

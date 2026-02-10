@@ -19,7 +19,7 @@ from .config import (
 from .mindspec import MindSpecStore
 from .prompts import compile_mindspec_prompt
 from .runner import run_autopilot
-from .paths import ProjectPaths, default_home_dir
+from .paths import ProjectPaths, default_home_dir, project_index_path
 from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
 from .transcript import last_agent_message_from_transcript
 from .redact import redact_text
@@ -151,6 +151,13 @@ def main(argv: list[str] | None = None) -> int:
     p_tr_show.add_argument("-n", "--lines", type=int, default=200, help="Number of transcript lines to show (tail).")
     p_tr_show.add_argument("--jsonl", action="store_true", help="Print stored JSONL lines (no pretty formatting).")
     p_tr_show.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
+
+    p_proj = sub.add_parser("project", help="Inspect per-project MI state (overlay + resolved paths).")
+    proj_sub = p_proj.add_subparsers(dest="project_cmd", required=True)
+    p_ps = proj_sub.add_parser("show", help="Show the project overlay and resolved storage paths.")
+    p_ps.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_ps.add_argument("--json", action="store_true", help="Print as JSON.")
+    p_ps.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
 
     args = parser.parse_args(argv)
 
@@ -504,6 +511,72 @@ def main(argv: list[str] | None = None) -> int:
                     payload_s = redact_text(payload_s)
                 print(f"{ts} {stream} {payload_s}")
             return 0
+
+    if args.cmd == "project":
+        project_root = Path(args.cd).resolve()
+        home = Path(args.home) if args.home else default_home_dir()
+        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        overlay = store.load_project_overlay(project_root)
+
+        identity_key = str(overlay.get("identity_key") or "").strip()
+        idx_path = project_index_path(home)
+        idx_mapped = ""
+        if identity_key:
+            try:
+                idx_obj = json.loads(idx_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                idx_obj = None
+            except Exception:
+                idx_obj = None
+            if isinstance(idx_obj, dict):
+                by_id = idx_obj.get("by_identity")
+                if isinstance(by_id, dict):
+                    idx_mapped = str(by_id.get(identity_key) or "").strip()
+                else:
+                    idx_mapped = str(idx_obj.get(identity_key) or "").strip()
+
+        out = {
+            "project_root": str(project_root),
+            "project_id": pp.project_id,
+            "project_dir": str(pp.project_dir),
+            "overlay_path": str(pp.overlay_path),
+            "identity_key": identity_key,
+            "project_index_path": str(idx_path),
+            "project_index_mapped_id": idx_mapped,
+            "evidence_log": str(pp.evidence_log_path),
+            "learned_path": str(pp.learned_path),
+            "transcripts_dir": str(pp.transcripts_dir),
+            "overlay": overlay if isinstance(overlay, dict) else {},
+        }
+
+        if args.redact:
+            # Redact all string leaf values for display (keeps JSON valid).
+            def _redact_any(x: object) -> object:
+                if isinstance(x, str):
+                    return redact_text(x)
+                if isinstance(x, list):
+                    return [_redact_any(v) for v in x]
+                if isinstance(x, dict):
+                    return {k: _redact_any(v) for k, v in x.items()}
+                return x
+
+            out = _redact_any(out)  # type: ignore[assignment]
+
+        if args.json:
+            print(json.dumps(out, indent=2, sort_keys=True))
+            return 0
+
+        print(f"project_id={out['project_id']}")
+        print(f"project_dir={out['project_dir']}")
+        print(f"overlay_path={out['overlay_path']}")
+        if identity_key:
+            print(f"identity_key={identity_key}")
+        if idx_mapped:
+            print(f"index_mapped_project_id={idx_mapped}")
+        print(f"evidence_log={out['evidence_log']}")
+        print(f"learned_path={out['learned_path']}")
+        print(f"transcripts_dir={out['transcripts_dir']}")
+        return 0
 
     if args.cmd == "learned":
         project_root = Path(args.cd).resolve()

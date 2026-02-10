@@ -606,6 +606,14 @@ mi --home ~/.mind-incarnation last --cd <project_root> --json
 mi --home ~/.mind-incarnation last --cd <project_root> --redact
 ```
 
+Inspect per-project state (overlay + resolved paths):
+
+```bash
+mi --home ~/.mind-incarnation project show --cd <project_root>
+mi --home ~/.mind-incarnation project show --cd <project_root> --json
+mi --home ~/.mind-incarnation project show --cd <project_root> --redact
+```
+
 Note: some output keys keep legacy `codex_*` / `*_to_codex` naming for backward compatibility; they refer to Hands.
 
 Tail EvidenceLog:

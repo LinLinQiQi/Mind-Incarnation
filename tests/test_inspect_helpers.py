@@ -52,6 +52,21 @@ class TestInspectHelpers(unittest.TestCase):
                 json.dumps({"kind": "check_plan", "batch_id": "b1", "thread_id": "t", "checks": {"should_run_checks": False}}),
                 json.dumps(
                     {
+                        "kind": "decide_next",
+                        "batch_id": "b1",
+                        "thread_id": "t",
+                        "phase": "initial",
+                        "next_action": "stop",
+                        "status": "done",
+                        "confidence": 0.9,
+                        "notes": "done",
+                        "ask_user_question": "",
+                        "next_codex_input": "",
+                        "decision": {"next_action": "stop", "status": "done", "confidence": 0.9, "notes": "done"},
+                    }
+                ),
+                json.dumps(
+                    {
                         "batch_id": "b1",
                         "ts": "x",
                         "thread_id": "t",
@@ -71,6 +86,7 @@ class TestInspectHelpers(unittest.TestCase):
             self.assertIsNotNone(bundle["codex_input"])
             self.assertIsNotNone(bundle["evidence_item"])
             self.assertIsNotNone(bundle["check_plan"])
+            self.assertIsNotNone(bundle["decide_next"])
 
     def test_classify_and_summarize(self) -> None:
         ev = {"batch_id": "b0", "facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []}
@@ -100,4 +116,3 @@ class TestInspectHelpers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

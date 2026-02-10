@@ -474,6 +474,34 @@ def run_autopilot(
 
     sent_sigs: list[str] = []
 
+    def _log_decide_next(
+        *,
+        decision_obj: Any,
+        batch_id: str,
+        phase: str,
+        mind_transcript_ref: str,
+    ) -> None:
+        if not isinstance(decision_obj, dict):
+            return
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "decide_next",
+                "batch_id": batch_id,
+                "ts": now_rfc3339(),
+                "thread_id": thread_id,
+                "phase": phase,
+                "next_action": str(decision_obj.get("next_action") or ""),
+                "status": str(decision_obj.get("status") or ""),
+                "confidence": decision_obj.get("confidence"),
+                "notes": str(decision_obj.get("notes") or ""),
+                "ask_user_question": str(decision_obj.get("ask_user_question") or ""),
+                "next_codex_input": str(decision_obj.get("next_codex_input") or ""),
+                "mind_transcript_ref": str(mind_transcript_ref or ""),
+                "decision": decision_obj,
+            },
+        )
+
     def _queue_next_input(*, nxt: str, codex_last_message: str, batch_id: str, reason: str) -> bool:
         """Set next_input for the next Codex batch, with loop-guard and optional user intervention."""
         nonlocal next_input, status, notes, sent_sigs
@@ -928,7 +956,14 @@ def run_autopilot(
             check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             auto_answer=auto_answer_obj,
         )
-        decision_obj = llm.call(schema_filename="decide_next.json", prompt=decision_prompt, tag=f"decide_b{batch_idx}").obj
+        decision_res = llm.call(schema_filename="decide_next.json", prompt=decision_prompt, tag=f"decide_b{batch_idx}")
+        decision_obj = decision_res.obj
+        _log_decide_next(
+            decision_obj=decision_obj,
+            batch_id=f"b{batch_idx}",
+            phase="initial",
+            mind_transcript_ref=str(getattr(decision_res, "transcript_path", "") or ""),
+        )
 
         # Apply project overlay updates (e.g., testless verification strategy).
         overlay_update = decision_obj.get("update_project_overlay") or {}
@@ -1061,11 +1096,18 @@ def run_autopilot(
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 auto_answer=_empty_auto_answer(),
             )
-            decision_obj = llm.call(
+            decision_res2 = llm.call(
                 schema_filename="decide_next.json",
                 prompt=decision_prompt2,
                 tag=f"decide_after_user_b{batch_idx}",
-            ).obj
+            )
+            decision_obj = decision_res2.obj
+            _log_decide_next(
+                decision_obj=decision_obj,
+                batch_id=f"b{batch_idx}",
+                phase="after_user",
+                mind_transcript_ref=str(getattr(decision_res2, "transcript_path", "") or ""),
+            )
 
             # Apply overlay + learned from the post-user decision.
             overlay_update = decision_obj.get("update_project_overlay") or {}

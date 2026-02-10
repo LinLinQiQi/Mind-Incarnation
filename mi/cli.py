@@ -271,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         bundle = load_last_batch_bundle(pp.evidence_log_path)
         codex_input = bundle.get("codex_input") if isinstance(bundle.get("codex_input"), dict) else None
         evidence_item = bundle.get("evidence_item") if isinstance(bundle.get("evidence_item"), dict) else None
+        decide_next = bundle.get("decide_next") if isinstance(bundle.get("decide_next"), dict) else None
 
         transcript_path = ""
         if codex_input and isinstance(codex_input.get("transcript_path"), str):
@@ -286,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         codex_last_text = last_msg or ""
 
         evidence_item_out = evidence_item or {}
+        decide_next_out = decide_next or {}
         if args.redact:
             mi_input_text = redact_text(mi_input_text)
             codex_last_text = redact_text(codex_last_text)
@@ -294,6 +296,17 @@ def main(argv: list[str] | None = None) -> int:
                     v = evidence_item_out.get(k)
                     if isinstance(v, list):
                         evidence_item_out[k] = [redact_text(str(x)) for x in v]
+            if isinstance(decide_next_out, dict):
+                for k in ("notes", "ask_user_question", "next_codex_input"):
+                    v = decide_next_out.get(k)
+                    if isinstance(v, str) and v:
+                        decide_next_out[k] = redact_text(v)
+                inner = decide_next_out.get("decision")
+                if isinstance(inner, dict):
+                    for k in ("notes", "ask_user_question", "next_codex_input"):
+                        v = inner.get(k)
+                        if isinstance(v, str) and v:
+                            inner[k] = redact_text(v)
 
         out = {
             "project_root": str(project_root),
@@ -309,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             "auto_answer": (bundle.get("auto_answer") or {}) if isinstance(bundle.get("auto_answer"), dict) else {},
             "risk_event": (bundle.get("risk_event") or {}) if isinstance(bundle.get("risk_event"), dict) else {},
             "loop_guard": (bundle.get("loop_guard") or {}) if isinstance(bundle.get("loop_guard"), dict) else {},
+            "decide_next": decide_next_out,
         }
 
         if args.json:
@@ -324,6 +338,28 @@ def main(argv: list[str] | None = None) -> int:
             print("\nmi_input:\n" + out["mi_input"].strip())
         if out["codex_last_message"].strip():
             print("\ncodex_last_message:\n" + out["codex_last_message"].strip())
+        if isinstance(decide_next_out, dict) and decide_next_out:
+            st = str(decide_next_out.get("status") or "")
+            na = str(decide_next_out.get("next_action") or "")
+            cf = decide_next_out.get("confidence")
+            try:
+                cf_s = f"{float(cf):.2f}" if cf is not None else ""
+            except Exception:
+                cf_s = str(cf or "")
+            hdr = " ".join([x for x in [f"status={st}" if st else "", f"next_action={na}" if na else "", f"confidence={cf_s}" if cf_s else ""] if x])
+            if hdr:
+                print("\ndecide_next:\n" + hdr)
+            notes_s = str(decide_next_out.get("notes") or "").strip()
+            if notes_s:
+                print("\nnotes:\n" + notes_s)
+            if na == "send_to_codex":
+                nxt = str(decide_next_out.get("next_codex_input") or "").strip()
+                if nxt:
+                    print("\nnext_hands_input (planned):\n" + nxt)
+            if na == "ask_user":
+                q = str(decide_next_out.get("ask_user_question") or "").strip()
+                if q:
+                    print("\nask_user_question:\n" + q)
         if isinstance(evidence_item_out, dict) and evidence_item_out:
             facts = evidence_item_out.get("facts") if isinstance(evidence_item_out.get("facts"), list) else []
             results = evidence_item_out.get("results") if isinstance(evidence_item_out.get("results"), list) else []

@@ -55,6 +55,19 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
     detail = ""
     if kind in ("codex_input", "hands_input"):
         detail = _truncate(str(obj.get("input") or "").strip().replace("\n", "\\n"), limit)
+    elif kind == "decide_next":
+        st = str(obj.get("status") or "")
+        na = str(obj.get("next_action") or "")
+        cf = obj.get("confidence")
+        phase = str(obj.get("phase") or "")
+        cf_s = ""
+        try:
+            if cf is not None:
+                cf_s = f"{float(cf):.2f}"
+        except Exception:
+            cf_s = str(cf)
+        parts = [x for x in [phase, f"{st}:{na}".strip(":"), (f"conf={cf_s}" if cf_s else "")] if x]
+        detail = " ".join(parts).strip()
     elif kind == "check_plan":
         checks = obj.get("checks") if isinstance(obj.get("checks"), dict) else {}
         sr = bool(checks.get("should_run_checks", False))
@@ -99,6 +112,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
         "auto_answer": None,
         "risk_event": None,
         "loop_guard": None,
+        "decide_next": None,
         "user_inputs": [],
     }
     last_bid = ""
@@ -131,6 +145,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                         "auto_answer": None,
                         "risk_event": None,
                         "loop_guard": None,
+                        "decide_next": None,
                         "user_inputs": [],
                     }
                     continue
@@ -149,6 +164,8 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                     bundle["risk_event"] = obj
                 elif kind == "loop_guard":
                     bundle["loop_guard"] = obj
+                elif kind == "decide_next":
+                    bundle["decide_next"] = obj
                 elif kind == "user_input":
                     uis = bundle.get("user_inputs")
                     if isinstance(uis, list):

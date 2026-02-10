@@ -1,7 +1,7 @@
 # Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-09
+Last updated: 2026-02-10
 
 ## Goal
 
@@ -272,6 +272,7 @@ Minimal shape:
 - `risk_event` (post-hoc judgement when heuristic risk signals are present)
 - `check_plan` (minimal checks proposed post-batch)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; prompt/schema names are Codex-legacy)
+- `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
 - `hands_resume_failed` (best-effort: resume by stored thread/session id failed; MI fell back to a fresh exec)

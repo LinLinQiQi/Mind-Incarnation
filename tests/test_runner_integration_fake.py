@@ -115,6 +115,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                         kinds.add(obj["kind"])
             self.assertIn("hands_input", kinds)
             self.assertIn("check_plan", kinds)
+            self.assertIn("decide_next", kinds)
 
     def test_loop_guard_blocks_when_repeating_and_ask_when_uncertain_false(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:

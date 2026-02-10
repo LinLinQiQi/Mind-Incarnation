@@ -117,7 +117,7 @@ mi run --cd /path/to/your/project --continue-hands "Continue the previous work."
 mi run --cd /path/to/your/project --reset-hands "Start a fresh session."
 ```
 
-Inspect the latest batch (what MI sent, last agent message, evidence pointers):
+Inspect the latest batch (what MI sent, last agent message, evidence pointers, and MI's decide_next decision when available):
 
 ```bash
 mi last --cd /path/to/your/project

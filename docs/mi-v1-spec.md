@@ -238,7 +238,10 @@ Minimal shape:
   },
   "violation_response": {
     "auto_learn": true,
-    "prompt_user_on_high_risk": true
+    "prompt_user_on_high_risk": true,
+    "prompt_user_risk_severities": ["high", "critical"],
+    "prompt_user_risk_categories": [],
+    "prompt_user_respect_should_ask_user": true
   }
 }
 ```
@@ -385,6 +388,28 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
 }
 ```
 
+`decide_next` record shape (per-batch decision output):
+
+```json
+{
+  "kind": "decide_next",
+  "batch_id": "string",
+  "ts": "RFC3339 timestamp",
+  "thread_id": "string",
+  "phase": "initial|after_user",
+  "next_action": "send_to_codex|ask_user|stop",
+  "status": "done|not_done|blocked",
+  "confidence": 0.0,
+  "notes": "string",
+  "ask_user_question": "string",
+  "next_codex_input": "string",
+  "mind_transcript_ref": "path",
+  "decision": {
+    "...": "raw decide_next.json object"
+  }
+}
+```
+
 `loop_guard` record shape (stuck loop detection):
 
 ```json
@@ -410,6 +435,13 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
   "mitigation": ["string"]
 }
 ```
+
+If a `risk_event` is detected, MI may immediately prompt the user to continue depending on `MindSpec.violation_response` knobs:
+
+- `prompt_user_on_high_risk` (master switch; legacy name)
+- `prompt_user_risk_severities` (which severities to prompt for)
+- `prompt_user_risk_categories` (optional allow-list; empty means any)
+- `prompt_user_respect_should_ask_user` (when true, prompt only if `risk_judge.should_ask_user=true`)
 
 ### Learned (append-only, reversible)
 

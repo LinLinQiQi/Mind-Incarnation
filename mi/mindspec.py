@@ -58,6 +58,12 @@ def _default_base(values_text: str) -> dict[str, Any]:
         "violation_response": {
             "auto_learn": True,
             "prompt_user_on_high_risk": True,
+            # If set, MI will prompt the user only for matching severities/categories.
+            # Empty categories means "any category".
+            "prompt_user_risk_severities": ["high", "critical"],
+            "prompt_user_risk_categories": [],
+            # When true, MI prompts only when risk_judge.should_ask_user=true (recommended).
+            "prompt_user_respect_should_ask_user": True,
         },
     }
 

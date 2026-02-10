@@ -1,4 +1,6 @@
+import io
 import json
+import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
@@ -193,6 +195,112 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                         found_loop_guard = True
                         break
             self.assertTrue(found_loop_guard)
+
+    def test_risk_prompt_triggers_only_for_configured_severities(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            store = MindSpecStore(home_dir=home)
+            base = store.load_base()
+            base.setdefault("violation_response", {})
+            base["violation_response"]["prompt_user_on_high_risk"] = True
+            base["violation_response"]["prompt_user_risk_severities"] = ["high"]
+            base["violation_response"]["prompt_user_respect_should_ask_user"] = True
+            store.write_base(base)
+
+            fake_hands = _FakeHands(
+                [
+                    _mk_result(thread_id="t3", last_message="All done.", command="git push origin main"),
+                ]
+            )
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": ["ran push"], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
+                    ],
+                    "risk_judge.json": [
+                        {"category": "push", "severity": "high", "should_ask_user": True, "mitigation": [], "learned_changes": []},
+                    ],
+                }
+            )
+
+            old_stdin = sys.stdin
+            old_stderr = sys.stderr
+            sys.stdin = io.StringIO("n\n")
+            sys.stderr = io.StringIO()
+            try:
+                result = run_autopilot(
+                    task="x",
+                    project_root=project_root,
+                    home_dir=home,
+                    max_batches=1,
+                    hands_exec=fake_hands.exec,
+                    hands_resume=fake_hands.resume,
+                    llm=fake_llm,
+                )
+            finally:
+                sys.stdin = old_stdin
+                sys.stderr = old_stderr
+
+            self.assertEqual(result.status, "blocked")
+            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "risk_judge.json"])
+
+            kinds = set()
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict) and obj.get("kind"):
+                        kinds.add(obj["kind"])
+            self.assertIn("risk_event", kinds)
+
+    def test_risk_prompt_skips_when_severity_not_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            store = MindSpecStore(home_dir=home)
+            base = store.load_base()
+            base.setdefault("violation_response", {})
+            base["violation_response"]["prompt_user_on_high_risk"] = True
+            base["violation_response"]["prompt_user_risk_severities"] = ["high", "critical"]
+            base["violation_response"]["prompt_user_respect_should_ask_user"] = True
+            store.write_base(base)
+
+            fake_hands = _FakeHands(
+                [
+                    _mk_result(thread_id="t4", last_message="All done.", command="git push origin main"),
+                ]
+            )
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
+                    ],
+                    "risk_judge.json": [
+                        {"category": "push", "severity": "medium", "should_ask_user": True, "mitigation": [], "learned_changes": []},
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        },
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="x",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+
+            self.assertEqual(result.status, "done")
+            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "risk_judge.json", "decide_next.json"])
 
 
 if __name__ == "__main__":

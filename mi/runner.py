@@ -748,15 +748,36 @@ def run_autopilot(
             prompt_user = bool(vr.get("prompt_user_on_high_risk", True))
             severity = str(risk_obj.get("severity") or "low")
             should_ask_user = bool(risk_obj.get("should_ask_user", False))
-            if prompt_user and should_ask_user and severity in ("high", "critical"):
-                cat = str(risk_obj.get("category") or "other")
+            cat = str(risk_obj.get("category") or "other")
+
+            sev_list = vr.get("prompt_user_risk_severities")
+            if isinstance(sev_list, list) and any(str(x).strip() for x in sev_list):
+                sev_allow = {str(x).strip() for x in sev_list if str(x).strip()}
+            else:
+                sev_allow = {"high", "critical"}
+
+            cat_list = vr.get("prompt_user_risk_categories")
+            if isinstance(cat_list, list) and any(str(x).strip() for x in cat_list):
+                cat_allow = {str(x).strip() for x in cat_list if str(x).strip()}
+            else:
+                cat_allow = set()
+
+            respect_should = bool(vr.get("prompt_user_respect_should_ask_user", True))
+            should_prompt = (
+                prompt_user
+                and (severity in sev_allow)
+                and (not cat_allow or cat in cat_allow)
+                and (should_ask_user if respect_should else True)
+            )
+
+            if should_prompt:
                 mitig = risk_obj.get("mitigation") or []
                 mitig_s = "; ".join([str(x) for x in mitig if str(x).strip()][:3])
-                q = f"High-risk action detected (category={cat}, severity={severity}). Continue? (y/N)\nMitigation: {mitig_s}"
+                q = f"Risk action detected (category={cat}, severity={severity}). Continue? (y/N)\nMitigation: {mitig_s}"
                 answer = _read_user_answer(q)
                 if answer.strip().lower() not in ("y", "yes"):
                     status = "blocked"
-                    notes = "stopped after high-risk event"
+                    notes = "stopped after risk event"
                     break
 
         repo_obs = evidence_item.get("repo_observation") or {}

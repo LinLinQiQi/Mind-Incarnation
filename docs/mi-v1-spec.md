@@ -168,23 +168,23 @@ MI uses the following internal prompts (all should return strict JSON):
      - concrete default knobs (interrupt/violation response/etc.)
 
 2) `extract_evidence` (implemented)
-   - Input: batch input MI sent to Hands, machine-extracted batch summary (incl. transcript event observation), and repo observation
+   - Input: batch input MI sent to Hands, Hands provider hint (e.g., `codex|cli`), machine-extracted batch summary (incl. transcript event observation), and repo observation
    - Output: `EvidenceItem` with `facts`, `actions`, `results`, `unknowns`, `risk_signals`
 
 3) `risk_judge` (implemented; post-hoc)
-   - Input: recent transcript snippets + `MindSpec` + `EvidenceLog`
+   - Input: Hands provider hint + recent transcript snippets + `MindSpec` + `EvidenceLog`
    - Output: risk judgement with `category`, `severity`, `should_ask_user`, `mitigation`, and optional learned tightening
 
 4) `plan_min_checks` (implemented)
-   - Input: `MindSpec`, `ProjectOverlay`, repo observation, recent `EvidenceLog`
+   - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, repo observation, recent `EvidenceLog`
    - Output: a minimal check plan and (when needed) a single Hands instruction (`codex_check_input`, legacy name) to execute the checks
 
 5) `auto_answer_to_codex` (implemented)
-   - Input: `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional minimal check plan, and the raw Hands last message (legacy prompt/schema naming uses "codex")
+   - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional minimal check plan, and the raw Hands last message (legacy prompt/schema naming uses "codex")
    - Output: an optional Hands reply (`codex_answer_input`, legacy name) that answers Hands' question(s) using values + evidence; only asks the user when MI cannot answer
 
 6) `decide_next` (implemented)
-   - Input: `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional risk judgement
+   - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional risk judgement
    - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). `send_to_codex` is legacy naming and means "send the next batch input to Hands". This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
 
 Planned (not required for V1 loop to function; can be added incrementally):

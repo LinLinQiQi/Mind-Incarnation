@@ -651,6 +651,7 @@ def run_autopilot(
         summary = _batch_summary(result)
         extract_prompt = extract_evidence_prompt(
             task=task,
+            hands_provider=cur_provider,
             light_injection=light,
             batch_input=batch_input,
             codex_batch_summary=summary,
@@ -679,6 +680,7 @@ def run_autopilot(
         if risk_signals:
             risk_prompt = risk_judge_prompt(
                 task=task,
+                hands_provider=cur_provider,
                 mindspec_base=loaded.base,
                 learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
@@ -742,6 +744,7 @@ def run_autopilot(
         ):
             checks_prompt = plan_min_checks_prompt(
                 task=task,
+                hands_provider=cur_provider,
                 mindspec_base=loaded.base,
                 learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
@@ -770,6 +773,7 @@ def run_autopilot(
         if _looks_like_user_question(codex_last):
             aa_prompt = auto_answer_to_codex_prompt(
                 task=task,
+                hands_provider=cur_provider,
                 mindspec_base=loaded.base,
                 learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
@@ -873,6 +877,7 @@ def run_autopilot(
             # Re-plan checks now that the project has a strategy to follow.
             checks_prompt2 = plan_min_checks_prompt(
                 task=task,
+                hands_provider=cur_provider,
                 mindspec_base=loaded.base,
                 learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
@@ -913,6 +918,7 @@ def run_autopilot(
         # Decide what to do next.
         decision_prompt = decide_next_prompt(
             task=task,
+            hands_provider=cur_provider,
             mindspec_base=loaded.base,
             learned_text=loaded.learned_text,
             project_overlay=loaded.project_overlay,
@@ -969,6 +975,7 @@ def run_autopilot(
             if q:
                 aa_prompt2 = auto_answer_to_codex_prompt(
                     task=task,
+                    hands_provider=cur_provider,
                     mindspec_base=loaded.base,
                     learned_text=loaded.learned_text,
                     project_overlay=loaded.project_overlay,
@@ -1044,6 +1051,7 @@ def run_autopilot(
             # Re-decide with the user input included (no extra Codex run yet).
             decision_prompt2 = decide_next_prompt(
                 task=task,
+                hands_provider=cur_provider,
                 mindspec_base=loaded.base,
                 learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,

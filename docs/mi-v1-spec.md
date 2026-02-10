@@ -271,10 +271,10 @@ Minimal shape:
 `evidence.jsonl` is append-only and may contain multiple record kinds:
 
 - `hands_input` (exact MI input + light injection sent to Hands for the batch; older logs may use `codex_input`)
-- `EvidenceItem` (extracted summary per batch)
-- `risk_event` (post-hoc judgement when heuristic risk signals are present)
-- `check_plan` (minimal checks proposed post-batch)
-- `auto_answer` (MI-generated reply to Hands questions, when possible; prompt/schema names are Codex-legacy)
+- `EvidenceItem` (extracted summary per batch; includes a Mind transcript pointer for `extract_evidence`)
+- `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
+- `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
+- `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
 - `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
@@ -287,7 +287,9 @@ Note: EvidenceLog is append-only and may include additional record kinds in newe
   "batch_id": "string",
   "ts": "RFC3339 timestamp",
   "thread_id": "string",
+  "hands_transcript_ref": "path",
   "codex_transcript_ref": "path",
+  "mind_transcript_ref": "path",
   "mi_input": "string",
   "transcript_observation": {
     "event_type_counts": {"string": 0},
@@ -341,6 +343,7 @@ Note: EvidenceLog is append-only and may include additional record kinds in newe
   "batch_id": "string",
   "ts": "RFC3339 timestamp",
   "thread_id": "string",
+  "mind_transcript_ref": "path",
   "checks": {
     "should_run_checks": true,
     "needs_testless_strategy": false,
@@ -376,6 +379,7 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
   "batch_id": "string",
   "ts": "RFC3339 timestamp",
   "thread_id": "string",
+  "mind_transcript_ref": "path",
   "auto_answer": {
     "should_answer": true,
     "confidence": 0.0,
@@ -560,7 +564,7 @@ Common run flags:
 - `--continue-hands`: try to resume the last stored Hands thread/session id for this project (best-effort)
 - `--reset-hands`: clear the stored Hands thread/session id for this project before running
 
-Inspect latest batch bundle (MI input + last agent message + evidence pointers):
+Inspect latest batch bundle (MI input + last agent message + evidence pointers + mind transcript pointers):
 
 ```bash
 mi --home ~/.mind-incarnation last --cd <project_root>

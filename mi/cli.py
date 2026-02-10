@@ -349,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
             "risk_event": (bundle.get("risk_event") or {}) if isinstance(bundle.get("risk_event"), dict) else {},
             "loop_guard": (bundle.get("loop_guard") or {}) if isinstance(bundle.get("loop_guard"), dict) else {},
             "decide_next": decide_next_out,
+            "mind_transcripts": (bundle.get("mind_transcripts") or []) if isinstance(bundle.get("mind_transcripts"), list) else [],
         }
 
         if args.json:
@@ -386,6 +387,17 @@ def main(argv: list[str] | None = None) -> int:
                 q = str(decide_next_out.get("ask_user_question") or "").strip()
                 if q:
                     print("\nask_user_question:\n" + q)
+        mts = out.get("mind_transcripts")
+        if isinstance(mts, list) and mts:
+            # Keep this short; `mi last --json` is the main interface for pointers.
+            print("\nmind_transcripts:")
+            for it in mts[:12]:
+                if not isinstance(it, dict):
+                    continue
+                k = str(it.get("kind") or "").strip()
+                ref = str(it.get("mind_transcript_ref") or "").strip()
+                if k and ref:
+                    print(f"- {k}: {ref}")
         if isinstance(evidence_item_out, dict) and evidence_item_out:
             facts = evidence_item_out.get("facts") if isinstance(evidence_item_out.get("facts"), list) else []
             results = evidence_item_out.get("results") if isinstance(evidence_item_out.get("results"), list) else []

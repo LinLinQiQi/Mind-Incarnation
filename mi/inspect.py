@@ -113,9 +113,33 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
         "risk_event": None,
         "loop_guard": None,
         "decide_next": None,
+        # Convenience: mind transcript pointers for this batch cycle.
+        # Entries look like: {"kind": "...", "batch_id": "...", "mind_transcript_ref": "...", ...}.
+        "mind_transcripts": [],
         "user_inputs": [],
     }
     last_bid = ""
+
+    def is_related_batch_id(bid: str) -> bool:
+        if not last_bid or not bid:
+            return False
+        return bid == last_bid or bid.startswith(last_bid + ".")
+
+    def add_mind_transcript_ref(*, obj: dict[str, Any], kind: str, bid: str) -> None:
+        ref = obj.get("mind_transcript_ref")
+        if not isinstance(ref, str) or not ref.strip():
+            return
+        mts = bundle.get("mind_transcripts")
+        if not isinstance(mts, list):
+            bundle["mind_transcripts"] = []
+            mts = bundle["mind_transcripts"]
+        item: dict[str, Any] = {"kind": kind, "batch_id": bid, "mind_transcript_ref": ref.strip()}
+        if kind == "decide_next":
+            phase = obj.get("phase")
+            if isinstance(phase, str) and phase.strip():
+                item["phase"] = phase.strip()
+        if item not in mts:
+            mts.append(item)
 
     try:
         with evidence_log_path.open("r", encoding="utf-8") as f:
@@ -146,26 +170,38 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                         "risk_event": None,
                         "loop_guard": None,
                         "decide_next": None,
+                        "mind_transcripts": [],
                         "user_inputs": [],
                     }
                     continue
 
-                if not last_bid or bid != last_bid:
+                if not is_related_batch_id(bid):
                     continue
 
                 # Records for the current last batch.
                 if kind == "evidence":
-                    bundle["evidence_item"] = obj
+                    if bid == last_bid:
+                        bundle["evidence_item"] = obj
+                    add_mind_transcript_ref(obj=obj, kind="extract_evidence", bid=bid)
                 elif kind == "check_plan":
-                    bundle["check_plan"] = obj
+                    if bid == last_bid:
+                        bundle["check_plan"] = obj
+                    add_mind_transcript_ref(obj=obj, kind="plan_min_checks", bid=bid)
                 elif kind == "auto_answer":
-                    bundle["auto_answer"] = obj
+                    if bid == last_bid:
+                        bundle["auto_answer"] = obj
+                    add_mind_transcript_ref(obj=obj, kind="auto_answer_to_codex", bid=bid)
                 elif kind == "risk_event":
-                    bundle["risk_event"] = obj
+                    if bid == last_bid:
+                        bundle["risk_event"] = obj
+                    add_mind_transcript_ref(obj=obj, kind="risk_judge", bid=bid)
                 elif kind == "loop_guard":
-                    bundle["loop_guard"] = obj
+                    if bid == last_bid:
+                        bundle["loop_guard"] = obj
                 elif kind == "decide_next":
-                    bundle["decide_next"] = obj
+                    if bid == last_bid:
+                        bundle["decide_next"] = obj
+                    add_mind_transcript_ref(obj=obj, kind="decide_next", bid=bid)
                 elif kind == "user_input":
                     uis = bundle.get("user_inputs")
                     if isinstance(uis, list):

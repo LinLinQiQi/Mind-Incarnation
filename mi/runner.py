@@ -685,13 +685,17 @@ def run_autopilot(
             codex_batch_summary=summary,
             repo_observation=repo_obs,
         )
-        evidence_obj = llm.call(schema_filename="extract_evidence.json", prompt=extract_prompt, tag=f"extract_b{batch_idx}").obj
+        evidence_res = llm.call(schema_filename="extract_evidence.json", prompt=extract_prompt, tag=f"extract_b{batch_idx}")
+        evidence_obj = evidence_res.obj
+        evidence_mind_tp = getattr(evidence_res, "transcript_path", None)
+        evidence_mind_ref = str(evidence_mind_tp) if evidence_mind_tp else ""
         evidence_item = {
             "batch_id": batch_id,
             "ts": now_rfc3339(),
             "thread_id": thread_id,
             "hands_transcript_ref": str(hands_transcript),
             "codex_transcript_ref": str(hands_transcript),  # legacy key (V1 early logs)
+            "mind_transcript_ref": evidence_mind_ref,
             "mi_input": batch_input,
             "transcript_observation": summary.get("transcript_observation") or {},
             "repo_observation": repo_obs,
@@ -715,7 +719,10 @@ def run_autopilot(
                 risk_signals=risk_signals,
                 codex_last_message=result.last_agent_message(),
             )
-            risk_obj = llm.call(schema_filename="risk_judge.json", prompt=risk_prompt, tag=f"risk_b{batch_idx}").obj
+            risk_res = llm.call(schema_filename="risk_judge.json", prompt=risk_prompt, tag=f"risk_b{batch_idx}")
+            risk_obj = risk_res.obj
+            risk_mind_tp = getattr(risk_res, "transcript_path", None)
+            risk_mind_ref = str(risk_mind_tp) if risk_mind_tp else ""
             append_jsonl(
                 project_paths.evidence_log_path,
                 {
@@ -724,6 +731,7 @@ def run_autopilot(
                     "ts": now_rfc3339(),
                     "thread_id": thread_id,
                     "risk_signals": risk_signals,
+                    "mind_transcript_ref": risk_mind_ref,
                     "risk": risk_obj,
                 },
             )
@@ -800,10 +808,14 @@ def run_autopilot(
                 recent_evidence=evidence_window,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             )
-            checks_obj = llm.call(schema_filename="plan_min_checks.json", prompt=checks_prompt, tag=f"checks_b{batch_idx}").obj
+            checks_res = llm.call(schema_filename="plan_min_checks.json", prompt=checks_prompt, tag=f"checks_b{batch_idx}")
+            checks_obj = checks_res.obj
+            checks_mind_tp = getattr(checks_res, "transcript_path", None)
+            checks_mind_ref = str(checks_mind_tp) if checks_mind_tp else ""
         else:
             checks_obj = _empty_check_plan()
             checks_obj["notes"] = "skipped: no uncertainty/risk/question detected"
+            checks_mind_ref = ""
         append_jsonl(
             project_paths.evidence_log_path,
             {
@@ -811,6 +823,7 @@ def run_autopilot(
                 "batch_id": f"b{batch_idx}",
                 "ts": now_rfc3339(),
                 "thread_id": thread_id,
+                "mind_transcript_ref": checks_mind_ref,
                 "checks": checks_obj,
             },
         )
@@ -831,8 +844,12 @@ def run_autopilot(
                 recent_evidence=evidence_window,
                 codex_last_message=codex_last,
             )
+            auto_answer_mind_ref = ""
             try:
-                auto_answer_obj = llm.call(schema_filename="auto_answer_to_codex.json", prompt=aa_prompt, tag=f"autoanswer_b{batch_idx}").obj
+                aa_res = llm.call(schema_filename="auto_answer_to_codex.json", prompt=aa_prompt, tag=f"autoanswer_b{batch_idx}")
+                auto_answer_obj = aa_res.obj
+                aa_tp = getattr(aa_res, "transcript_path", None)
+                auto_answer_mind_ref = str(aa_tp) if aa_tp else ""
             except Exception as e:
                 auto_answer_obj = _empty_auto_answer()
                 auto_answer_obj["notes"] = f"auto_answer_to_codex failed: {e}"
@@ -843,6 +860,7 @@ def run_autopilot(
                     "batch_id": f"b{batch_idx}",
                     "ts": now_rfc3339(),
                     "thread_id": thread_id,
+                    "mind_transcript_ref": auto_answer_mind_ref,
                     "auto_answer": auto_answer_obj,
                 },
             )
@@ -933,7 +951,10 @@ def run_autopilot(
                 recent_evidence=evidence_window,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             )
-            checks_obj = llm.call(schema_filename="plan_min_checks.json", prompt=checks_prompt2, tag=f"checks_after_tls_b{batch_idx}").obj
+            checks_res2 = llm.call(schema_filename="plan_min_checks.json", prompt=checks_prompt2, tag=f"checks_after_tls_b{batch_idx}")
+            checks_obj = checks_res2.obj
+            checks_mind_tp2 = getattr(checks_res2, "transcript_path", None)
+            checks_mind_ref2 = str(checks_mind_tp2) if checks_mind_tp2 else ""
             append_jsonl(
                 project_paths.evidence_log_path,
                 {
@@ -941,6 +962,7 @@ def run_autopilot(
                     "batch_id": f"b{batch_idx}.after_testless",
                     "ts": now_rfc3339(),
                     "thread_id": thread_id,
+                    "mind_transcript_ref": checks_mind_ref2,
                     "checks": checks_obj,
                 },
             )
@@ -1040,12 +1062,16 @@ def run_autopilot(
                     recent_evidence=evidence_window,
                     codex_last_message=q,
                 )
+                aa2_mind_ref = ""
                 try:
-                    aa_from_decide = llm.call(
+                    aa_res2 = llm.call(
                         schema_filename="auto_answer_to_codex.json",
                         prompt=aa_prompt2,
                         tag=f"autoanswer_from_decide_b{batch_idx}",
-                    ).obj
+                    )
+                    aa_from_decide = aa_res2.obj
+                    aa2_tp = getattr(aa_res2, "transcript_path", None)
+                    aa2_mind_ref = str(aa2_tp) if aa2_tp else ""
                 except Exception as e:
                     aa_from_decide = _empty_auto_answer()
                     aa_from_decide["notes"] = f"auto_answer_to_codex(from decide_next) failed: {e}"
@@ -1057,6 +1083,7 @@ def run_autopilot(
                         "batch_id": f"b{batch_idx}.from_decide",
                         "ts": now_rfc3339(),
                         "thread_id": thread_id,
+                        "mind_transcript_ref": aa2_mind_ref,
                         "auto_answer": aa_from_decide,
                     },
                 )

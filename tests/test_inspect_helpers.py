@@ -49,7 +49,33 @@ class TestInspectHelpers(unittest.TestCase):
                     }
                 ),
                 json.dumps({"kind": "codex_input", "batch_id": "b1", "thread_id": "t", "input": "next", "transcript_path": "t1"}),
-                json.dumps({"kind": "check_plan", "batch_id": "b1", "thread_id": "t", "checks": {"should_run_checks": False}}),
+                json.dumps(
+                    {
+                        "kind": "check_plan",
+                        "batch_id": "b1",
+                        "thread_id": "t",
+                        "mind_transcript_ref": "m_checks_1",
+                        "checks": {"should_run_checks": False},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "check_plan",
+                        "batch_id": "b1.after_testless",
+                        "thread_id": "t",
+                        "mind_transcript_ref": "m_checks_2",
+                        "checks": {"should_run_checks": True},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "auto_answer",
+                        "batch_id": "b1.from_decide",
+                        "thread_id": "t",
+                        "mind_transcript_ref": "m_autoanswer",
+                        "auto_answer": {"should_answer": False, "needs_user_input": False},
+                    }
+                ),
                 json.dumps(
                     {
                         "kind": "decide_next",
@@ -62,6 +88,7 @@ class TestInspectHelpers(unittest.TestCase):
                         "notes": "done",
                         "ask_user_question": "",
                         "next_codex_input": "",
+                        "mind_transcript_ref": "m_decide",
                         "decision": {"next_action": "stop", "status": "done", "confidence": 0.9, "notes": "done"},
                     }
                 ),
@@ -71,6 +98,7 @@ class TestInspectHelpers(unittest.TestCase):
                         "ts": "x",
                         "thread_id": "t",
                         "codex_transcript_ref": "t1",
+                        "mind_transcript_ref": "m_extract",
                         "facts": ["f1"],
                         "actions": [],
                         "results": ["r1"],
@@ -87,6 +115,14 @@ class TestInspectHelpers(unittest.TestCase):
             self.assertIsNotNone(bundle["evidence_item"])
             self.assertIsNotNone(bundle["check_plan"])
             self.assertIsNotNone(bundle["decide_next"])
+            mts = bundle.get("mind_transcripts")
+            self.assertIsInstance(mts, list)
+            refs = {m.get("mind_transcript_ref") for m in mts if isinstance(m, dict)}
+            self.assertIn("m_extract", refs)
+            self.assertIn("m_checks_1", refs)
+            self.assertIn("m_checks_2", refs)
+            self.assertIn("m_autoanswer", refs)
+            self.assertIn("m_decide", refs)
 
     def test_classify_and_summarize(self) -> None:
         ev = {"batch_id": "b0", "facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []}

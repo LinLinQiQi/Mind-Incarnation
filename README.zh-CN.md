@@ -133,7 +133,7 @@ mi run --cd /path/to/your/project --continue-hands "继续上次的工作。"
 mi run --cd /path/to/your/project --reset-hands "重新开始一个新会话。"
 ```
 
-查看最近一次 batch（MI 发给 Hands 的输入、最后输出、证据与路径指针；如有，还包含 MI 的 decide_next 决策）：
+查看最近一次 batch（MI 发给 Hands 的输入、最后输出、证据与路径指针；以及 MI 的 decide_next 决策与 mind transcript 指针）：
 
 ```bash
 mi last --cd /path/to/your/project

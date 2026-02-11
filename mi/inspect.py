@@ -100,6 +100,16 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
         except Exception:
             ft_s = str(ft or "")
         detail = " ".join([x for x in [state, (f"consec={fc_s}" if fc_s else ""), (f"total={ft_s}" if ft_s else "")] if x]).strip()
+    elif kind == "learn_suggested":
+        sid = str(obj.get("id") or "")
+        auto = obj.get("auto_learn")
+        ch = obj.get("learned_changes") if isinstance(obj.get("learned_changes"), list) else []
+        applied = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
+        detail = f"id={sid} n={len(ch)} auto_learn={bool(auto)} applied={len(applied)}"
+    elif kind == "learn_applied":
+        sid = str(obj.get("suggestion_id") or "")
+        applied = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
+        detail = f"suggestion_id={sid} applied={len(applied)}"
     elif kind == "loop_guard":
         detail = f"pattern={obj.get('pattern')}"
     elif kind == "user_input":

@@ -167,6 +167,16 @@ mi gc transcripts --cd /path/to/your/project
 mi gc transcripts --cd /path/to/your/project --apply
 ```
 
+学习层（learned，可回滚）：
+
+```bash
+mi learned list --cd /path/to/your/project
+mi learned disable <id> --scope project --cd /path/to/your/project
+mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
+```
+
+说明：如果 MindSpec base 中 `violation_response.auto_learn=false`，MI 不会自动写入 `learned.jsonl`，而是把建议记录到 EvidenceLog（`kind=learn_suggested`），之后可用 `apply-suggested` 手动应用。
+
 ## 你会得到什么
 
 - Hands 原始 transcript：`~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`

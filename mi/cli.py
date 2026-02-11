@@ -25,6 +25,7 @@ from .transcript import last_agent_message_from_transcript, tail_transcript_line
 from .redact import redact_text
 from .provider_factory import make_hands_functions, make_mind_provider
 from .gc import archive_project_transcripts
+from .storage import append_jsonl, iter_jsonl, now_rfc3339
 
 
 def _read_stdin_text() -> str:
@@ -129,6 +130,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_ld.add_argument("--cd", default=os.getcwd(), help="Project root used for project-scoped disable.")
     p_ld.add_argument("--rationale", default="user rollback", help="Reason to record for the rollback.")
+
+    p_las = learned_sub.add_parser(
+        "apply-suggested",
+        help="Apply a previously suggested learned change from EvidenceLog (append-only).",
+    )
+    p_las.add_argument("suggestion_id", help="Suggestion id from EvidenceLog record kind=learn_suggested.")
+    p_las.add_argument("--cd", default=os.getcwd(), help="Project root used to locate EvidenceLog and learned storage.")
+    p_las.add_argument("--dry-run", action="store_true", help="Show what would be applied without writing.")
+    p_las.add_argument("--force", action="store_true", help="Apply even if the suggestion looks already applied.")
+    p_las.add_argument(
+        "--extra-rationale",
+        default="",
+        help="Optional extra rationale to append to the learned entry (for audit).",
+    )
 
     p_last = sub.add_parser("last", help="Show the latest MI batch bundle (input/output/evidence pointers).")
     p_last.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
@@ -633,6 +648,103 @@ def main(argv: list[str] | None = None) -> int:
         if args.learned_cmd == "disable":
             store.disable_learned(project_root=project_root, scope=args.scope, target_id=args.id, rationale=args.rationale)
             print(f"Disabled {args.id} (scope={args.scope}) for project={project_root}")
+            return 0
+        if args.learned_cmd == "apply-suggested":
+            sug_id = str(args.suggestion_id or "").strip()
+            if not sug_id:
+                print("missing suggestion_id", file=sys.stderr)
+                return 2
+
+            pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+
+            suggestion: dict[str, object] | None = None
+            for obj in iter_jsonl(pp.evidence_log_path):
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("kind") != "learn_suggested":
+                    continue
+                if str(obj.get("id") or "") == sug_id:
+                    suggestion = obj
+
+            if suggestion is None:
+                print(f"suggestion not found: {sug_id}", file=sys.stderr)
+                return 2
+
+            # Avoid duplicate application unless forced.
+            already_applied = False
+            applied_ids0 = suggestion.get("applied_entry_ids")
+            if isinstance(applied_ids0, list) and any(str(x).strip() for x in applied_ids0):
+                already_applied = True
+
+            if not already_applied:
+                for obj in iter_jsonl(pp.evidence_log_path):
+                    if not isinstance(obj, dict):
+                        continue
+                    if obj.get("kind") != "learn_applied":
+                        continue
+                    if str(obj.get("suggestion_id") or "") == sug_id:
+                        already_applied = True
+                        break
+
+            if already_applied and not bool(args.force):
+                print(f"Suggestion already applied: {sug_id}")
+                return 0
+
+            changes = suggestion.get("learned_changes") if isinstance(suggestion.get("learned_changes"), list) else []
+            normalized: list[dict[str, str]] = []
+            for ch in changes:
+                if not isinstance(ch, dict):
+                    continue
+                scope = str(ch.get("scope") or "").strip()
+                text = str(ch.get("text") or "").strip()
+                if scope not in ("global", "project") or not text:
+                    continue
+                normalized.append(
+                    {
+                        "scope": scope,
+                        "text": text,
+                        "rationale": str(ch.get("rationale") or "").strip(),
+                    }
+                )
+
+            if not normalized:
+                print(f"(no applicable learned changes in suggestion {sug_id})")
+                return 0
+
+            if bool(args.dry_run):
+                print(json.dumps({"suggestion_id": sug_id, "changes": normalized}, indent=2, sort_keys=True))
+                return 0
+
+            extra = str(args.extra_rationale or "").strip()
+            applied_entry_ids: list[str] = []
+            for item in normalized:
+                base_r = (item.get("rationale") or "").strip() or "manual_apply"
+                r = f"{base_r} (apply_suggestion={sug_id})"
+                if extra:
+                    r = f"{r}; {extra}"
+                applied_entry_ids.append(
+                    store.append_learned(
+                        project_root=project_root,
+                        scope=item["scope"],
+                        text=item["text"],
+                        rationale=r,
+                    )
+                )
+
+            append_jsonl(
+                pp.evidence_log_path,
+                {
+                    "kind": "learn_applied",
+                    "ts": now_rfc3339(),
+                    "suggestion_id": sug_id,
+                    "batch_id": str(suggestion.get("batch_id") or ""),
+                    "thread_id": str(suggestion.get("thread_id") or ""),
+                    "applied_entry_ids": applied_entry_ids,
+                },
+            )
+            print(f"Applied suggestion {sug_id}: {len(applied_entry_ids)} learned entries")
+            for entry_id in applied_entry_ids:
+                print(entry_id)
             return 0
 
     return 2

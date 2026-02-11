@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import sys
 import hashlib
+import secrets
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -524,6 +526,78 @@ def run_autopilot(
             },
         )
 
+    def _handle_learned_changes(
+        *,
+        learned_changes: Any,
+        batch_id: str,
+        source: str,
+        mind_transcript_ref: str,
+    ) -> list[str]:
+        """Apply or record suggested learned changes.
+
+        - When MindSpec.violation_response.auto_learn is true (default), MI will append learned entries.
+        - When false, MI will NOT write learned.jsonl; it only records suggestions into EvidenceLog.
+
+        Returns: list of applied learned entry ids (empty if none applied).
+        """
+
+        vr = loaded.base.get("violation_response") if isinstance(loaded.base.get("violation_response"), dict) else {}
+        auto_learn = bool(vr.get("auto_learn", True))
+
+        # Normalize to a stable, minimal shape (keep severity if present for audit).
+        norm: list[dict[str, Any]] = []
+        if isinstance(learned_changes, list):
+            for ch in learned_changes:
+                if not isinstance(ch, dict):
+                    continue
+                scope = str(ch.get("scope") or "").strip()
+                text = str(ch.get("text") or "").strip()
+                if scope not in ("global", "project") or not text:
+                    continue
+                item: dict[str, Any] = {
+                    "scope": scope,
+                    "text": text,
+                    "rationale": str(ch.get("rationale") or "").strip(),
+                }
+                sev = str(ch.get("severity") or "").strip()
+                if sev:
+                    item["severity"] = sev
+                norm.append(item)
+
+        if not norm:
+            return []
+
+        suggestion_id = f"ls_{time.time_ns()}_{secrets.token_hex(4)}"
+        applied_entry_ids: list[str] = []
+
+        if auto_learn:
+            for item in norm:
+                scope = str(item.get("scope") or "").strip()
+                text = str(item.get("text") or "").strip()
+                rationale = str(item.get("rationale") or "").strip()
+                if scope in ("global", "project") and text:
+                    base_r = rationale or source
+                    r = f"{base_r} (source={source} suggestion={suggestion_id})"
+                    applied_entry_ids.append(store.append_learned(project_root=project_path, scope=scope, text=text, rationale=r))
+
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "learn_suggested",
+                "id": suggestion_id,
+                "batch_id": batch_id,
+                "ts": now_rfc3339(),
+                "thread_id": thread_id,
+                "source": source,
+                "auto_learn": auto_learn,
+                "mind_transcript_ref": str(mind_transcript_ref or ""),
+                "learned_changes": norm,
+                "applied_entry_ids": applied_entry_ids,
+            },
+        )
+
+        return applied_entry_ids
+
     def _log_mind_error(
         *,
         batch_id: str,
@@ -911,17 +985,15 @@ def run_autopilot(
             evidence_window = evidence_window[-8:]
 
             # Learned tightening suggestions from risk_judge.
-            for ch in risk_obj.get("learned_changes") or []:
-                if not isinstance(ch, dict):
-                    continue
-                scope = str(ch.get("scope") or "").strip()
-                text = str(ch.get("text") or "").strip()
-                rationale = str(ch.get("rationale") or "").strip()
-                if scope in ("global", "project") and text:
-                    store.append_learned(project_root=project_path, scope=scope, text=text, rationale=rationale or "risk_judge")
-
-            loaded = store.load(project_path)
-            _refresh_overlay_refs()
+            applied = _handle_learned_changes(
+                learned_changes=risk_obj.get("learned_changes"),
+                batch_id=f"b{batch_idx}",
+                source="risk_judge",
+                mind_transcript_ref=risk_mind_ref,
+            )
+            if applied:
+                loaded = store.load(project_path)
+                _refresh_overlay_refs()
 
             # Optional immediate user escalation on high risk.
             vr = loaded.base.get("violation_response") or {}
@@ -1274,18 +1346,17 @@ def run_autopilot(
                     store.write_project_overlay(project_path, loaded.project_overlay)
 
         # Write learned changes (append-only; reversible via future tooling).
-        for ch in decision_obj.get("learned_changes") or []:
-            if not isinstance(ch, dict):
-                continue
-            scope = str(ch.get("scope") or "").strip()
-            text = str(ch.get("text") or "").strip()
-            rationale = str(ch.get("rationale") or "").strip()
-            if scope in ("global", "project") and text:
-                store.append_learned(project_root=project_path, scope=scope, text=text, rationale=rationale or "auto")
+        applied = _handle_learned_changes(
+            learned_changes=decision_obj.get("learned_changes"),
+            batch_id=f"b{batch_idx}",
+            source="decide_next",
+            mind_transcript_ref=decision_mind_ref,
+        )
 
         # Refresh loaded learned text after any new writes.
-        loaded = store.load(project_path)
-        _refresh_overlay_refs()
+        if applied:
+            loaded = store.load(project_path)
+            _refresh_overlay_refs()
 
         next_action = str(decision_obj.get("next_action") or "stop")
         status = str(decision_obj.get("status") or "not_done")
@@ -1444,17 +1515,16 @@ def run_autopilot(
                         }
                         store.write_project_overlay(project_path, loaded.project_overlay)
 
-            for ch in decision_obj.get("learned_changes") or []:
-                if not isinstance(ch, dict):
-                    continue
-                scope = str(ch.get("scope") or "").strip()
-                text = str(ch.get("text") or "").strip()
-                rationale = str(ch.get("rationale") or "").strip()
-                if scope in ("global", "project") and text:
-                    store.append_learned(project_root=project_path, scope=scope, text=text, rationale=rationale or "auto")
+            applied2 = _handle_learned_changes(
+                learned_changes=decision_obj.get("learned_changes"),
+                batch_id=f"b{batch_idx}.after_user",
+                source="decide_next.after_user",
+                mind_transcript_ref=decision2_mind_ref,
+            )
 
-            loaded = store.load(project_path)
-            _refresh_overlay_refs()
+            if applied2:
+                loaded = store.load(project_path)
+                _refresh_overlay_refs()
 
             next_action = str(decision_obj.get("next_action") or "stop")
             status = str(decision_obj.get("status") or "not_done")

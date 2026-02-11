@@ -167,6 +167,16 @@ mi gc transcripts --cd /path/to/your/project
 mi gc transcripts --cd /path/to/your/project --apply
 ```
 
+Learned preferences (reversible):
+
+```bash
+mi learned list --cd /path/to/your/project
+mi learned disable <id> --scope project --cd /path/to/your/project
+mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
+```
+
+Note: if `violation_response.auto_learn=false` in MindSpec base, MI records suggestions in EvidenceLog (`kind=learn_suggested`) instead of writing `learned.jsonl` automatically.
+
 ## What You Get
 
 - Raw Hands transcript: `~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`

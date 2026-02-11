@@ -290,6 +290,8 @@ Minimal shape:
 - `mind_error` (a Mind prompt-pack call failed; includes schema/tag + error + best-effort transcript pointer)
 - `mind_circuit` (Mind circuit breaker state change; V1 emits `state="open"` when it stops attempting further Mind calls)
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
+- `learn_suggested` (a suggested "learned" tightening produced by Mind; may be auto-applied depending on `violation_response.auto_learn`)
+- `learn_applied` (a manual application of a prior `learn_suggested` record; written by `mi learned apply-suggested ...`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
 - `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
@@ -515,6 +517,13 @@ V1 stores learned preferences as JSONL records:
 }
 ```
 
+Learned changes are suggested by Mind outputs (`risk_judge.learned_changes` and `decide_next.learned_changes`).
+
+`MindSpec.violation_response.auto_learn` controls what MI does with those suggestions:
+
+- If `auto_learn=true` (default): MI appends learned entries automatically (append-only) and also records a `learn_suggested` EvidenceLog record with `applied_entry_ids`.
+- If `auto_learn=false`: MI will **not** write `learned.jsonl` automatically; it records `learn_suggested` into EvidenceLog for audit and you can apply it later via CLI.
+
 ## Storage Layout (V1)
 
 Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home ...`).
@@ -674,6 +683,13 @@ Inspect/rollback learned preferences:
 ```bash
 mi --home ~/.mind-incarnation learned list --cd <project_root>
 mi --home ~/.mind-incarnation learned disable <id> --scope project --cd <project_root>
+```
+
+Apply a recorded suggestion (when `violation_response.auto_learn=false` or if you want manual control):
+
+```bash
+mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root>
+mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root> --dry-run
 ```
 
 ## Doc Update Policy (Source of Truth)

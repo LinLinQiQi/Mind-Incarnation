@@ -647,6 +647,8 @@ mi --home ~/.mind-incarnation last --cd <project_root> --json
 mi --home ~/.mind-incarnation last --cd <project_root> --redact
 ```
 
+Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi learned apply-suggested ...`.
+
 Inspect per-project state (overlay + resolved paths):
 
 ```bash

@@ -139,6 +139,8 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
         "check_plan": None,
         "auto_answer": None,
         "risk_event": None,
+        "learn_suggested": [],
+        "learn_applied": [],
         "loop_guard": None,
         "decide_next": None,
         # Convenience: mind transcript pointers for this batch cycle.
@@ -196,6 +198,8 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                         "check_plan": None,
                         "auto_answer": None,
                         "risk_event": None,
+                        "learn_suggested": [],
+                        "learn_applied": [],
                         "loop_guard": None,
                         "decide_next": None,
                         "mind_transcripts": [],
@@ -223,6 +227,18 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                     if bid == last_bid:
                         bundle["risk_event"] = obj
                     add_mind_transcript_ref(obj=obj, kind="risk_judge", bid=bid)
+                elif kind == "learn_suggested":
+                    items = bundle.get("learn_suggested")
+                    if isinstance(items, list):
+                        items.append(obj)
+                    else:
+                        bundle["learn_suggested"] = [obj]
+                elif kind == "learn_applied":
+                    items = bundle.get("learn_applied")
+                    if isinstance(items, list):
+                        items.append(obj)
+                    else:
+                        bundle["learn_applied"] = [obj]
                 elif kind == "loop_guard":
                     if bid == last_bid:
                         bundle["loop_guard"] = obj

@@ -94,6 +94,30 @@ class TestInspectHelpers(unittest.TestCase):
                 ),
                 json.dumps(
                     {
+                        "kind": "learn_suggested",
+                        "id": "ls_123",
+                        "batch_id": "b1",
+                        "ts": "x",
+                        "thread_id": "t",
+                        "source": "decide_next",
+                        "auto_learn": False,
+                        "mind_transcript_ref": "m_decide",
+                        "learned_changes": [{"scope": "project", "text": "x", "rationale": "y"}],
+                        "applied_entry_ids": [],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "kind": "learn_applied",
+                        "ts": "x",
+                        "suggestion_id": "ls_123",
+                        "batch_id": "b1",
+                        "thread_id": "t",
+                        "applied_entry_ids": ["lc_1"],
+                    }
+                ),
+                json.dumps(
+                    {
                         "batch_id": "b1",
                         "ts": "x",
                         "thread_id": "t",
@@ -115,6 +139,12 @@ class TestInspectHelpers(unittest.TestCase):
             self.assertIsNotNone(bundle["evidence_item"])
             self.assertIsNotNone(bundle["check_plan"])
             self.assertIsNotNone(bundle["decide_next"])
+            ls = bundle.get("learn_suggested")
+            self.assertIsInstance(ls, list)
+            self.assertTrue(any(isinstance(x, dict) and x.get("id") == "ls_123" for x in ls))
+            la = bundle.get("learn_applied")
+            self.assertIsInstance(la, list)
+            self.assertTrue(any(isinstance(x, dict) and x.get("suggestion_id") == "ls_123" for x in la))
             mts = bundle.get("mind_transcripts")
             self.assertIsInstance(mts, list)
             refs = {m.get("mind_transcript_ref") for m in mts if isinstance(m, dict)}

@@ -370,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
 
         evidence_item_out = evidence_item or {}
         decide_next_out = decide_next or {}
+        learn_suggested_out = (bundle.get("learn_suggested") or []) if isinstance(bundle.get("learn_suggested"), list) else []
+        learn_applied_out = (bundle.get("learn_applied") or []) if isinstance(bundle.get("learn_applied"), list) else []
         if args.redact:
             mi_input_text = redact_text(mi_input_text)
             codex_last_text = redact_text(codex_last_text)
@@ -389,6 +391,22 @@ def main(argv: list[str] | None = None) -> int:
                         v = inner.get(k)
                         if isinstance(v, str) and v:
                             inner[k] = redact_text(v)
+            # Redact learned suggestion texts/rationales (they may contain tokens/URLs).
+            for rec in learn_suggested_out:
+                if not isinstance(rec, dict):
+                    continue
+                chs = rec.get("learned_changes")
+                if not isinstance(chs, list):
+                    continue
+                for ch in chs:
+                    if not isinstance(ch, dict):
+                        continue
+                    t = ch.get("text")
+                    if isinstance(t, str) and t:
+                        ch["text"] = redact_text(t)
+                    r = ch.get("rationale")
+                    if isinstance(r, str) and r:
+                        ch["rationale"] = redact_text(r)
 
         out = {
             "project_root": str(project_root),
@@ -403,6 +421,8 @@ def main(argv: list[str] | None = None) -> int:
             "check_plan": (bundle.get("check_plan") or {}) if isinstance(bundle.get("check_plan"), dict) else {},
             "auto_answer": (bundle.get("auto_answer") or {}) if isinstance(bundle.get("auto_answer"), dict) else {},
             "risk_event": (bundle.get("risk_event") or {}) if isinstance(bundle.get("risk_event"), dict) else {},
+            "learn_suggested": learn_suggested_out,
+            "learn_applied": learn_applied_out,
             "loop_guard": (bundle.get("loop_guard") or {}) if isinstance(bundle.get("loop_guard"), dict) else {},
             "decide_next": decide_next_out,
             "mind_transcripts": (bundle.get("mind_transcripts") or []) if isinstance(bundle.get("mind_transcripts"), list) else [],
@@ -455,6 +475,28 @@ def main(argv: list[str] | None = None) -> int:
                 ref = str(it.get("mind_transcript_ref") or "").strip()
                 if k and ref:
                     print(f"- {k}: {ref}")
+
+        ls = out.get("learn_suggested")
+        if isinstance(ls, list) and ls:
+            print("\nlearn_suggested:")
+            for rec in ls[:12]:
+                if not isinstance(rec, dict):
+                    continue
+                sid = str(rec.get("id") or "").strip()
+                auto = bool(rec.get("auto_learn", True))
+                applied_ids = rec.get("applied_entry_ids") if isinstance(rec.get("applied_entry_ids"), list) else []
+                summary = summarize_evidence_record(rec)
+                if sid and (not auto) and (not applied_ids):
+                    summary = summary + f" (apply: mi learned apply-suggested {sid} --cd {project_root})"
+                print(f"- {summary}")
+
+        la = out.get("learn_applied")
+        if isinstance(la, list) and la:
+            print("\nlearn_applied:")
+            for rec in la[:8]:
+                if not isinstance(rec, dict):
+                    continue
+                print(f"- {summarize_evidence_record(rec)}")
         if isinstance(evidence_item_out, dict) and evidence_item_out:
             facts = evidence_item_out.get("facts") if isinstance(evidence_item_out.get("facts"), list) else []
             results = evidence_item_out.get("results") if isinstance(evidence_item_out.get("results"), list) else []

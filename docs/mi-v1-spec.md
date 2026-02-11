@@ -155,6 +155,8 @@ Optional interrupt mode:
 
 - MI may interrupt the Hands process when real-time transcript suggests a high-risk action is happening (implemented for Codex; other CLIs are best-effort).
 - This behavior is controlled by MindSpec preferences (default can be off).
+- High-risk heuristic markers (best-effort): `git push`, `npm publish` / `twine upload`, `rm -rf` / `rm -r`, `sudo`, `curl|sh` / `wget|sh`.
+- When `interrupt.mode=on_any_external`, MI may also interrupt for broader external markers (best-effort): installs (`pip install`, `npm install`, `pnpm install`, `yarn add`) and network fetches (`curl`, `wget`).
 
 ## Minimal Checks Policy (V1)
 
@@ -485,7 +487,7 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
 
 ```json
 {
-  "category": "network|install|push|delete|privacy|cost|other",
+  "category": "network|install|push|publish|delete|privilege|privacy|cost|other",
   "severity": "low|medium|high|critical",
   "should_ask_user": true,
   "mitigation": ["string"]

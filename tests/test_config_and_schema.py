@@ -71,6 +71,24 @@ class TestConfigAndSchema(unittest.TestCase):
         errs = validate_json_schema(bad, schema)
         self.assertTrue(errs)
 
+    def test_risk_judge_schema_allows_publish_and_privilege(self) -> None:
+        schema_path = Path(__file__).resolve().parent.parent / "mi" / "schemas" / "risk_judge.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+        base = {
+            "severity": "high",
+            "should_ask_user": True,
+            "mitigation": [],
+            "learned_changes": [],
+        }
+        ok_publish = dict(base)
+        ok_publish["category"] = "publish"
+        self.assertEqual(validate_json_schema(ok_publish, schema), [])
+
+        ok_priv = dict(base)
+        ok_priv["category"] = "privilege"
+        self.assertEqual(validate_json_schema(ok_priv, schema), [])
+
     def test_validate_config_reports_missing_commands_when_path_empty(self) -> None:
         cfg = default_config()
         old_path = os.environ.get("PATH", "")

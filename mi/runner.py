@@ -20,6 +20,7 @@ from .paths import ProjectPaths, default_home_dir
 from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
+from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from .storage import append_jsonl, now_rfc3339, ensure_dir
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
 
@@ -64,19 +65,7 @@ def _detect_risk_signals(result: CodexRunResult) -> list[str]:
     signals: list[str] = []
     for item in result.iter_command_executions():
         cmd = str(item.get("command") or "")
-        lower = cmd.lower()
-        if "git push" in lower:
-            signals.append(f"push: {cmd}")
-        if "npm publish" in lower or "twine upload" in lower:
-            signals.append(f"publish: {cmd}")
-        if "pip install" in lower or "npm install" in lower or "pnpm install" in lower or "yarn add" in lower:
-            signals.append(f"install: {cmd}")
-        if "curl " in lower or "wget " in lower:
-            signals.append(f"network: {cmd}")
-        if "rm -rf" in lower or " rm -r" in lower:
-            signals.append(f"delete: {cmd}")
-        if "sudo " in lower:
-            signals.append(f"privilege: {cmd}")
+        signals.extend(detect_risk_signals_from_command(cmd))
     # Deduplicate while preserving order.
     seen: set[str] = set()
     out: list[str] = []
@@ -111,20 +100,7 @@ def _detect_risk_signals_from_transcript(transcript_path: Path) -> list[str]:
                 line = raw.strip()
                 if not line:
                     continue
-                lower = line.lower()
-
-                if "git push" in lower:
-                    signals.append(f"push: {_truncate(line, 200)}")
-                if "npm publish" in lower or "twine upload" in lower:
-                    signals.append(f"publish: {_truncate(line, 200)}")
-                if "pip install" in lower or "npm install" in lower or "pnpm install" in lower or "yarn add" in lower:
-                    signals.append(f"install: {_truncate(line, 200)}")
-                if "curl " in lower or "wget " in lower:
-                    signals.append(f"network: {_truncate(line, 200)}")
-                if "rm -rf" in lower or " rm -r" in lower:
-                    signals.append(f"delete: {_truncate(line, 200)}")
-                if "sudo " in lower:
-                    signals.append(f"privilege: {_truncate(line, 200)}")
+                signals.extend(detect_risk_signals_from_text_line(line, limit=200))
 
                 if len(signals) >= 20:
                     break
@@ -955,7 +931,7 @@ def run_autopilot(
                 sev = "high"
                 for s in risk_signals:
                     prefix = s.split(":", 1)[0].strip().lower()
-                    if prefix in ("network", "install", "push", "delete"):
+                    if prefix in ("network", "install", "push", "publish", "delete", "privilege"):
                         cat = prefix
                         break
                 if cat == "delete":

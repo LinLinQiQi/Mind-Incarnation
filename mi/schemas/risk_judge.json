@@ -7,7 +7,7 @@
   "properties": {
     "category": {
       "type": "string",
-      "enum": ["network", "install", "push", "delete", "privacy", "cost", "other"]
+      "enum": ["network", "install", "push", "publish", "delete", "privilege", "privacy", "cost", "other"]
     },
     "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
     "should_ask_user": { "type": "boolean" },
@@ -28,4 +28,3 @@
     }
   }
 }
-

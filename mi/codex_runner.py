@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 from .storage import ensure_dir, now_rfc3339
 from .transcript_store import write_transcript_header, append_transcript_line
+from .risk import should_interrupt_text
 
 
 def _is_inside_git_repo(start_dir: Path) -> bool:
@@ -70,33 +71,7 @@ def _signal_from_name(name: str) -> int | None:
 
 
 def _should_interrupt_command(mode: str, command: str) -> bool:
-    if mode == "off":
-        return False
-    lower = command.lower()
-
-    any_external_markers = [
-        "pip install",
-        "npm install",
-        "pnpm install",
-        "yarn add",
-        "curl ",
-        "wget ",
-        "git push",
-        "rm -rf",
-        "sudo ",
-    ]
-    high_risk_markers = [
-        "git push",
-        "rm -rf",
-        "sudo ",
-        "curl | sh",
-        "curl|sh",
-        "wget | sh",
-        "wget|sh",
-    ]
-
-    markers = any_external_markers if mode == "on_any_external" else high_risk_markers
-    return any(m in lower for m in markers)
+    return should_interrupt_text(mode, command)
 
 
 def run_codex_exec(

@@ -13,6 +13,8 @@ If `.mi-project` is missing, do not apply this skill's workflow.
 
 ## Workflow (run on every functional change)
 
+0) Open `references/doc-map.md` and use it as the "change -> docs" checklist.
+
 1) Identify the user-visible behavior change (even if "behavior-preserving").
 2) Update docs in the same patch:
    - Always update `docs/mi-v1-spec.md` when V1 behavior/loop/prompts/schemas change.

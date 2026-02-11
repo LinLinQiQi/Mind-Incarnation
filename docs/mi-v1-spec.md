@@ -707,6 +707,8 @@ Additionally, keep other user-facing docs aligned when impacted:
 - `README.md` and `README.zh-CN.md` (CLI usage/examples, artifact locations, core principles)
 - Any related `docs/*.md` files introduced later
 
+Contributor note: this repo maintains a lightweight doc checklist at `references/doc-map.md` to reduce doc drift across iterative changes.
+
 Doc sections to keep aligned:
 
 - Runtime loop / constraints (if execution contract changes)

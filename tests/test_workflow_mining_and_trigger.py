@@ -81,6 +81,16 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                             "notes": "done",
                         }
                     ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": True,
+                            "checkpoint_kind": "done",
+                            "should_mine_workflow": True,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "mine workflow at done boundary",
+                        }
+                    ],
                     "suggest_workflow.json": [
                         {
                             "should_suggest": True,
@@ -115,9 +125,6 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                             },
                             "notes": "ok",
                         }
-                    ],
-                    "mine_preferences.json": [
-                        {"suggestions": [], "notes": "skip"},
                     ],
                 }
             )
@@ -159,6 +166,16 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                             "notes": "done",
                         }
                     ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": True,
+                            "checkpoint_kind": "done",
+                            "should_mine_workflow": True,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "mine workflow at done boundary",
+                        }
+                    ],
                     "suggest_workflow.json": [
                         {
                             "should_suggest": True,
@@ -193,9 +210,6 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                             },
                             "notes": "ok",
                         }
-                    ],
-                    "mine_preferences.json": [
-                        {"suggestions": [], "notes": "skip"},
                     ],
                 }
             )
@@ -238,11 +252,15 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                             "notes": "done",
                         }
                     ],
-                    "suggest_workflow.json": [
-                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
-                    ],
-                    "mine_preferences.json": [
-                        {"suggestions": [], "notes": "skip"},
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
                     ],
                 }
             )

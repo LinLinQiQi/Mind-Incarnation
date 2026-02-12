@@ -180,7 +180,7 @@ mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 
 实验性：偏好预测（preference mining）
 
-- 如果 `MindSpec.preference_mining.auto_mine=true`（默认），MI 会在每次 `mi run` 结束时调用一次 `mine_preferences`，并在重复出现时输出 `kind=learn_suggested`（详见 `docs/mi-v1-spec.md`）。
+- 如果 `MindSpec.preference_mining.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `mine_preferences`，并在重复出现时输出 `kind=learn_suggested`（详见 `docs/mi-v1-spec.md`）。
 
 ## Workflows + Host Adapters（实验性）
 
@@ -189,7 +189,7 @@ Workflow 是项目级（project-scoped）的可复用流程，MI 可以把它们
 在 `mi run` 中：
 
 - 如果某个已启用 workflow 命中任务（`trigger.mode=task_contains`），MI 会把它注入到第一个 batch 的输入里。
-- 如果 `MindSpec.workflows.auto_mine=true`（默认），MI 会在每次 `mi run` 结束时调用一次 `suggest_workflow`，并在重复出现时固化为 workflow。
+- 如果 `MindSpec.workflows.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `suggest_workflow`，并在重复出现时固化为 workflow。
 
 创建/编辑 workflow：
 

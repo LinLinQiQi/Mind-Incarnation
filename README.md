@@ -180,7 +180,7 @@ Note: if `violation_response.auto_learn=false` in MindSpec base, MI records sugg
 
 Experimental: preference mining
 
-- If `MindSpec.preference_mining.auto_mine=true` (default), MI calls `mine_preferences` once per `mi run` and may emit `kind=learn_suggested` after repeated occurrences (see `docs/mi-v1-spec.md`).
+- If `MindSpec.preference_mining.auto_mine=true` (default), MI may call `mine_preferences` at LLM-judged checkpoints during `mi run` (including at run end) and may emit `kind=learn_suggested` after repeated occurrences (see `docs/mi-v1-spec.md`).
 
 ## Workflows + Host Adapters (Experimental)
 
@@ -189,7 +189,7 @@ Workflows are project-scoped reusable procedures that MI can export into host wo
 In `mi run`:
 
 - If an enabled workflow matches the task (`trigger.mode=task_contains`), MI injects it into the first batch input.
-- If `MindSpec.workflows.auto_mine=true` (default), MI calls `suggest_workflow` once per `mi run` and may solidify a repeated workflow.
+- If `MindSpec.workflows.auto_mine=true` (default), MI may call `suggest_workflow` at LLM-judged checkpoints during `mi run` (including at run end) and may solidify a repeated workflow.
 
 Create/edit workflows:
 

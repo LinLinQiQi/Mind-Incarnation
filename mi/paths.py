@@ -309,6 +309,11 @@ class ProjectPaths:
         # Signature -> count mapping for mined preference suggestions.
         return self.project_dir / "preference_candidates.json"
 
+    @property
+    def segment_state_path(self) -> Path:
+        # Persisted, best-effort segment buffer for checkpoint-based mining across runs.
+        return self.project_dir / "segment_state.json"
+
 
 @dataclass(frozen=True)
 class GlobalPaths:

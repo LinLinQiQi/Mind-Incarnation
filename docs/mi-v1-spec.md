@@ -84,6 +84,13 @@ Loop/stuck guard (deterministic, V1):
   - asks the user for an override instruction (if `defaults.ask_when_uncertain=true`), or
   - stops with `status=blocked` (if `defaults.ask_when_uncertain=false`).
 
+Checkpointing (segments; internal, V1):
+
+- MI maintains a compact internal "segment buffer" while `mi run` continues across multiple Hands batches.
+- Before sending the next batch input to Hands (and once again when the run ends), MI calls `checkpoint_decide` to judge whether a segment boundary exists.
+- When `checkpoint_decide.should_checkpoint=true`, MI may mine workflows and/or preferences using only the current segment evidence, then resets the segment buffer for the next phase.
+- This mechanism exists to avoid tying workflow solidification to "user exits" and to support long-running sessions without forcing Hands into step-by-step protocols.
+
 Mind failure handling (deterministic, V1):
 
 - If a Mind prompt-pack call fails (network/config/schema/JSON parse/etc.), MI records `kind="mind_error"` in EvidenceLog with best-effort pointers to the mind transcript.
@@ -202,22 +209,25 @@ MI uses the following internal prompts (all should return strict JSON):
    - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional risk judgement
    - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). `send_to_codex` is legacy naming and means "send the next batch input to Hands". This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
 
-7) `suggest_workflow` (implemented; optional)
-   - Input: task + MindSpec/Overlay/Learned + recent evidence + run notes
+7) `checkpoint_decide` (implemented; internal)
+   - Input: MindSpec/Overlay/Learned + compact "segment evidence" buffer + planned next Hands input (if any) + a status hint
+   - Output: whether MI should cut a checkpoint boundary (segment) now, and whether it should mine workflows/preferences at this boundary.
+
+8) `suggest_workflow` (implemented; optional)
+   - Input: task + MindSpec/Overlay/Learned + recent evidence (typically the current segment) + run notes
    - Output: either `should_suggest=false` or a suggested workflow IR + a stable `signature` (used to count occurrences across runs). MI may solidify it into stored workflows depending on `MindSpec.workflows` knobs.
 
-8) `edit_workflow` (implemented; CLI)
+9) `edit_workflow` (implemented; CLI)
    - Input: MindSpec/Overlay/Learned + existing workflow + natural-language edit request
    - Output: edited workflow IR + change_summary/conflicts/notes (used by `mi workflow edit`)
 
-9) `mine_preferences` (implemented; optional)
-   - Input: task + MindSpec/Overlay/Learned + recent evidence + run notes
+10) `mine_preferences` (implemented; optional)
+   - Input: task + MindSpec/Overlay/Learned + recent evidence (typically the current segment) + run notes
    - Output: a small list of suggested reversible learned rules (scope=`project|global`) with confidence/benefit. MI uses occurrence counts to avoid noisy one-off learning.
 
 Planned (not required for V1 loop to function; can be added incrementally):
 
 - `closure_eval` (legacy/optional; not used in the default loop because `decide_next` includes closure)
-- `checkpoint_decide`
 - `learn_update` (beyond the simple learned text entries)
 
 ## Data Models (Minimal Schemas)
@@ -375,11 +385,12 @@ Minimal shape:
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
 - `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
+- `checkpoint` (segment boundary judgement from `checkpoint_decide`; may trigger workflow/preference mining and segment reset)
 - `workflow_trigger` (an enabled workflow matched the user task and was injected into the first batch input)
-- `workflow_suggestion` (output from `suggest_workflow` at the end of `mi run`; includes state + Mind transcript pointer + raw output)
+- `workflow_suggestion` (output from `suggest_workflow` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
 - `workflow_solidified` (MI created a stored workflow IR from a repeated signature)
 - `host_sync` (MI synced derived artifacts into bound host workspaces; includes sync results)
-- `preference_mining` (output from `mine_preferences` at the end of `mi run`; includes state + Mind transcript pointer + raw output)
+- `preference_mining` (output from `mine_preferences` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
 - `preference_solidified` (MI emitted a learned suggestion (and may auto-apply) when a mined preference reaches its occurrence threshold)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
@@ -552,6 +563,31 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
 }
 ```
 
+`checkpoint` record shape (segment checkpoint judgement):
+
+```json
+{
+  "kind": "checkpoint",
+  "batch_id": "string",
+  "ts": "RFC3339 timestamp",
+  "thread_id": "string",
+  "segment_id": "string",
+  "state": "ok|error|skipped",
+  "mind_transcript_ref": "path",
+  "planned_next_input": "string",
+  "status_hint": "string",
+  "note": "string",
+  "output": {
+    "should_checkpoint": true,
+    "checkpoint_kind": "none|phase_change|subtask_complete|risk_boundary|user_interaction|timebox|max_batches|done|blocked|other",
+    "should_mine_workflow": false,
+    "should_mine_preferences": false,
+    "confidence": 0.0,
+    "notes": "string"
+  }
+}
+```
+
 `loop_guard` record shape (stuck loop detection):
 
 ```json
@@ -629,8 +665,8 @@ Workflow mining/solidification policy is values-driven, but MI exposes coarse kn
 Workflow behavior in `mi run` (V1):
 
 - Trigger routing: if an **enabled** workflow has `trigger.mode=task_contains` and its `pattern` matches the user task, MI injects the workflow into the **first** Hands batch input (lightweight; no step slicing). MI records `kind=workflow_trigger`.
-- Auto mining: if `MindSpec.workflows.auto_mine=true`, MI calls `suggest_workflow` once at the end of the `mi run` invocation and records `kind=workflow_suggestion`.
-  - MI increments the occurrence count for `suggestion.signature` in `projects/<project_id>/workflow_candidates.json`.
+- Auto mining (checkpoint-based): if `MindSpec.workflows.auto_mine=true`, MI may call `suggest_workflow` at LLM-judged checkpoints (segment boundaries) during `mi run` (including at run end) and records `kind=workflow_suggestion`.
+  - MI increments the occurrence count for `suggestion.signature` in `projects/<project_id>/workflow_candidates.json` (at most once per `mi run` invocation per signature).
   - When the occurrence threshold is met (usually `min_occurrences`, or 1-shot when `benefit=high` and `allow_single_if_high_benefit=true`), MI writes a stored workflow JSON under `projects/<project_id>/workflows/` and records `kind=workflow_solidified`.
   - If `auto_sync_on_change=true`, MI then syncs derived artifacts into all bound host workspaces and records `kind=host_sync`.
 
@@ -647,7 +683,7 @@ MI may mine likely-stable user preferences/habits from MI-captured transcript/ev
 
 Knobs in `MindSpec.preference_mining`:
 
-- `auto_mine`: allow MI to call `mine_preferences` at the end of `mi run`.
+- `auto_mine`: allow MI to call `mine_preferences` at LLM-judged checkpoints during `mi run` (including at run end).
 - `min_occurrences`: usually require >=2 similar occurrences before emitting a learned suggestion.
 - `allow_single_if_high_benefit`: allow 1-shot emission when benefit is extremely high.
 - `min_confidence`: skip suggestions below this confidence to reduce noisy learning.
@@ -655,8 +691,8 @@ Knobs in `MindSpec.preference_mining`:
 
 Behavior in `mi run` (V1):
 
-- MI calls `mine_preferences` once at the end of the `mi run` invocation and records `kind=preference_mining`.
-- MI computes a stable signature from `(scope + normalized learned text)` and increments the occurrence count in `projects/<project_id>/preference_candidates.json`.
+- MI may call `mine_preferences` at checkpoints (segment boundaries) during `mi run` and records `kind=preference_mining`.
+- MI computes a stable signature from `(scope + normalized learned text)` and increments the occurrence count in `projects/<project_id>/preference_candidates.json` (at most once per `mi run` invocation per signature).
 - When the occurrence threshold is met, MI emits a `kind=learn_suggested` record (source=`mine_preferences`) and records `kind=preference_solidified`.
   - If `violation_response.auto_learn=true`, MI also appends the learned rule into `learned.jsonl` and includes `applied_entry_ids` in the `learn_suggested` record.
 
@@ -673,6 +709,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/<project_id>/overlay.json`
   - `projects/<project_id>/learned.jsonl`
   - `projects/<project_id>/evidence.jsonl`
+  - `projects/<project_id>/segment_state.json` (best-effort segment buffer for checkpoint-based mining; internal)
   - `projects/<project_id>/workflows/*.json` (workflow IR; source of truth)
   - `projects/<project_id>/workflow_candidates.json` (signature -> count; used for workflow mining)
   - `projects/<project_id>/preference_candidates.json` (signature -> count; used for preference mining)

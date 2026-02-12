@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MI CheckpointDecide",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "should_checkpoint": { "type": "boolean" },
+    "checkpoint_kind": {
+      "type": "string",
+      "enum": [
+        "none",
+        "phase_change",
+        "subtask_complete",
+        "risk_boundary",
+        "user_interaction",
+        "timebox",
+        "max_batches",
+        "done",
+        "blocked",
+        "other"
+      ]
+    },
+    "should_mine_workflow": { "type": "boolean" },
+    "should_mine_preferences": { "type": "boolean" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "notes": { "type": "string" }
+  },
+  "required": [
+    "should_checkpoint",
+    "checkpoint_kind",
+    "should_mine_workflow",
+    "should_mine_preferences",
+    "confidence",
+    "notes"
+  ]
+}
+

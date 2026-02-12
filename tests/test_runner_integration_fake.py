@@ -99,11 +99,15 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "notes": "done",
                         },
                     ],
-                    "suggest_workflow.json": [
-                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
-                    ],
-                    "mine_preferences.json": [
-                        {"suggestions": [], "notes": "skip"},
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
                     ],
                 }
             )
@@ -119,7 +123,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             )
 
             self.assertEqual(result.status, "done")
-            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "decide_next.json", "suggest_workflow.json", "mine_preferences.json"])
+            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "decide_next.json", "checkpoint_decide.json"])
 
             kinds = set()
             with open(result.evidence_log_path, "r", encoding="utf-8") as f:
@@ -237,11 +241,15 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                     "risk_judge.json": [
                         {"category": "push", "severity": "high", "should_ask_user": True, "mitigation": [], "learned_changes": []},
                     ],
-                    "suggest_workflow.json": [
-                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
-                    ],
-                    "mine_preferences.json": [
-                        {"suggestions": [], "notes": "skip"},
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
                     ],
                 }
             )
@@ -265,7 +273,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                 sys.stderr = old_stderr
 
             self.assertEqual(result.status, "blocked")
-            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "risk_judge.json", "suggest_workflow.json", "mine_preferences.json"])
+            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "risk_judge.json", "checkpoint_decide.json"])
 
             kinds = set()
             with open(result.evidence_log_path, "r", encoding="utf-8") as f:
@@ -310,11 +318,15 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "notes": "done",
                         },
                     ],
-                    "suggest_workflow.json": [
-                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
-                    ],
-                    "mine_preferences.json": [
-                        {"suggestions": [], "notes": "skip"},
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
                     ],
                 }
             )
@@ -330,7 +342,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             )
 
             self.assertEqual(result.status, "done")
-            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "risk_judge.json", "decide_next.json", "suggest_workflow.json", "mine_preferences.json"])
+            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "risk_judge.json", "decide_next.json", "checkpoint_decide.json"])
 
     def test_mind_error_extract_evidence_is_logged_and_run_continues(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
@@ -372,11 +384,15 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "notes": "done",
                         },
                     ],
-                    "suggest_workflow.json": [
-                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
-                    ],
-                    "mine_preferences.json": [
-                        {"suggestions": [], "notes": "skip"},
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
                     ],
                 }
             )
@@ -394,7 +410,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             self.assertEqual(result.status, "done")
             self.assertEqual(
                 fake_llm.calls,
-                ["extract_evidence.json", "plan_min_checks.json", "decide_next.json", "suggest_workflow.json", "mine_preferences.json"],
+                ["extract_evidence.json", "plan_min_checks.json", "decide_next.json", "checkpoint_decide.json"],
             )
 
             kinds = []
@@ -496,11 +512,15 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "notes": "done",
                         },
                     ],
-                    "suggest_workflow.json": [
-                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
-                    ],
-                    "mine_preferences.json": [
-                        {"suggestions": [], "notes": "skip"},
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
                     ],
                 }
             )
@@ -518,7 +538,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             self.assertEqual(result.status, "done")
             self.assertEqual(
                 fake_llm.calls,
-                ["extract_evidence.json", "risk_judge.json", "decide_next.json", "suggest_workflow.json", "mine_preferences.json"],
+                ["extract_evidence.json", "risk_judge.json", "decide_next.json", "checkpoint_decide.json"],
             )
 
             kinds = set()

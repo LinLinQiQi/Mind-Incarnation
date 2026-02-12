@@ -17,12 +17,12 @@ from .llm import MiLlm
 from .mind_errors import MindCallError
 from .mindspec import MindSpecStore
 from .paths import ProjectPaths, default_home_dir
-from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt
+from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt, checkpoint_decide_prompt
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
-from .storage import append_jsonl, now_rfc3339, ensure_dir
+from .storage import append_jsonl, now_rfc3339, ensure_dir, read_json, write_json
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
 from .workflows import WorkflowStore, load_workflow_candidates, write_workflow_candidates, new_workflow_id, render_workflow_markdown
 from .preferences import load_preference_candidates, write_preference_candidates, preference_signature
@@ -525,6 +525,93 @@ def run_autopilot(
             }
         )
 
+    # Checkpoint/segment mining settings (V1):
+    # - Segments are internal; they do NOT impose a step protocol on Hands.
+    # - Checkpoints decide when to mine workflows/preferences and reset the segment buffer.
+    wf_cfg = loaded.base.get("workflows") if isinstance(loaded.base.get("workflows"), dict) else {}
+    wf_auto_mine = bool(wf_cfg.get("auto_mine", True))
+    pref_cfg = loaded.base.get("preference_mining") if isinstance(loaded.base.get("preference_mining"), dict) else {}
+    pref_auto_mine = bool(pref_cfg.get("auto_mine", True))
+    checkpoint_enabled = bool(wf_auto_mine or pref_auto_mine)
+
+    segment_max_records = 40
+    segment_state: dict[str, Any] = {}
+    segment_records: list[dict[str, Any]] = []
+    # Avoid inflating mined occurrence counts within a single `mi run` invocation.
+    wf_sigs_counted_in_run: set[str] = set()
+    pref_sigs_counted_in_run: set[str] = set()
+
+    def _new_segment_state(*, reason: str, thread_hint: str) -> dict[str, Any]:
+        seg_id = f"seg_{time.time_ns()}_{secrets.token_hex(4)}"
+        now = now_rfc3339()
+        return {
+            "version": "v1",
+            "open": True,
+            "segment_id": seg_id,
+            "created_ts": now,
+            "updated_ts": now,
+            "thread_id": (thread_hint or "").strip(),
+            "task_hint": _truncate(task.strip(), 200),
+            "reason": str(reason or "").strip(),
+            "records": [],
+        }
+
+    def _load_segment_state(*, thread_hint: str) -> dict[str, Any] | None:
+        obj = read_json(project_paths.segment_state_path, default=None)
+        if not isinstance(obj, dict):
+            return None
+        if str(obj.get("version") or "") != "v1":
+            return None
+        if not bool(obj.get("open", False)):
+            return None
+        recs = obj.get("records")
+        if not isinstance(recs, list):
+            obj["records"] = []
+        # Basic thread affinity: only reuse when continuing the same Hands session (best-effort).
+        th = (thread_hint or "").strip()
+        st = str(obj.get("thread_id") or "").strip()
+        if th and st and th != st:
+            return None
+        return obj
+
+    def _persist_segment_state() -> None:
+        if not checkpoint_enabled:
+            return
+        try:
+            segment_state["updated_ts"] = now_rfc3339()
+            # Keep a bounded buffer on disk.
+            recs2 = segment_state.get("records")
+            if isinstance(recs2, list) and len(recs2) > segment_max_records:
+                segment_state["records"] = recs2[-segment_max_records:]
+            write_json(project_paths.segment_state_path, segment_state)
+        except Exception:
+            return
+
+    def _clear_segment_state() -> None:
+        try:
+            project_paths.segment_state_path.unlink()
+        except FileNotFoundError:
+            return
+        except Exception:
+            return
+
+    if checkpoint_enabled:
+        # When NOT continuing a Hands session, do not carry over an open segment buffer.
+        if not bool(continue_hands) or bool(reset_hands):
+            _clear_segment_state()
+
+        seg0 = _load_segment_state(thread_hint=str(thread_id or ""))
+        segment_state = seg0 if isinstance(seg0, dict) else _new_segment_state(reason="run_start", thread_hint=str(thread_id or ""))
+        recs0 = segment_state.get("records")
+        segment_records = recs0 if isinstance(recs0, list) else []
+        segment_state["records"] = segment_records
+
+        # Include a workflow trigger marker in the segment when present.
+        if matched:
+            segment_records.append(evidence_window[-1])
+            segment_records[:] = segment_records[-segment_max_records:]
+        _persist_segment_state()
+
     intr = loaded.base.get("interrupt") or {}
     intr_mode = str(intr.get("mode") or "off")
     intr_signals = intr.get("signal_sequence") or ["SIGINT", "SIGTERM", "SIGKILL"]
@@ -766,6 +853,505 @@ def run_autopilot(
 
             return None, mind_ref, "error"
 
+    def _segment_add(obj: dict[str, Any]) -> None:
+        if not checkpoint_enabled:
+            return
+        if not isinstance(obj, dict):
+            return
+        # Keep segment records compact and bounded; they are only used for checkpoint/mine prompts.
+        seg: dict[str, Any] = {}
+        kind = obj.get("kind")
+        if isinstance(kind, str) and kind.strip():
+            seg["kind"] = kind.strip()
+        bid = obj.get("batch_id")
+        if isinstance(bid, str) and bid.strip():
+            seg["batch_id"] = bid.strip()
+
+        # Common compact fields.
+        for k in ("workflow_id", "workflow_name", "trigger_mode", "trigger_pattern"):
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                seg[k] = _truncate(v.strip(), 200)
+
+        if seg:
+            # Allow small records as-is.
+            pass
+
+        # Evidence-like records.
+        if obj.get("kind") == "evidence" or ("facts" in obj and "results" in obj and "unknowns" in obj):
+            seg["kind"] = "evidence"
+            for k in ("facts", "actions", "results", "unknowns", "risk_signals"):
+                v = obj.get(k)
+                if isinstance(v, list):
+                    seg[k] = [str(x)[:300] for x in v[:12] if str(x).strip()]
+                else:
+                    seg[k] = []
+            # A small subset of repo/transcript observations (bounded).
+            repo = obj.get("repo_observation") if isinstance(obj.get("repo_observation"), dict) else {}
+            if isinstance(repo, dict) and repo:
+                seg["repo_observation"] = {
+                    "stack_hints": repo.get("stack_hints") if isinstance(repo.get("stack_hints"), list) else [],
+                    "has_tests": bool(repo.get("has_tests", False)),
+                    "git_is_repo": bool(repo.get("git_is_repo", False)),
+                    "git_head": _truncate(str(repo.get("git_head") or ""), 120),
+                    "git_diff_stat": _truncate(str(repo.get("git_diff_stat") or ""), 600),
+                    "git_diff_cached_stat": _truncate(str(repo.get("git_diff_cached_stat") or ""), 600),
+                }
+            obs = obj.get("transcript_observation") if isinstance(obj.get("transcript_observation"), dict) else {}
+            if isinstance(obs, dict) and obs:
+                seg["transcript_observation"] = {
+                    "file_paths": (obs.get("file_paths") if isinstance(obs.get("file_paths"), list) else [])[:20],
+                    "errors": (obs.get("errors") if isinstance(obs.get("errors"), list) else [])[:10],
+                }
+
+        if obj.get("kind") == "risk_event":
+            seg["kind"] = "risk_event"
+            seg["category"] = _truncate(str(obj.get("category") or ""), 60)
+            seg["severity"] = _truncate(str(obj.get("severity") or ""), 60)
+            rs = obj.get("risk_signals") if isinstance(obj.get("risk_signals"), list) else []
+            seg["risk_signals"] = [str(x)[:200] for x in rs[:8] if str(x).strip()]
+
+        if obj.get("kind") == "check_plan":
+            seg["kind"] = "check_plan"
+            seg["should_run_checks"] = bool(obj.get("should_run_checks", False))
+            seg["needs_testless_strategy"] = bool(obj.get("needs_testless_strategy", False))
+            seg["notes"] = _truncate(str(obj.get("notes") or ""), 200)
+
+        if obj.get("kind") == "auto_answer":
+            seg["kind"] = "auto_answer"
+            seg["should_answer"] = bool(obj.get("should_answer", False))
+            seg["needs_user_input"] = bool(obj.get("needs_user_input", False))
+            seg["ask_user_question"] = _truncate(str(obj.get("ask_user_question") or ""), 200)
+
+        if obj.get("kind") == "decide_next":
+            seg["kind"] = "decide_next"
+            seg["next_action"] = _truncate(str(obj.get("next_action") or ""), 40)
+            seg["status"] = _truncate(str(obj.get("status") or ""), 40)
+            seg["notes"] = _truncate(str(obj.get("notes") or ""), 200)
+
+        if obj.get("kind") == "user_input":
+            seg["kind"] = "user_input"
+            seg["question"] = _truncate(str(obj.get("question") or ""), 200)
+            seg["answer"] = _truncate(str(obj.get("answer") or ""), 200)
+
+        if seg:
+            segment_records.append(seg)
+            segment_records[:] = segment_records[-segment_max_records:]
+
+    def _mine_workflow_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
+        if not bool(wf_auto_mine):
+            return
+        if executed_batches <= 0:
+            return
+
+        auto_enable = bool(wf_cfg.get("auto_enable", True))
+        auto_sync = bool(wf_cfg.get("auto_sync_on_change", True))
+        allow_single_high = bool(wf_cfg.get("allow_single_if_high_benefit", True))
+        try:
+            min_occ = int(wf_cfg.get("min_occurrences", 2) or 2)
+        except Exception:
+            min_occ = 2
+        if min_occ < 1:
+            min_occ = 1
+
+        mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
+        prompt = suggest_workflow_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=loaded.base,
+            learned_text=loaded.learned_text,
+            project_overlay=loaded.project_overlay,
+            recent_evidence=seg_evidence,
+            notes=mine_notes,
+        )
+        out, mind_ref, state = _mind_call(
+            schema_filename="suggest_workflow.json",
+            prompt=prompt,
+            tag=f"suggest_workflow:{base_batch_id}",
+            batch_id=f"{base_batch_id}.workflow_suggestion",
+        )
+
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "workflow_suggestion",
+                "batch_id": f"{base_batch_id}.workflow_suggestion",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "state": state,
+                "mind_transcript_ref": mind_ref,
+                "notes": mine_notes,
+                "output": out if isinstance(out, dict) else {},
+            },
+        )
+
+        if not isinstance(out, dict):
+            return
+        if not bool(out.get("should_suggest", False)):
+            return
+        sug = out.get("suggestion")
+        if not isinstance(sug, dict):
+            return
+
+        signature = str(sug.get("signature") or "").strip()
+        if not signature:
+            return
+        benefit = str(sug.get("benefit") or "").strip()
+        reason_s = str(sug.get("reason") or "").strip()
+        confidence = sug.get("confidence")
+        try:
+            conf_f = float(confidence) if confidence is not None else 0.0
+        except Exception:
+            conf_f = 0.0
+
+        candidates = load_workflow_candidates(project_paths)
+        by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
+        entry = by_sig.get(signature)
+        if not isinstance(entry, dict):
+            entry = {}
+
+        try:
+            prev_n = int(entry.get("count") or 0)
+        except Exception:
+            prev_n = 0
+        already_counted = signature in wf_sigs_counted_in_run
+        if already_counted:
+            new_n = prev_n
+        else:
+            new_n = prev_n + 1
+            wf_sigs_counted_in_run.add(signature)
+        entry["count"] = new_n
+        entry["last_ts"] = now_rfc3339()
+        entry["benefit"] = benefit
+        entry["confidence"] = conf_f
+        if reason_s:
+            entry["reason"] = reason_s
+        wf_obj = sug.get("workflow") if isinstance(sug.get("workflow"), dict) else {}
+        name = str(wf_obj.get("name") or "").strip()
+        if name:
+            entry["workflow_name"] = name
+
+        by_sig[signature] = entry
+        candidates["by_signature"] = by_sig
+        write_workflow_candidates(project_paths, candidates)
+
+        existing_wid = str(entry.get("workflow_id") or "").strip()
+        if existing_wid:
+            return
+
+        threshold = min_occ
+        if allow_single_high and benefit == "high":
+            threshold = 1
+        if new_n < threshold:
+            return
+
+        if not isinstance(wf_obj, dict) or not wf_obj:
+            return
+
+        wid = new_workflow_id()
+        wf_final = dict(wf_obj)
+        wf_final["id"] = wid
+        wf_final["enabled"] = bool(auto_enable)
+
+        src = wf_final.get("source") if isinstance(wf_final.get("source"), dict) else {}
+        ev_refs = src.get("evidence_refs") if isinstance(src.get("evidence_refs"), list) else []
+        wf_final["source"] = {
+            "kind": "suggested",
+            "reason": (reason_s or "suggest_workflow") + f" (signature={signature} benefit={benefit} confidence={conf_f:.2f})",
+            "evidence_refs": [str(x) for x in ev_refs if str(x).strip()],
+        }
+        wf_final["created_ts"] = now_rfc3339()
+        wf_final["updated_ts"] = now_rfc3339()
+
+        wf_store.write(wf_final)
+
+        entry["workflow_id"] = wid
+        entry["solidified_ts"] = now_rfc3339()
+        by_sig[signature] = entry
+        candidates["by_signature"] = by_sig
+        write_workflow_candidates(project_paths, candidates)
+
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "workflow_solidified",
+                "batch_id": f"{base_batch_id}.workflow_solidified",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "signature": signature,
+                "count": new_n,
+                "threshold": threshold,
+                "benefit": benefit,
+                "confidence": conf_f,
+                "workflow_id": wid,
+                "workflow_name": str(wf_final.get("name") or ""),
+                "enabled": bool(wf_final.get("enabled", False)),
+            },
+        )
+
+        if auto_sync:
+            sync_obj = sync_hosts_from_overlay(overlay=overlay, project_id=project_paths.project_id, workflows=wf_store.enabled_workflows())
+            append_jsonl(
+                project_paths.evidence_log_path,
+                {
+                    "kind": "host_sync",
+                    "batch_id": f"{base_batch_id}.host_sync",
+                    "ts": now_rfc3339(),
+                    "thread_id": thread_id or "",
+                    "source": "workflow_solidified",
+                    "sync": sync_obj,
+                },
+            )
+
+    def _mine_preferences_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
+        nonlocal loaded, overlay
+
+        if not bool(pref_auto_mine):
+            return
+        if executed_batches <= 0:
+            return
+
+        pref_allow_single_high = bool(pref_cfg.get("allow_single_if_high_benefit", True))
+        try:
+            pref_min_occ = int(pref_cfg.get("min_occurrences", 2) or 2)
+        except Exception:
+            pref_min_occ = 2
+        if pref_min_occ < 1:
+            pref_min_occ = 1
+        try:
+            pref_min_conf = float(pref_cfg.get("min_confidence", 0.75) or 0.75)
+        except Exception:
+            pref_min_conf = 0.75
+        try:
+            pref_max = int(pref_cfg.get("max_suggestions", 3) or 3)
+        except Exception:
+            pref_max = 3
+        if pref_max < 0:
+            pref_max = 0
+        if pref_max > 10:
+            pref_max = 10
+        if pref_max == 0:
+            return
+
+        mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
+        prompt = mine_preferences_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=loaded.base,
+            learned_text=loaded.learned_text,
+            project_overlay=loaded.project_overlay,
+            recent_evidence=seg_evidence,
+            notes=mine_notes,
+        )
+        out, mind_ref, state = _mind_call(
+            schema_filename="mine_preferences.json",
+            prompt=prompt,
+            tag=f"mine_preferences:{base_batch_id}",
+            batch_id=f"{base_batch_id}.preference_mining",
+        )
+
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "preference_mining",
+                "batch_id": f"{base_batch_id}.preference_mining",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "state": state,
+                "mind_transcript_ref": mind_ref,
+                "notes": mine_notes,
+                "output": out if isinstance(out, dict) else {},
+            },
+        )
+
+        if not isinstance(out, dict):
+            return
+        sugs = out.get("suggestions")
+        if not isinstance(sugs, list) or not sugs:
+            return
+
+        candidates = load_preference_candidates(project_paths)
+        by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
+
+        for raw in sugs[:pref_max]:
+            if not isinstance(raw, dict):
+                continue
+            scope = str(raw.get("scope") or "project").strip()
+            if scope not in ("global", "project"):
+                scope = "project"
+            text = str(raw.get("text") or "").strip()
+            if not text:
+                continue
+            if loaded.learned_text and text in loaded.learned_text:
+                continue
+
+            benefit = str(raw.get("benefit") or "medium").strip()
+            if benefit not in ("low", "medium", "high"):
+                benefit = "medium"
+            rationale = str(raw.get("rationale") or "").strip()
+            conf = raw.get("confidence")
+            try:
+                conf_f = float(conf) if conf is not None else 0.0
+            except Exception:
+                conf_f = 0.0
+            if conf_f < pref_min_conf:
+                continue
+
+            sig = preference_signature(scope=scope, text=text)
+            entry = by_sig.get(sig)
+            if not isinstance(entry, dict):
+                entry = {}
+
+            try:
+                prev_n = int(entry.get("count") or 0)
+            except Exception:
+                prev_n = 0
+            already_counted = sig in pref_sigs_counted_in_run
+            if already_counted:
+                new_n = prev_n
+            else:
+                new_n = prev_n + 1
+                pref_sigs_counted_in_run.add(sig)
+            entry["count"] = new_n
+            entry["last_ts"] = now_rfc3339()
+            entry["scope"] = scope
+            entry["text"] = text
+            entry["benefit"] = benefit
+            entry["confidence"] = conf_f
+            if rationale:
+                entry["rationale"] = rationale
+
+            if bool(entry.get("suggestion_emitted", False)) or bool(entry.get("learned_entry_ids")):
+                by_sig[sig] = entry
+                continue
+
+            threshold = pref_min_occ
+            if pref_allow_single_high and benefit == "high":
+                threshold = 1
+            if new_n < threshold:
+                by_sig[sig] = entry
+                continue
+
+            applied_ids = _handle_learned_changes(
+                learned_changes=[{"scope": scope, "text": text, "rationale": rationale or "preference_mining", "severity": "medium"}],
+                batch_id=f"{base_batch_id}.preference_solidified",
+                source="mine_preferences",
+                mind_transcript_ref=mind_ref,
+            )
+            entry["suggestion_emitted"] = True
+            entry["suggestion_ts"] = now_rfc3339()
+            if applied_ids:
+                entry["learned_entry_ids"] = list(applied_ids)
+                entry["solidified_ts"] = now_rfc3339()
+                loaded = store.load(project_path)
+                _refresh_overlay_refs()
+
+            append_jsonl(
+                project_paths.evidence_log_path,
+                {
+                    "kind": "preference_solidified",
+                    "batch_id": f"{base_batch_id}.preference_solidified",
+                    "ts": now_rfc3339(),
+                    "thread_id": thread_id or "",
+                    "signature": sig,
+                    "count": new_n,
+                    "threshold": threshold,
+                    "benefit": benefit,
+                    "confidence": conf_f,
+                    "scope": scope,
+                    "text": text,
+                    "applied_entry_ids": list(applied_ids),
+                },
+            )
+            by_sig[sig] = entry
+
+        candidates["by_signature"] = by_sig
+        write_preference_candidates(project_paths, candidates)
+
+    _last_checkpoint_key = ""
+
+    def _maybe_checkpoint_and_mine(*, batch_id: str, planned_next_input: str, status_hint: str, note: str) -> None:
+        """LLM-judged checkpoint: may mine workflows/preferences and reset segment buffer."""
+
+        nonlocal segment_state, segment_records, _last_checkpoint_key
+
+        if not checkpoint_enabled:
+            return
+        if not isinstance(segment_records, list):
+            return
+        base_bid = str(batch_id or "").split(".", 1)[0].strip()
+        if not base_bid:
+            return
+        # Guard: avoid duplicate checkpoint calls for the same base batch in the same run phase.
+        key = base_bid + ":" + str(status_hint or "").strip()
+        if key == _last_checkpoint_key:
+            return
+        _last_checkpoint_key = key
+
+        # Keep thread affinity updated best-effort.
+        if isinstance(segment_state, dict):
+            cur_tid = str(thread_id or "").strip()
+            if cur_tid and cur_tid != "unknown":
+                segment_state["thread_id"] = cur_tid
+            segment_state["task_hint"] = _truncate(task.strip(), 200)
+
+        prompt = checkpoint_decide_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=loaded.base,
+            learned_text=loaded.learned_text,
+            project_overlay=loaded.project_overlay,
+            segment_evidence=segment_records,
+            current_batch_id=base_bid,
+            planned_next_input=_truncate(planned_next_input or "", 2000),
+            status_hint=str(status_hint or ""),
+            notes=(note or "").strip(),
+        )
+        out, mind_ref, state = _mind_call(
+            schema_filename="checkpoint_decide.json",
+            prompt=prompt,
+            tag=f"checkpoint:{base_bid}",
+            batch_id=f"{base_bid}.checkpoint",
+        )
+
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "checkpoint",
+                "batch_id": f"{base_bid}.checkpoint",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "segment_id": str(segment_state.get("segment_id") or "") if isinstance(segment_state, dict) else "",
+                "state": state,
+                "mind_transcript_ref": mind_ref,
+                "planned_next_input": _truncate(planned_next_input or "", 800),
+                "status_hint": str(status_hint or ""),
+                "note": (note or "").strip(),
+                "output": out if isinstance(out, dict) else {},
+            },
+        )
+
+        if not isinstance(out, dict):
+            _persist_segment_state()
+            return
+
+        should_cp = bool(out.get("should_checkpoint", False))
+        if not should_cp:
+            _persist_segment_state()
+            return
+
+        # Mine before resetting segment.
+        if bool(out.get("should_mine_workflow", False)):
+            _mine_workflow_from_segment(seg_evidence=segment_records, base_batch_id=base_bid, source="checkpoint")
+        if bool(out.get("should_mine_preferences", False)):
+            _mine_preferences_from_segment(seg_evidence=segment_records, base_batch_id=base_bid, source="checkpoint")
+
+        # Reset segment buffer for the next phase.
+        segment_state = _new_segment_state(reason=f"checkpoint:{out.get('checkpoint_kind')}", thread_hint=str(thread_id or ""))
+        segment_records = segment_state.get("records") if isinstance(segment_state.get("records"), list) else []
+        segment_state["records"] = segment_records
+        _persist_segment_state()
+
     def _queue_next_input(*, nxt: str, codex_last_message: str, batch_id: str, reason: str) -> bool:
         """Set next_input for the next Hands batch, with loop-guard and optional user intervention."""
         nonlocal next_input, status, notes, sent_sigs
@@ -819,6 +1405,8 @@ def run_autopilot(
                 )
                 evidence_window.append({"kind": "user_input", "batch_id": batch_id, "question": q, "answer": override})
                 evidence_window[:] = evidence_window[-8:]
+                _segment_add({"kind": "user_input", "batch_id": batch_id, "question": q, "answer": override})
+                _persist_segment_state()
 
                 ov = override.strip()
                 if not ov or ov.lower() in ("stop", "quit", "q"):
@@ -832,14 +1420,25 @@ def run_autopilot(
                 notes = "loop_guard triggered"
                 return False
 
+        # Checkpoint after the current batch, before sending the next instruction to Hands.
+        _maybe_checkpoint_and_mine(
+            batch_id=batch_id,
+            planned_next_input=candidate,
+            status_hint="not_done",
+            note="before_continue: " + reason,
+        )
+
         next_input = candidate
         status = "not_done"
         notes = reason
         return True
 
     executed_batches = 0
+    last_batch_id = ""
+    max_batches_exhausted = False
     for batch_idx in range(max_batches):
         batch_id = f"b{batch_idx}"
+        last_batch_id = batch_id
         batch_ts = now_rfc3339().replace(":", "").replace("-", "")
         hands_transcript = project_paths.transcripts_dir / "hands" / f"{batch_ts}_b{batch_idx}.jsonl"
 
@@ -975,6 +1574,8 @@ def run_autopilot(
         append_jsonl(project_paths.evidence_log_path, evidence_item)
         evidence_window.append(evidence_item)
         evidence_window = evidence_window[-8:]
+        _segment_add(evidence_item)
+        _persist_segment_state()
 
         # Post-hoc risk judgement (LLM) when heuristic signals are present.
         risk_signals = _detect_risk_signals(result)
@@ -1030,6 +1631,16 @@ def run_autopilot(
             )
             evidence_window.append({"kind": "risk_event", "batch_id": f"b{batch_idx}", **risk_obj})
             evidence_window = evidence_window[-8:]
+            _segment_add(
+                {
+                    "kind": "risk_event",
+                    "batch_id": f"b{batch_idx}",
+                    "risk_signals": risk_signals,
+                    "category": risk_obj.get("category"),
+                    "severity": risk_obj.get("severity"),
+                }
+            )
+            _persist_segment_state()
 
             # Learned tightening suggestions from risk_judge.
             applied = _handle_learned_changes(
@@ -1128,6 +1739,8 @@ def run_autopilot(
         )
         evidence_window.append({"kind": "check_plan", "batch_id": f"b{batch_idx}", **checks_obj})
         evidence_window = evidence_window[-8:]
+        _segment_add({"kind": "check_plan", "batch_id": f"b{batch_idx}", **(checks_obj if isinstance(checks_obj, dict) else {})})
+        _persist_segment_state()
 
         # Auto-answer Hands when it is asking the user questions; only ask the user if MI cannot answer.
         auto_answer_obj = _empty_auto_answer()
@@ -1171,6 +1784,8 @@ def run_autopilot(
             )
             evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}", **auto_answer_obj})
             evidence_window = evidence_window[-8:]
+            _segment_add({"kind": "auto_answer", "batch_id": f"b{batch_idx}", **(auto_answer_obj if isinstance(auto_answer_obj, dict) else {})})
+            _persist_segment_state()
 
         # Deterministic pre-action arbitration to minimize user burden:
         # 1) If auto_answer requires user input -> ask user, then send answer to Hands (optionally with checks).
@@ -1196,6 +1811,8 @@ def run_autopilot(
             )
             evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
             evidence_window = evidence_window[-8:]
+            _segment_add({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
+            _persist_segment_state()
 
             check_text = ""
             if isinstance(checks_obj, dict) and bool(checks_obj.get("should_run_checks", False)):
@@ -1235,6 +1852,8 @@ def run_autopilot(
             )
             evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
             evidence_window = evidence_window[-8:]
+            _segment_add({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
+            _persist_segment_state()
 
             loaded.project_overlay.setdefault("testless_verification_strategy", {})
             loaded.project_overlay["testless_verification_strategy"] = {
@@ -1282,6 +1901,8 @@ def run_autopilot(
             )
             evidence_window.append({"kind": "check_plan", "batch_id": f"b{batch_idx}.after_testless", **checks_obj})
             evidence_window = evidence_window[-8:]
+            _segment_add({"kind": "check_plan", "batch_id": f"b{batch_idx}.after_testless", **(checks_obj if isinstance(checks_obj, dict) else {})})
+            _persist_segment_state()
 
         answer_text = ""
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("should_answer", False)):
@@ -1346,6 +1967,8 @@ def run_autopilot(
                 )
                 evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": override})
                 evidence_window = evidence_window[-8:]
+                _segment_add({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": override})
+                _persist_segment_state()
 
                 ov = (override or "").strip()
                 if not ov or ov.lower() in ("stop", "quit", "q"):
@@ -1375,6 +1998,16 @@ def run_autopilot(
             phase="initial",
             mind_transcript_ref=decision_mind_ref,
         )
+        _segment_add(
+            {
+                "kind": "decide_next",
+                "batch_id": f"b{batch_idx}",
+                "next_action": decision_obj.get("next_action"),
+                "status": decision_obj.get("status"),
+                "notes": decision_obj.get("notes"),
+            }
+        )
+        _persist_segment_state()
 
         # Apply project overlay updates (e.g., testless verification strategy).
         overlay_update = decision_obj.get("update_project_overlay") or {}
@@ -1457,6 +2090,8 @@ def run_autopilot(
                 )
                 evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}.from_decide", **aa_from_decide})
                 evidence_window = evidence_window[-8:]
+                _segment_add({"kind": "auto_answer", "batch_id": f"b{batch_idx}.from_decide", **(aa_from_decide if isinstance(aa_from_decide, dict) else {})})
+                _persist_segment_state()
 
                 aa_text = ""
                 if isinstance(aa_from_decide, dict) and bool(aa_from_decide.get("should_answer", False)):
@@ -1498,6 +2133,8 @@ def run_autopilot(
             )
             evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
             evidence_window = evidence_window[-8:]
+            _segment_add({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
+            _persist_segment_state()
 
             # Re-decide with the user input included (no extra Hands run yet).
             decision_prompt2 = decide_next_prompt(
@@ -1616,348 +2253,21 @@ def run_autopilot(
         status = "blocked"
         notes = f"unknown next_action={next_action}"
         break
+    else:
+        max_batches_exhausted = True
+        status = "blocked"
+        notes = f"reached max_batches={max_batches}"
 
-    # Workflow mining/solidification: after the run, optionally suggest and store a reusable workflow.
-    wf_cfg = loaded.base.get("workflows") if isinstance(loaded.base.get("workflows"), dict) else {}
-    auto_mine = bool(wf_cfg.get("auto_mine", True))
-    auto_enable = bool(wf_cfg.get("auto_enable", True))
-    auto_sync = bool(wf_cfg.get("auto_sync_on_change", True))
-    allow_single_high = bool(wf_cfg.get("allow_single_if_high_benefit", True))
-    try:
-        min_occ = int(wf_cfg.get("min_occurrences", 2) or 2)
-    except Exception:
-        min_occ = 2
-    if min_occ < 1:
-        min_occ = 1
-
-    def _log_host_sync(*, sync_obj: dict[str, Any], source: str) -> None:
-        append_jsonl(
-            project_paths.evidence_log_path,
-            {
-                "kind": "host_sync",
-                "batch_id": "final.workflow.host_sync",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "source": source,
-                "sync": sync_obj,
-            },
+    # Final checkpoint for long-running sessions: mine when the model judges a boundary (done/blocked/max_batches),
+    # even if the run ended without queueing a next Hands batch.
+    if checkpoint_enabled and executed_batches > 0 and last_batch_id:
+        final_hint = "max_batches" if max_batches_exhausted else str(status or "")
+        _maybe_checkpoint_and_mine(
+            batch_id=last_batch_id,
+            planned_next_input="",
+            status_hint=final_hint,
+            note="run_end",
         )
-
-    def _maybe_mine_workflow() -> None:
-        if not auto_mine:
-            return
-        if executed_batches <= 0:
-            return
-
-        mine_notes = f"status={status} batches={executed_batches} notes={notes}"
-        prompt = suggest_workflow_prompt(
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=loaded.base,
-            learned_text=loaded.learned_text,
-            project_overlay=loaded.project_overlay,
-            recent_evidence=evidence_window,
-            notes=mine_notes,
-        )
-        out, mind_ref, state = _mind_call(
-            schema_filename="suggest_workflow.json",
-            prompt=prompt,
-            tag="suggest_workflow",
-            batch_id="final.workflow",
-        )
-
-        # Always record that we attempted a suggestion (transparency).
-        append_jsonl(
-            project_paths.evidence_log_path,
-            {
-                "kind": "workflow_suggestion",
-                "batch_id": "final.workflow",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "state": state,
-                "mind_transcript_ref": mind_ref,
-                "notes": mine_notes,
-                "output": out if isinstance(out, dict) else {},
-            },
-        )
-
-        if not isinstance(out, dict):
-            return
-        if not bool(out.get("should_suggest", False)):
-            return
-        sug = out.get("suggestion")
-        if not isinstance(sug, dict):
-            return
-
-        signature = str(sug.get("signature") or "").strip()
-        if not signature:
-            return
-        benefit = str(sug.get("benefit") or "").strip()
-        reason_s = str(sug.get("reason") or "").strip()
-        confidence = sug.get("confidence")
-        try:
-            conf_f = float(confidence) if confidence is not None else 0.0
-        except Exception:
-            conf_f = 0.0
-
-        candidates = load_workflow_candidates(project_paths)
-        by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
-        entry = by_sig.get(signature)
-        if not isinstance(entry, dict):
-            entry = {}
-
-        try:
-            prev_n = int(entry.get("count") or 0)
-        except Exception:
-            prev_n = 0
-        new_n = prev_n + 1
-        entry["count"] = new_n
-        entry["last_ts"] = now_rfc3339()
-        entry["benefit"] = benefit
-        entry["confidence"] = conf_f
-        if reason_s:
-            entry["reason"] = reason_s
-        wf_obj = sug.get("workflow") if isinstance(sug.get("workflow"), dict) else {}
-        name = str(wf_obj.get("name") or "").strip()
-        if name:
-            entry["workflow_name"] = name
-
-        # Persist updated candidate counts.
-        by_sig[signature] = entry
-        candidates["by_signature"] = by_sig
-        write_workflow_candidates(project_paths, candidates)
-
-        existing_wid = str(entry.get("workflow_id") or "").strip()
-        if existing_wid:
-            return
-
-        threshold = min_occ
-        if allow_single_high and benefit == "high":
-            threshold = 1
-        if new_n < threshold:
-            return
-
-        if not isinstance(wf_obj, dict) or not wf_obj:
-            return
-
-        wid = new_workflow_id()
-        wf_final = dict(wf_obj)
-        wf_final["id"] = wid
-        wf_final["enabled"] = bool(auto_enable)
-
-        src = wf_final.get("source") if isinstance(wf_final.get("source"), dict) else {}
-        ev_refs = src.get("evidence_refs") if isinstance(src.get("evidence_refs"), list) else []
-        wf_final["source"] = {
-            "kind": "suggested",
-            "reason": (reason_s or "suggest_workflow") + f" (signature={signature} benefit={benefit} confidence={conf_f:.2f})",
-            "evidence_refs": [str(x) for x in ev_refs if str(x).strip()],
-        }
-        wf_final["created_ts"] = now_rfc3339()
-        wf_final["updated_ts"] = now_rfc3339()
-
-        # Persist workflow IR as MI source of truth.
-        wf_store.write(wf_final)
-
-        # Update mapping so we don't create duplicates for the same signature.
-        entry["workflow_id"] = wid
-        entry["solidified_ts"] = now_rfc3339()
-        by_sig[signature] = entry
-        candidates["by_signature"] = by_sig
-        write_workflow_candidates(project_paths, candidates)
-
-        append_jsonl(
-            project_paths.evidence_log_path,
-            {
-                "kind": "workflow_solidified",
-                "batch_id": "final.workflow.solidified",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "signature": signature,
-                "count": new_n,
-                "threshold": threshold,
-                "benefit": benefit,
-                "confidence": conf_f,
-                "workflow_id": wid,
-                "workflow_name": str(wf_final.get("name") or ""),
-                "enabled": bool(wf_final.get("enabled", False)),
-            },
-        )
-
-        if auto_sync:
-            sync_obj = sync_hosts_from_overlay(overlay=overlay, project_id=project_paths.project_id, workflows=wf_store.enabled_workflows())
-            _log_host_sync(sync_obj=sync_obj, source="workflow_solidified")
-
-    _maybe_mine_workflow()
-
-    # Preference mining: after the run, optionally predict likely-stable learned preferences
-    # based on MI-captured transcript/evidence (no host coupling).
-    pref_cfg = loaded.base.get("preference_mining") if isinstance(loaded.base.get("preference_mining"), dict) else {}
-    pref_auto_mine = bool(pref_cfg.get("auto_mine", True))
-    pref_allow_single_high = bool(pref_cfg.get("allow_single_if_high_benefit", True))
-    try:
-        pref_min_occ = int(pref_cfg.get("min_occurrences", 2) or 2)
-    except Exception:
-        pref_min_occ = 2
-    if pref_min_occ < 1:
-        pref_min_occ = 1
-    try:
-        pref_min_conf = float(pref_cfg.get("min_confidence", 0.75) or 0.75)
-    except Exception:
-        pref_min_conf = 0.75
-    try:
-        pref_max = int(pref_cfg.get("max_suggestions", 3) or 3)
-    except Exception:
-        pref_max = 3
-    if pref_max < 0:
-        pref_max = 0
-    if pref_max > 10:
-        pref_max = 10
-
-    def _maybe_mine_preferences() -> None:
-        nonlocal loaded, overlay
-
-        if not pref_auto_mine:
-            return
-        if executed_batches <= 0:
-            return
-        if pref_max == 0:
-            return
-
-        mine_notes = f"status={status} batches={executed_batches} notes={notes}"
-        prompt = mine_preferences_prompt(
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=loaded.base,
-            learned_text=loaded.learned_text,
-            project_overlay=loaded.project_overlay,
-            recent_evidence=evidence_window,
-            notes=mine_notes,
-        )
-        out, mind_ref, state = _mind_call(
-            schema_filename="mine_preferences.json",
-            prompt=prompt,
-            tag="mine_preferences",
-            batch_id="final.prefs",
-        )
-
-        append_jsonl(
-            project_paths.evidence_log_path,
-            {
-                "kind": "preference_mining",
-                "batch_id": "final.prefs",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "state": state,
-                "mind_transcript_ref": mind_ref,
-                "notes": mine_notes,
-                "output": out if isinstance(out, dict) else {},
-            },
-        )
-
-        if not isinstance(out, dict):
-            return
-        sugs = out.get("suggestions")
-        if not isinstance(sugs, list) or not sugs:
-            return
-
-        candidates = load_preference_candidates(project_paths)
-        by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
-
-        for raw in sugs[:pref_max]:
-            if not isinstance(raw, dict):
-                continue
-            scope = str(raw.get("scope") or "project").strip()
-            if scope not in ("global", "project"):
-                scope = "project"
-            text = str(raw.get("text") or "").strip()
-            if not text:
-                continue
-
-            # Avoid emitting the same learned rule repeatedly.
-            if loaded.learned_text and text in loaded.learned_text:
-                continue
-
-            benefit = str(raw.get("benefit") or "medium").strip()
-            if benefit not in ("low", "medium", "high"):
-                benefit = "medium"
-            rationale = str(raw.get("rationale") or "").strip()
-            conf = raw.get("confidence")
-            try:
-                conf_f = float(conf) if conf is not None else 0.0
-            except Exception:
-                conf_f = 0.0
-            if conf_f < pref_min_conf:
-                continue
-
-            sig = preference_signature(scope=scope, text=text)
-            entry = by_sig.get(sig)
-            if not isinstance(entry, dict):
-                entry = {}
-
-            try:
-                prev_n = int(entry.get("count") or 0)
-            except Exception:
-                prev_n = 0
-            new_n = prev_n + 1
-            entry["count"] = new_n
-            entry["last_ts"] = now_rfc3339()
-            entry["scope"] = scope
-            entry["text"] = text
-            entry["benefit"] = benefit
-            entry["confidence"] = conf_f
-            if rationale:
-                entry["rationale"] = rationale
-
-            # If we already emitted a suggestion (or applied a learned entry), don't emit again.
-            if bool(entry.get("suggestion_emitted", False)) or bool(entry.get("learned_entry_ids")):
-                by_sig[sig] = entry
-                continue
-
-            threshold = pref_min_occ
-            if pref_allow_single_high and benefit == "high":
-                threshold = 1
-            if new_n < threshold:
-                by_sig[sig] = entry
-                continue
-
-            applied_ids = _handle_learned_changes(
-                learned_changes=[{"scope": scope, "text": text, "rationale": rationale or "preference_mining", "severity": "medium"}],
-                batch_id="final.prefs",
-                source="mine_preferences",
-                mind_transcript_ref=mind_ref,
-            )
-            entry["suggestion_emitted"] = True
-            entry["suggestion_ts"] = now_rfc3339()
-            if applied_ids:
-                entry["learned_entry_ids"] = list(applied_ids)
-                entry["solidified_ts"] = now_rfc3339()
-                loaded = store.load(project_path)
-                _refresh_overlay_refs()
-
-            append_jsonl(
-                project_paths.evidence_log_path,
-                {
-                    "kind": "preference_solidified",
-                    "batch_id": "final.prefs.solidified",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id or "",
-                    "signature": sig,
-                    "count": new_n,
-                    "threshold": threshold,
-                    "benefit": benefit,
-                    "confidence": conf_f,
-                    "scope": scope,
-                    "text": text,
-                    "applied_entry_ids": list(applied_ids),
-                },
-            )
-
-            by_sig[sig] = entry
-
-        candidates["by_signature"] = by_sig
-        write_preference_candidates(project_paths, candidates)
-
-    _maybe_mine_preferences()
 
     return AutopilotResult(
         status=status,

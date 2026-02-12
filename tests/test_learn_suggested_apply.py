@@ -99,6 +99,9 @@ class TestLearnSuggestedApply(unittest.TestCase):
                             "notes": "done",
                         }
                     ],
+                    "suggest_workflow.json": [
+                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
+                    ],
                 }
             )
 
@@ -182,6 +185,9 @@ class TestLearnSuggestedApply(unittest.TestCase):
                             "notes": "done",
                         }
                     ],
+                    "suggest_workflow.json": [
+                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
+                    ],
                 }
             )
 
@@ -216,4 +222,3 @@ class TestLearnSuggestedApply(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

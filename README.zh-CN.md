@@ -182,6 +182,11 @@ mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 
 Workflow 是项目级（project-scoped）的可复用流程，MI 可以把它们导出到宿主 workspace（派生物）。
 
+在 `mi run` 中：
+
+- 如果某个已启用 workflow 命中任务（`trigger.mode=task_contains`），MI 会把它注入到第一个 batch 的输入里。
+- 如果 `MindSpec.workflows.auto_mine=true`（默认），MI 会在每次 `mi run` 结束时调用一次 `suggest_workflow`，并在重复出现时固化为 workflow。
+
 创建/编辑 workflow：
 
 ```bash

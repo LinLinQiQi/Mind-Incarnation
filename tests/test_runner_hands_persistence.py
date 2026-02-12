@@ -79,6 +79,9 @@ class TestRunnerHandsPersistence(unittest.TestCase):
                             "notes": "done",
                         }
                     ],
+                    "suggest_workflow.json": [
+                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
+                    ],
                 }
             )
             r1 = run_autopilot(
@@ -118,6 +121,9 @@ class TestRunnerHandsPersistence(unittest.TestCase):
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }
+                    ],
+                    "suggest_workflow.json": [
+                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
                     ],
                 }
             )
@@ -164,6 +170,9 @@ class TestRunnerHandsPersistence(unittest.TestCase):
                             "notes": "done",
                         }
                     ],
+                    "suggest_workflow.json": [
+                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
+                    ],
                 }
             )
             _ = run_autopilot(
@@ -184,4 +193,3 @@ class TestRunnerHandsPersistence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

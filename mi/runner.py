@@ -24,7 +24,7 @@ from .prompts import suggest_workflow_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from .storage import append_jsonl, now_rfc3339, ensure_dir
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
-from .workflows import WorkflowStore, load_workflow_candidates, write_workflow_candidates, new_workflow_id
+from .workflows import WorkflowStore, load_workflow_candidates, write_workflow_candidates, new_workflow_id, render_workflow_markdown
 from .hosts import sync_hosts_from_overlay
 
 
@@ -436,6 +436,8 @@ def run_autopilot(
     ensure_dir(project_paths.project_dir)
     ensure_dir(project_paths.transcripts_dir)
 
+    wf_store = WorkflowStore(project_paths)
+
     if llm is None:
         llm = MiLlm(project_root=project_path, transcripts_dir=project_paths.transcripts_dir)
     if hands_exec is None:
@@ -456,6 +458,71 @@ def run_autopilot(
 
     status = "not_done"
     notes = ""
+
+    # Workflow trigger routing (project-scoped): if an enabled workflow matches the task,
+    # inject it into the very first batch input (lightweight; no step slicing).
+    def _match_workflow_for_task(task_text: str) -> dict[str, Any] | None:
+        t = (task_text or "").lower()
+        best: dict[str, Any] | None = None
+        best_score = -1
+        for w in wf_store.enabled_workflows():
+            if not isinstance(w, dict):
+                continue
+            trig = w.get("trigger") if isinstance(w.get("trigger"), dict) else {}
+            mode = str(trig.get("mode") or "").strip()
+            pat = str(trig.get("pattern") or "").strip()
+            if mode != "task_contains" or not pat:
+                continue
+            if pat.lower() not in t:
+                continue
+            score = len(pat)
+            if score > best_score:
+                best = w
+                best_score = score
+        return best
+
+    matched = _match_workflow_for_task(task)
+    if matched:
+        wid = str(matched.get("id") or "").strip()
+        name = str(matched.get("name") or "").strip()
+        trig = matched.get("trigger") if isinstance(matched.get("trigger"), dict) else {}
+        pat = str(trig.get("pattern") or "").strip()
+        injected = "\n".join(
+            [
+                "[MI Workflow Triggered]",
+                "A reusable project workflow matches this task.",
+                "- Use it as guidance; you do NOT need to report step-by-step.",
+                "- If network/install/push/publish is not clearly safe per values, pause and ask.",
+                "",
+                render_workflow_markdown(matched),
+                "",
+                "User task:",
+                task.strip(),
+            ]
+        ).strip()
+        next_input = injected
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "workflow_trigger",
+                "batch_id": "b0.workflow_trigger",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "workflow_id": wid,
+                "workflow_name": name,
+                "trigger_mode": str(trig.get("mode") or ""),
+                "trigger_pattern": pat,
+            },
+        )
+        evidence_window.append(
+            {
+                "kind": "workflow_trigger",
+                "workflow_id": wid,
+                "workflow_name": name,
+                "trigger_mode": str(trig.get("mode") or ""),
+                "trigger_pattern": pat,
+            }
+        )
 
     intr = loaded.base.get("interrupt") or {}
     intr_mode = str(intr.get("mode") or "off")
@@ -1548,6 +1615,178 @@ def run_autopilot(
         status = "blocked"
         notes = f"unknown next_action={next_action}"
         break
+
+    # Workflow mining/solidification: after the run, optionally suggest and store a reusable workflow.
+    wf_cfg = loaded.base.get("workflows") if isinstance(loaded.base.get("workflows"), dict) else {}
+    auto_mine = bool(wf_cfg.get("auto_mine", True))
+    auto_enable = bool(wf_cfg.get("auto_enable", True))
+    auto_sync = bool(wf_cfg.get("auto_sync_on_change", True))
+    allow_single_high = bool(wf_cfg.get("allow_single_if_high_benefit", True))
+    try:
+        min_occ = int(wf_cfg.get("min_occurrences", 2) or 2)
+    except Exception:
+        min_occ = 2
+    if min_occ < 1:
+        min_occ = 1
+
+    def _log_host_sync(*, sync_obj: dict[str, Any], source: str) -> None:
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "host_sync",
+                "batch_id": "final.workflow.host_sync",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "source": source,
+                "sync": sync_obj,
+            },
+        )
+
+    def _maybe_mine_workflow() -> None:
+        if not auto_mine:
+            return
+        if executed_batches <= 0:
+            return
+
+        mine_notes = f"status={status} batches={executed_batches} notes={notes}"
+        prompt = suggest_workflow_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=loaded.base,
+            learned_text=loaded.learned_text,
+            project_overlay=loaded.project_overlay,
+            recent_evidence=evidence_window,
+            notes=mine_notes,
+        )
+        out, mind_ref, state = _mind_call(
+            schema_filename="suggest_workflow.json",
+            prompt=prompt,
+            tag="suggest_workflow",
+            batch_id="final.workflow",
+        )
+
+        # Always record that we attempted a suggestion (transparency).
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "workflow_suggestion",
+                "batch_id": "final.workflow",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "state": state,
+                "mind_transcript_ref": mind_ref,
+                "notes": mine_notes,
+                "output": out if isinstance(out, dict) else {},
+            },
+        )
+
+        if not isinstance(out, dict):
+            return
+        if not bool(out.get("should_suggest", False)):
+            return
+        sug = out.get("suggestion")
+        if not isinstance(sug, dict):
+            return
+
+        signature = str(sug.get("signature") or "").strip()
+        if not signature:
+            return
+        benefit = str(sug.get("benefit") or "").strip()
+        reason_s = str(sug.get("reason") or "").strip()
+        confidence = sug.get("confidence")
+        try:
+            conf_f = float(confidence) if confidence is not None else 0.0
+        except Exception:
+            conf_f = 0.0
+
+        candidates = load_workflow_candidates(project_paths)
+        by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
+        entry = by_sig.get(signature)
+        if not isinstance(entry, dict):
+            entry = {}
+
+        try:
+            prev_n = int(entry.get("count") or 0)
+        except Exception:
+            prev_n = 0
+        new_n = prev_n + 1
+        entry["count"] = new_n
+        entry["last_ts"] = now_rfc3339()
+        entry["benefit"] = benefit
+        entry["confidence"] = conf_f
+        if reason_s:
+            entry["reason"] = reason_s
+        wf_obj = sug.get("workflow") if isinstance(sug.get("workflow"), dict) else {}
+        name = str(wf_obj.get("name") or "").strip()
+        if name:
+            entry["workflow_name"] = name
+
+        # Persist updated candidate counts.
+        by_sig[signature] = entry
+        candidates["by_signature"] = by_sig
+        write_workflow_candidates(project_paths, candidates)
+
+        existing_wid = str(entry.get("workflow_id") or "").strip()
+        if existing_wid:
+            return
+
+        threshold = min_occ
+        if allow_single_high and benefit == "high":
+            threshold = 1
+        if new_n < threshold:
+            return
+
+        if not isinstance(wf_obj, dict) or not wf_obj:
+            return
+
+        wid = new_workflow_id()
+        wf_final = dict(wf_obj)
+        wf_final["id"] = wid
+        wf_final["enabled"] = bool(auto_enable)
+
+        src = wf_final.get("source") if isinstance(wf_final.get("source"), dict) else {}
+        ev_refs = src.get("evidence_refs") if isinstance(src.get("evidence_refs"), list) else []
+        wf_final["source"] = {
+            "kind": "suggested",
+            "reason": (reason_s or "suggest_workflow") + f" (signature={signature} benefit={benefit} confidence={conf_f:.2f})",
+            "evidence_refs": [str(x) for x in ev_refs if str(x).strip()],
+        }
+        wf_final["created_ts"] = now_rfc3339()
+        wf_final["updated_ts"] = now_rfc3339()
+
+        # Persist workflow IR as MI source of truth.
+        wf_store.write(wf_final)
+
+        # Update mapping so we don't create duplicates for the same signature.
+        entry["workflow_id"] = wid
+        entry["solidified_ts"] = now_rfc3339()
+        by_sig[signature] = entry
+        candidates["by_signature"] = by_sig
+        write_workflow_candidates(project_paths, candidates)
+
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "workflow_solidified",
+                "batch_id": "final.workflow.solidified",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "signature": signature,
+                "count": new_n,
+                "threshold": threshold,
+                "benefit": benefit,
+                "confidence": conf_f,
+                "workflow_id": wid,
+                "workflow_name": str(wf_final.get("name") or ""),
+                "enabled": bool(wf_final.get("enabled", False)),
+            },
+        )
+
+        if auto_sync:
+            sync_obj = sync_hosts_from_overlay(overlay=overlay, project_id=project_paths.project_id, workflows=wf_store.enabled_workflows())
+            _log_host_sync(sync_obj=sync_obj, source="workflow_solidified")
+
+    _maybe_mine_workflow()
 
     return AutopilotResult(
         status=status,

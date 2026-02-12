@@ -182,6 +182,11 @@ Note: if `violation_response.auto_learn=false` in MindSpec base, MI records sugg
 
 Workflows are project-scoped reusable procedures that MI can export into host workspaces (derived artifacts).
 
+In `mi run`:
+
+- If an enabled workflow matches the task (`trigger.mode=task_contains`), MI injects it into the first batch input.
+- If `MindSpec.workflows.auto_mine=true` (default), MI calls `suggest_workflow` once per `mi run` and may solidify a repeated workflow.
+
 Create/edit workflows:
 
 ```bash

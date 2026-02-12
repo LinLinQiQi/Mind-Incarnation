@@ -202,6 +202,14 @@ MI uses the following internal prompts (all should return strict JSON):
    - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional risk judgement
    - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). `send_to_codex` is legacy naming and means "send the next batch input to Hands". This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
 
+7) `suggest_workflow` (implemented; optional)
+   - Input: task + MindSpec/Overlay/Learned + recent evidence + run notes
+   - Output: either `should_suggest=false` or a suggested workflow IR + a stable `signature` (used to count occurrences across runs). MI may solidify it into stored workflows depending on `MindSpec.workflows` knobs.
+
+8) `edit_workflow` (implemented; CLI)
+   - Input: MindSpec/Overlay/Learned + existing workflow + natural-language edit request
+   - Output: edited workflow IR + change_summary/conflicts/notes (used by `mi workflow edit`)
+
 Planned (not required for V1 loop to function; can be added incrementally):
 
 - `closure_eval` (legacy/optional; not used in the default loop because `decide_next` includes closure)
@@ -356,6 +364,10 @@ Minimal shape:
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
 - `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
+- `workflow_trigger` (an enabled workflow matched the user task and was injected into the first batch input)
+- `workflow_suggestion` (output from `suggest_workflow` at the end of `mi run`; includes state + Mind transcript pointer + raw output)
+- `workflow_solidified` (MI created a stored workflow IR from a repeated signature)
+- `host_sync` (MI synced derived artifacts into bound host workspaces; includes sync results)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
 - `hands_resume_failed` (best-effort: resume by stored thread/session id failed; MI fell back to a fresh exec)
@@ -600,6 +612,14 @@ Workflow mining/solidification policy is values-driven, but MI exposes coarse kn
 - `allow_single_if_high_benefit`: allow 1-shot solidification when benefit is extremely high.
 - `auto_enable`: when solidified, whether workflows default to enabled.
 - `auto_sync_on_change`: when workflows change (create/edit/enable/disable), sync derived artifacts to bound host workspaces.
+
+Workflow behavior in `mi run` (V1):
+
+- Trigger routing: if an **enabled** workflow has `trigger.mode=task_contains` and its `pattern` matches the user task, MI injects the workflow into the **first** Hands batch input (lightweight; no step slicing). MI records `kind=workflow_trigger`.
+- Auto mining: if `MindSpec.workflows.auto_mine=true`, MI calls `suggest_workflow` once at the end of the `mi run` invocation and records `kind=workflow_suggestion`.
+  - MI increments the occurrence count for `suggestion.signature` in `projects/<project_id>/workflow_candidates.json`.
+  - When the occurrence threshold is met (usually `min_occurrences`, or 1-shot when `benefit=high` and `allow_single_if_high_benefit=true`), MI writes a stored workflow JSON under `projects/<project_id>/workflows/` and records `kind=workflow_solidified`.
+  - If `auto_sync_on_change=true`, MI then syncs derived artifacts into all bound host workspaces and records `kind=host_sync`.
 
 OpenClaw adapter (Skills-only):
 

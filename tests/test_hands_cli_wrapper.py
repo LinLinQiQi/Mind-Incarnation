@@ -173,6 +173,9 @@ class TestHandsCliWrapper(unittest.TestCase):
                             "notes": "done",
                         }
                     ],
+                    "suggest_workflow.json": [
+                        {"should_suggest": False, "suggestion": None, "notes": "skip"},
+                    ],
                 }
             )
 

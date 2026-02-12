@@ -178,6 +178,10 @@ mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 
 Note: if `violation_response.auto_learn=false` in MindSpec base, MI records suggestions in EvidenceLog (`kind=learn_suggested`) instead of writing `learned.jsonl` automatically.
 
+Experimental: preference mining
+
+- If `MindSpec.preference_mining.auto_mine=true` (default), MI calls `mine_preferences` once per `mi run` and may emit `kind=learn_suggested` after repeated occurrences (see `docs/mi-v1-spec.md`).
+
 ## Workflows + Host Adapters (Experimental)
 
 Workflows are project-scoped reusable procedures that MI can export into host workspaces (derived artifacts).

@@ -306,6 +306,59 @@ def suggest_workflow_prompt(
     ).strip() + "\n"
 
 
+def mine_preferences_prompt(
+    *,
+    task: str,
+    hands_provider: str,
+    mindspec_base: dict[str, Any],
+    learned_text: str,
+    project_overlay: dict[str, Any],
+    recent_evidence: list[dict[str, Any]],
+    notes: str,
+) -> str:
+    return "\n".join(
+        [
+            "You are MI (Mind Incarnation).",
+            "Mine likely-stable user preferences/habits from MI-captured transcript/evidence, and suggest reversible learned rules.",
+            "",
+            "Constraints:",
+            "- Use ONLY the provided task + evidence (derived from MI-captured transcript) and any explicit user statements inside it.",
+            "- Do NOT invent preferences. If unclear, suggest nothing.",
+            "- Prefer project-scoped suggestions unless the preference is clearly global.",
+            "- Keep suggestions low-burden: avoid rules that would cause MI to ask the user more often.",
+            "- Do NOT enforce protocol tyranny; do not suggest rigid step-by-step reporting requirements.",
+            "- Suggest at most a few high-signal learned rules; each should be actionable and unambiguous.",
+            "",
+            "Output rules:",
+            "- Output MUST be a single JSON object matching the provided JSON Schema.",
+            "- No markdown, no extra keys, no extra commentary.",
+            "- Keep text short; write learned rules as imperative guidance (one sentence).",
+            "",
+            "User task:",
+            task.strip(),
+            "",
+            f"Hands provider: {hands_provider.strip() or '(unknown)'}",
+            "",
+            "MindSpec base (structured):",
+            _to_json(mindspec_base),
+            "",
+            "Existing learned preferences (reversible text):",
+            learned_text.strip() or "(none)",
+            "",
+            "ProjectOverlay:",
+            _to_json(project_overlay),
+            "",
+            "Recent evidence (most recent last):",
+            _to_json(recent_evidence),
+            "",
+            "Run notes:",
+            (notes or "").strip(),
+            "",
+            "Now output preference suggestions (or an empty list).",
+        ]
+    ).strip() + "\n"
+
+
 def edit_workflow_prompt(
     *,
     mindspec_base: dict[str, Any],

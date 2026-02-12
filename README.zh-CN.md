@@ -178,6 +178,10 @@ mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 
 说明：如果 MindSpec base 中 `violation_response.auto_learn=false`，MI 不会自动写入 `learned.jsonl`，而是把建议记录到 EvidenceLog（`kind=learn_suggested`），之后可用 `apply-suggested` 手动应用。
 
+实验性：偏好预测（preference mining）
+
+- 如果 `MindSpec.preference_mining.auto_mine=true`（默认），MI 会在每次 `mi run` 结束时调用一次 `mine_preferences`，并在重复出现时输出 `kind=learn_suggested`（详见 `docs/mi-v1-spec.md`）。
+
 ## Workflows + Host Adapters（实验性）
 
 Workflow 是项目级（project-scoped）的可复用流程，MI 可以把它们导出到宿主 workspace（派生物）。

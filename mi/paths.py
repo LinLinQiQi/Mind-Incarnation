@@ -304,6 +304,11 @@ class ProjectPaths:
         # Signature -> count mapping for "suggested workflow" mining.
         return self.project_dir / "workflow_candidates.json"
 
+    @property
+    def preference_candidates_path(self) -> Path:
+        # Signature -> count mapping for mined preference suggestions.
+        return self.project_dir / "preference_candidates.json"
+
 
 @dataclass(frozen=True)
 class GlobalPaths:

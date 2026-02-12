@@ -37,6 +37,39 @@ class HostBinding:
         return self.workspace_root / self.generated_rel_dir
 
 
+class HostAdapter:
+    """Host adapter interface (derived artifacts + best-effort registration).
+
+    MI's source of truth is stored under MI home. Anything written into a host
+    workspace is a derived, regeneratable artifact.
+    """
+
+    host: str
+
+    def __init__(self, host: str):
+        self.host = str(host or "").strip().lower()
+
+    def generate(self, *, binding: HostBinding, project_id: str, workflows: list[dict[str, Any]]) -> tuple[list[str], dict[str, Any]]:
+        """Generate host-specific derived artifacts under binding.generated_root.
+
+        Returns (new_files_rel, ctx) where new_files_rel are paths relative to generated_root.
+        """
+
+        return [], {}
+
+    def register(
+        self,
+        *,
+        binding: HostBinding,
+        prev_manifest: dict[str, Any],
+        gen_root: Path,
+        ctx: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Perform host-specific registration (e.g., symlinks) and return (details, manifest_state)."""
+
+        return {"ok": True}, {}
+
+
 def parse_host_bindings(overlay: dict[str, Any]) -> list[HostBinding]:
     bindings_raw = overlay.get("host_bindings") if isinstance(overlay.get("host_bindings"), list) else []
     out: list[HostBinding] = []
@@ -237,6 +270,76 @@ def _render_openclaw_skill_markdown(*, workflow: dict[str, Any], project_id: str
     return "\n".join(lines).rstrip() + "\n"
 
 
+class OpenClawSkillsAdapter(HostAdapter):
+    """OpenClaw adapter (Skills-only).
+
+    Generates AgentSkills-compatible `SKILL.md` folders and registers each skill dir
+    into `<workspace_root>/skills/<skill_dir>` as a symlink (best-effort, reversible).
+    """
+
+    def __init__(self) -> None:
+        super().__init__("openclaw")
+
+    def generate(self, *, binding: HostBinding, project_id: str, workflows: list[dict[str, Any]]) -> tuple[list[str], dict[str, Any]]:
+        gen_root = binding.generated_root
+        skills_root = gen_root / "skills"
+        ensure_dir(skills_root)
+
+        new_files: list[str] = []
+        skill_items: list[dict[str, Any]] = []
+        skill_dirnames: list[str] = []
+
+        for w in workflows:
+            if not isinstance(w, dict):
+                continue
+            wid = str(w.get("id") or "").strip()
+            if not wid:
+                continue
+            d = _openclaw_skill_dirname(wid)
+            skill_dirnames.append(d)
+
+            skill_md_rel = f"skills/{d}/SKILL.md"
+            wf_rel = f"skills/{d}/workflow.json"
+            ensure_dir((gen_root / skill_md_rel).parent)
+            (gen_root / skill_md_rel).write_text(_render_openclaw_skill_markdown(workflow=w, project_id=project_id), encoding="utf-8")
+            (gen_root / wf_rel).write_text(json.dumps(w, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            new_files.extend([skill_md_rel, wf_rel])
+            skill_items.append({"dir": d, "workflow_id": wid, "name": str(w.get("name") or ""), "skill_md": skill_md_rel})
+
+        skills_index_rel = "skills/index.json"
+        (gen_root / skills_index_rel).write_text(
+            json.dumps({"version": "v1", "project_id": project_id, "items": skill_items}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        new_files.append(skills_index_rel)
+
+        ctx = {"skill_dirnames": sorted(set(skill_dirnames))}
+        return new_files, ctx
+
+    def register(
+        self,
+        *,
+        binding: HostBinding,
+        prev_manifest: dict[str, Any],
+        gen_root: Path,
+        ctx: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        dirnames = ctx.get("skill_dirnames") if isinstance(ctx.get("skill_dirnames"), list) else []
+        skill_dirnames = [str(x) for x in dirnames if isinstance(x, str) and x.strip()]
+        res = _register_openclaw_skills(binding=binding, prev_manifest=prev_manifest, gen_root=gen_root, skill_dirnames=skill_dirnames)
+        manifest_state = {"registered_links": res.get("registered_links", []) if isinstance(res, dict) else []}
+        return res, manifest_state
+
+
+_HOST_ADAPTERS: dict[str, HostAdapter] = {
+    "openclaw": OpenClawSkillsAdapter(),
+}
+
+
+def get_host_adapter(host: str) -> HostAdapter | None:
+    return _HOST_ADAPTERS.get(str(host or "").strip().lower())
+
+
 def _register_openclaw_skills(
     *,
     binding: HostBinding,
@@ -369,32 +472,15 @@ def sync_host_binding(*, binding: HostBinding, project_id: str, workflows: list[
     new_files.append(readme_rel)
 
     # Host-specific derived artifacts.
-    openclaw_skill_dirs: list[str] = []
-    if binding.host.strip().lower() == "openclaw":
-        skills_root = gen_root / "skills"
-        ensure_dir(skills_root)
-
-        skill_items: list[dict[str, Any]] = []
-        for w in workflows:
-            if not isinstance(w, dict):
-                continue
-            wid = str(w.get("id") or "").strip()
-            if not wid:
-                continue
-            d = _openclaw_skill_dirname(wid)
-            openclaw_skill_dirs.append(d)
-
-            skill_md_rel = f"skills/{d}/SKILL.md"
-            wf_rel = f"skills/{d}/workflow.json"
-            ensure_dir((gen_root / skill_md_rel).parent)
-            (gen_root / skill_md_rel).write_text(_render_openclaw_skill_markdown(workflow=w, project_id=project_id), encoding="utf-8")
-            (gen_root / wf_rel).write_text(json.dumps(w, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            new_files.extend([skill_md_rel, wf_rel])
-            skill_items.append({"dir": d, "workflow_id": wid, "name": str(w.get("name") or ""), "skill_md": skill_md_rel})
-
-        skills_index_rel = "skills/index.json"
-        (gen_root / skills_index_rel).write_text(json.dumps({"version": "v1", "project_id": project_id, "items": skill_items}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        new_files.append(skills_index_rel)
+    adapter = get_host_adapter(binding.host)
+    adapter_details: dict[str, Any] = {}
+    adapter_manifest: dict[str, Any] = {}
+    if adapter is not None:
+        extra_files, ctx = adapter.generate(binding=binding, project_id=project_id, workflows=workflows)
+        for fp in extra_files:
+            if isinstance(fp, str) and fp.strip():
+                new_files.append(fp.strip())
+        adapter_details, adapter_manifest = adapter.register(binding=binding, prev_manifest=prev, gen_root=gen_root, ctx=ctx if isinstance(ctx, dict) else {})
 
     # Cleanup stale files.
     new_set = {str(x) for x in new_files}
@@ -425,15 +511,6 @@ def sync_host_binding(*, binding: HostBinding, project_id: str, workflows: list[
         ok, note = _ensure_symlink(src=src, dst=dst)
         reg_results.append({"src": src_rel, "dst": dst_rel, "ok": ok, "note": note})
 
-    openclaw_reg: dict[str, Any] = {}
-    if binding.host.strip().lower() == "openclaw":
-        openclaw_reg = _register_openclaw_skills(
-            binding=binding,
-            prev_manifest=prev,
-            gen_root=gen_root,
-            skill_dirnames=sorted(set(openclaw_skill_dirs)),
-        )
-
     # Write manifest (includes any host registration results needed for cleanup on next sync).
     manifest: dict[str, Any] = {
         "version": "v1",
@@ -443,24 +520,22 @@ def sync_host_binding(*, binding: HostBinding, project_id: str, workflows: list[
         "files": sorted(new_files),
         "register_symlink_dirs": binding.register_symlink_dirs,
     }
-    if binding.host.strip().lower() == "openclaw":
-        manifest["openclaw"] = {
-            "registered_links": openclaw_reg.get("registered_links", []) if isinstance(openclaw_reg, dict) else [],
-        }
+    if adapter is not None and isinstance(adapter_manifest, dict):
+        manifest[adapter.host] = dict(adapter_manifest)
     _write_manifest(binding, manifest)
 
     ok_register = all(bool(r.get("ok", False)) for r in reg_results) if reg_results else True
-    ok_openclaw = bool(openclaw_reg.get("ok", True)) if isinstance(openclaw_reg, dict) else True
+    ok_adapter = bool(adapter_details.get("ok", True)) if isinstance(adapter_details, dict) else True
 
     return {
         "host": binding.host,
-        "ok": bool(ok_register and ok_openclaw),
+        "ok": bool(ok_register and ok_adapter),
         "workspace_root": str(binding.workspace_root),
         "generated_root": str(gen_root),
         "workflows_n": len(index_items),
         "removed_files": removed,
         "register": reg_results,
-        "openclaw": openclaw_reg,
+        (adapter.host if adapter is not None else "host_adapter"): adapter_details,
     }
 
 

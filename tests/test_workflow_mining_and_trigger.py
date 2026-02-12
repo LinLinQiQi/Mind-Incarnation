@@ -116,6 +116,9 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                             "notes": "ok",
                         }
                     ],
+                    "mine_preferences.json": [
+                        {"suggestions": [], "notes": "skip"},
+                    ],
                 }
             )
 
@@ -191,6 +194,9 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                             "notes": "ok",
                         }
                     ],
+                    "mine_preferences.json": [
+                        {"suggestions": [], "notes": "skip"},
+                    ],
                 }
             )
 
@@ -235,6 +241,9 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                     "suggest_workflow.json": [
                         {"should_suggest": False, "suggestion": None, "notes": "skip"},
                     ],
+                    "mine_preferences.json": [
+                        {"suggestions": [], "notes": "skip"},
+                    ],
                 }
             )
 
@@ -259,4 +268,3 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

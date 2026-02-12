@@ -76,6 +76,16 @@ def _default_base(values_text: str) -> dict[str, Any]:
             # When a workflow change is detected during `mi run`, sync derived artifacts to host workspaces.
             "auto_sync_on_change": True,
         },
+        "preference_mining": {
+            # Preference prediction: mine possible learned rules from MI-captured transcript/evidence.
+            "auto_mine": True,
+            # Usually require >=2 occurrences before suggesting/applying; allow 1 when benefit is high.
+            "min_occurrences": 2,
+            "allow_single_if_high_benefit": True,
+            # Skip low-confidence suggestions to reduce noisy learning.
+            "min_confidence": 0.75,
+            "max_suggestions": 3,
+        },
         "violation_response": {
             "auto_learn": True,
             "prompt_user_on_high_risk": True,

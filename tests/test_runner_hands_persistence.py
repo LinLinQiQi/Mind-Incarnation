@@ -82,6 +82,9 @@ class TestRunnerHandsPersistence(unittest.TestCase):
                     "suggest_workflow.json": [
                         {"should_suggest": False, "suggestion": None, "notes": "skip"},
                     ],
+                    "mine_preferences.json": [
+                        {"suggestions": [], "notes": "skip"},
+                    ],
                 }
             )
             r1 = run_autopilot(
@@ -124,6 +127,9 @@ class TestRunnerHandsPersistence(unittest.TestCase):
                     ],
                     "suggest_workflow.json": [
                         {"should_suggest": False, "suggestion": None, "notes": "skip"},
+                    ],
+                    "mine_preferences.json": [
+                        {"suggestions": [], "notes": "skip"},
                     ],
                 }
             )
@@ -172,6 +178,9 @@ class TestRunnerHandsPersistence(unittest.TestCase):
                     ],
                     "suggest_workflow.json": [
                         {"should_suggest": False, "suggestion": None, "notes": "skip"},
+                    ],
+                    "mine_preferences.json": [
+                        {"suggestions": [], "notes": "skip"},
                     ],
                 }
             )

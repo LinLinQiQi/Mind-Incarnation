@@ -102,6 +102,9 @@ class TestLearnSuggestedApply(unittest.TestCase):
                     "suggest_workflow.json": [
                         {"should_suggest": False, "suggestion": None, "notes": "skip"},
                     ],
+                    "mine_preferences.json": [
+                        {"suggestions": [], "notes": "skip"},
+                    ],
                 }
             )
 
@@ -187,6 +190,9 @@ class TestLearnSuggestedApply(unittest.TestCase):
                     ],
                     "suggest_workflow.json": [
                         {"should_suggest": False, "suggestion": None, "notes": "skip"},
+                    ],
+                    "mine_preferences.json": [
+                        {"suggestions": [], "notes": "skip"},
                     ],
                 }
             )

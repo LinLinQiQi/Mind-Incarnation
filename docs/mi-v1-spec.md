@@ -210,6 +210,10 @@ MI uses the following internal prompts (all should return strict JSON):
    - Input: MindSpec/Overlay/Learned + existing workflow + natural-language edit request
    - Output: edited workflow IR + change_summary/conflicts/notes (used by `mi workflow edit`)
 
+9) `mine_preferences` (implemented; optional)
+   - Input: task + MindSpec/Overlay/Learned + recent evidence + run notes
+   - Output: a small list of suggested reversible learned rules (scope=`project|global`) with confidence/benefit. MI uses occurrence counts to avoid noisy one-off learning.
+
 Planned (not required for V1 loop to function; can be added incrementally):
 
 - `closure_eval` (legacy/optional; not used in the default loop because `decide_next` includes closure)
@@ -264,6 +268,13 @@ Minimal shape:
     "min_occurrences": 2,
     "allow_single_if_high_benefit": true,
     "auto_sync_on_change": true
+  },
+  "preference_mining": {
+    "auto_mine": true,
+    "min_occurrences": 2,
+    "allow_single_if_high_benefit": true,
+    "min_confidence": 0.75,
+    "max_suggestions": 3
   },
   "violation_response": {
     "auto_learn": true,
@@ -368,6 +379,8 @@ Minimal shape:
 - `workflow_suggestion` (output from `suggest_workflow` at the end of `mi run`; includes state + Mind transcript pointer + raw output)
 - `workflow_solidified` (MI created a stored workflow IR from a repeated signature)
 - `host_sync` (MI synced derived artifacts into bound host workspaces; includes sync results)
+- `preference_mining` (output from `mine_preferences` at the end of `mi run`; includes state + Mind transcript pointer + raw output)
+- `preference_solidified` (MI emitted a learned suggestion (and may auto-apply) when a mined preference reaches its occurrence threshold)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
 - `hands_resume_failed` (best-effort: resume by stored thread/session id failed; MI fell back to a fresh exec)
@@ -626,6 +639,26 @@ OpenClaw adapter (Skills-only):
 - The OpenClaw integration target is the *Skills* mechanism (AgentSkills-compatible `SKILL.md` skill folders).
 - MI generates skill folders under `./.mi/generated/openclaw/skills/<skill_dir>/SKILL.md` (plus `workflow.json` for audit).
 - MI registers each generated skill dir into the host workspace as a symlink at `./skills/<skill_dir>` (best-effort, reversible; tracked via `manifest.json` under the generated root).
+- Host adapters are implemented as a small registry (host name -> adapter) so MI storage/IR remains host-decoupled; host workspaces receive derived artifacts only.
+
+## Preference Mining (V1, Experimental)
+
+MI may mine likely-stable user preferences/habits from MI-captured transcript/evidence and emit reversible learned rules.
+
+Knobs in `MindSpec.preference_mining`:
+
+- `auto_mine`: allow MI to call `mine_preferences` at the end of `mi run`.
+- `min_occurrences`: usually require >=2 similar occurrences before emitting a learned suggestion.
+- `allow_single_if_high_benefit`: allow 1-shot emission when benefit is extremely high.
+- `min_confidence`: skip suggestions below this confidence to reduce noisy learning.
+- `max_suggestions`: cap the number of suggestions considered per `mi run`.
+
+Behavior in `mi run` (V1):
+
+- MI calls `mine_preferences` once at the end of the `mi run` invocation and records `kind=preference_mining`.
+- MI computes a stable signature from `(scope + normalized learned text)` and increments the occurrence count in `projects/<project_id>/preference_candidates.json`.
+- When the occurrence threshold is met, MI emits a `kind=learn_suggested` record (source=`mine_preferences`) and records `kind=preference_solidified`.
+  - If `violation_response.auto_learn=true`, MI also appends the learned rule into `learned.jsonl` and includes `applied_entry_ids` in the `learn_suggested` record.
 
 ## Storage Layout (V1)
 
@@ -642,6 +675,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/<project_id>/evidence.jsonl`
   - `projects/<project_id>/workflows/*.json` (workflow IR; source of truth)
   - `projects/<project_id>/workflow_candidates.json` (signature -> count; used for workflow mining)
+  - `projects/<project_id>/preference_candidates.json` (signature -> count; used for preference mining)
   - `projects/<project_id>/transcripts/hands/*.jsonl`
   - `projects/<project_id>/transcripts/hands/archive/*.jsonl.gz` (optional; created by `mi gc transcripts`)
   - `projects/<project_id>/transcripts/mind/*.jsonl`

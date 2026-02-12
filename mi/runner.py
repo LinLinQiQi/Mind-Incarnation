@@ -20,11 +20,12 @@ from .paths import ProjectPaths, default_home_dir
 from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
-from .prompts import suggest_workflow_prompt
+from .prompts import suggest_workflow_prompt, mine_preferences_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from .storage import append_jsonl, now_rfc3339, ensure_dir
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
 from .workflows import WorkflowStore, load_workflow_candidates, write_workflow_candidates, new_workflow_id, render_workflow_markdown
+from .preferences import load_preference_candidates, write_preference_candidates, preference_signature
 from .hosts import sync_hosts_from_overlay
 
 
@@ -1787,6 +1788,176 @@ def run_autopilot(
             _log_host_sync(sync_obj=sync_obj, source="workflow_solidified")
 
     _maybe_mine_workflow()
+
+    # Preference mining: after the run, optionally predict likely-stable learned preferences
+    # based on MI-captured transcript/evidence (no host coupling).
+    pref_cfg = loaded.base.get("preference_mining") if isinstance(loaded.base.get("preference_mining"), dict) else {}
+    pref_auto_mine = bool(pref_cfg.get("auto_mine", True))
+    pref_allow_single_high = bool(pref_cfg.get("allow_single_if_high_benefit", True))
+    try:
+        pref_min_occ = int(pref_cfg.get("min_occurrences", 2) or 2)
+    except Exception:
+        pref_min_occ = 2
+    if pref_min_occ < 1:
+        pref_min_occ = 1
+    try:
+        pref_min_conf = float(pref_cfg.get("min_confidence", 0.75) or 0.75)
+    except Exception:
+        pref_min_conf = 0.75
+    try:
+        pref_max = int(pref_cfg.get("max_suggestions", 3) or 3)
+    except Exception:
+        pref_max = 3
+    if pref_max < 0:
+        pref_max = 0
+    if pref_max > 10:
+        pref_max = 10
+
+    def _maybe_mine_preferences() -> None:
+        nonlocal loaded, overlay
+
+        if not pref_auto_mine:
+            return
+        if executed_batches <= 0:
+            return
+        if pref_max == 0:
+            return
+
+        mine_notes = f"status={status} batches={executed_batches} notes={notes}"
+        prompt = mine_preferences_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=loaded.base,
+            learned_text=loaded.learned_text,
+            project_overlay=loaded.project_overlay,
+            recent_evidence=evidence_window,
+            notes=mine_notes,
+        )
+        out, mind_ref, state = _mind_call(
+            schema_filename="mine_preferences.json",
+            prompt=prompt,
+            tag="mine_preferences",
+            batch_id="final.prefs",
+        )
+
+        append_jsonl(
+            project_paths.evidence_log_path,
+            {
+                "kind": "preference_mining",
+                "batch_id": "final.prefs",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "state": state,
+                "mind_transcript_ref": mind_ref,
+                "notes": mine_notes,
+                "output": out if isinstance(out, dict) else {},
+            },
+        )
+
+        if not isinstance(out, dict):
+            return
+        sugs = out.get("suggestions")
+        if not isinstance(sugs, list) or not sugs:
+            return
+
+        candidates = load_preference_candidates(project_paths)
+        by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
+
+        for raw in sugs[:pref_max]:
+            if not isinstance(raw, dict):
+                continue
+            scope = str(raw.get("scope") or "project").strip()
+            if scope not in ("global", "project"):
+                scope = "project"
+            text = str(raw.get("text") or "").strip()
+            if not text:
+                continue
+
+            # Avoid emitting the same learned rule repeatedly.
+            if loaded.learned_text and text in loaded.learned_text:
+                continue
+
+            benefit = str(raw.get("benefit") or "medium").strip()
+            if benefit not in ("low", "medium", "high"):
+                benefit = "medium"
+            rationale = str(raw.get("rationale") or "").strip()
+            conf = raw.get("confidence")
+            try:
+                conf_f = float(conf) if conf is not None else 0.0
+            except Exception:
+                conf_f = 0.0
+            if conf_f < pref_min_conf:
+                continue
+
+            sig = preference_signature(scope=scope, text=text)
+            entry = by_sig.get(sig)
+            if not isinstance(entry, dict):
+                entry = {}
+
+            try:
+                prev_n = int(entry.get("count") or 0)
+            except Exception:
+                prev_n = 0
+            new_n = prev_n + 1
+            entry["count"] = new_n
+            entry["last_ts"] = now_rfc3339()
+            entry["scope"] = scope
+            entry["text"] = text
+            entry["benefit"] = benefit
+            entry["confidence"] = conf_f
+            if rationale:
+                entry["rationale"] = rationale
+
+            # If we already emitted a suggestion (or applied a learned entry), don't emit again.
+            if bool(entry.get("suggestion_emitted", False)) or bool(entry.get("learned_entry_ids")):
+                by_sig[sig] = entry
+                continue
+
+            threshold = pref_min_occ
+            if pref_allow_single_high and benefit == "high":
+                threshold = 1
+            if new_n < threshold:
+                by_sig[sig] = entry
+                continue
+
+            applied_ids = _handle_learned_changes(
+                learned_changes=[{"scope": scope, "text": text, "rationale": rationale or "preference_mining", "severity": "medium"}],
+                batch_id="final.prefs",
+                source="mine_preferences",
+                mind_transcript_ref=mind_ref,
+            )
+            entry["suggestion_emitted"] = True
+            entry["suggestion_ts"] = now_rfc3339()
+            if applied_ids:
+                entry["learned_entry_ids"] = list(applied_ids)
+                entry["solidified_ts"] = now_rfc3339()
+                loaded = store.load(project_path)
+                _refresh_overlay_refs()
+
+            append_jsonl(
+                project_paths.evidence_log_path,
+                {
+                    "kind": "preference_solidified",
+                    "batch_id": "final.prefs.solidified",
+                    "ts": now_rfc3339(),
+                    "thread_id": thread_id or "",
+                    "signature": sig,
+                    "count": new_n,
+                    "threshold": threshold,
+                    "benefit": benefit,
+                    "confidence": conf_f,
+                    "scope": scope,
+                    "text": text,
+                    "applied_entry_ids": list(applied_ids),
+                },
+            )
+
+            by_sig[sig] = entry
+
+        candidates["by_signature"] = by_sig
+        write_preference_candidates(project_paths, candidates)
+
+    _maybe_mine_preferences()
 
     return AutopilotResult(
         status=status,

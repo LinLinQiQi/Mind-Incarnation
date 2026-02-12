@@ -178,6 +178,31 @@ mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 
 Note: if `violation_response.auto_learn=false` in MindSpec base, MI records suggestions in EvidenceLog (`kind=learn_suggested`) instead of writing `learned.jsonl` automatically.
 
+## Workflows + Host Adapters (Experimental)
+
+Workflows are project-scoped reusable procedures that MI can export into host workspaces (derived artifacts).
+
+Create/edit workflows:
+
+```bash
+mi workflow create --cd /path/to/your/project --name "My workflow"
+mi workflow list --cd /path/to/your/project
+mi workflow show <workflow_id> --cd /path/to/your/project --markdown
+mi workflow edit <workflow_id> --cd /path/to/your/project --request "Change step 2 to run tests"
+```
+
+Bind and sync an OpenClaw workspace (Skills-only target):
+
+```bash
+mi host bind openclaw --workspace /path/to/openclaw/workspace --cd /path/to/your/project
+mi host sync --cd /path/to/your/project
+```
+
+Notes:
+
+- MI writes derived artifacts under `/path/to/openclaw/workspace/.mi/generated/openclaw/...` (regeneratable).
+- MI registers each generated skill dir into `/path/to/openclaw/workspace/skills/<skill_dir>` as a symlink (best-effort, reversible).
+
 ## What You Get
 
 - Raw Hands transcript: `~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`

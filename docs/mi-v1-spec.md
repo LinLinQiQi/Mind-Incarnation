@@ -604,7 +604,8 @@ Workflow mining/solidification policy is values-driven, but MI exposes coarse kn
 OpenClaw adapter (Skills-only):
 
 - The OpenClaw integration target is the *Skills* mechanism (AgentSkills-compatible `SKILL.md` skill folders).
-- MI generates skill folders under `./.mi/generated/openclaw/skills/...` and (optionally) registers them into the host workspace's `skills/` directory via a symlink rule in `ProjectOverlay.host_bindings`.
+- MI generates skill folders under `./.mi/generated/openclaw/skills/<skill_dir>/SKILL.md` (plus `workflow.json` for audit).
+- MI registers each generated skill dir into the host workspace as a symlink at `./skills/<skill_dir>` (best-effort, reversible; tracked via `manifest.json` under the generated root).
 
 ## Storage Layout (V1)
 
@@ -777,6 +778,33 @@ Apply a recorded suggestion (when `violation_response.auto_learn=false` or if yo
 mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root>
 mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root> --dry-run
 ```
+
+Manage project-scoped workflows:
+
+```bash
+mi --home ~/.mind-incarnation workflow list --cd <project_root>
+mi --home ~/.mind-incarnation workflow show <workflow_id> --cd <project_root> --markdown
+mi --home ~/.mind-incarnation workflow show <workflow_id> --cd <project_root> --json
+mi --home ~/.mind-incarnation workflow create --cd <project_root> --name "My workflow"
+mi --home ~/.mind-incarnation workflow edit <workflow_id> --cd <project_root> --request "Change step 2 to run tests"
+mi --home ~/.mind-incarnation workflow enable <workflow_id> --cd <project_root>
+mi --home ~/.mind-incarnation workflow disable <workflow_id> --cd <project_root>
+mi --home ~/.mind-incarnation workflow delete <workflow_id> --cd <project_root>
+```
+
+Bind/sync host workspaces (derived artifacts, e.g., OpenClaw Skills):
+
+```bash
+mi --home ~/.mind-incarnation host list --cd <project_root>
+mi --home ~/.mind-incarnation host bind openclaw --workspace <host_workspace_root> --cd <project_root>
+mi --home ~/.mind-incarnation host sync --cd <project_root>
+mi --home ~/.mind-incarnation host unbind openclaw --cd <project_root>
+```
+
+Notes:
+
+- `mi workflow ...` auto-syncs to any bound host workspaces when `MindSpec.workflows.auto_sync_on_change=true` (default).
+- The OpenClaw adapter exports enabled workflows as generated skill folders under `./.mi/generated/openclaw/skills/` and registers them under `./skills/` in the host workspace as symlinks (best-effort, reversible).
 
 ## Doc Update Policy (Source of Truth)
 

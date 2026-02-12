@@ -18,7 +18,7 @@ from .config import (
     rollback_config,
 )
 from .mindspec import MindSpecStore
-from .prompts import compile_mindspec_prompt
+from .prompts import compile_mindspec_prompt, edit_workflow_prompt
 from .runner import run_autopilot
 from .paths import ProjectPaths, default_home_dir, project_index_path
 from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
@@ -28,7 +28,7 @@ from .provider_factory import make_hands_functions, make_mind_provider
 from .gc import archive_project_transcripts
 from .storage import append_jsonl, iter_jsonl, now_rfc3339
 from .workflows import WorkflowStore, new_workflow_id, render_workflow_markdown
-from .hosts import sync_hosts_from_overlay
+from .hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
 
 
 def _read_stdin_text() -> str:
@@ -767,6 +767,282 @@ def main(argv: list[str] | None = None) -> int:
             if not bool(args.apply):
                 print("Re-run with --apply to archive.")
             return 0
+
+    if args.cmd == "workflow":
+        project_root = Path(args.cd).resolve()
+        home = Path(args.home) if args.home else default_home_dir()
+        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        wf_store = WorkflowStore(pp)
+        loaded2 = store.load(project_root)
+        overlay2 = loaded2.project_overlay if isinstance(loaded2.project_overlay, dict) else {}
+
+        def _auto_sync_hosts() -> None:
+            wf_cfg = loaded2.base.get("workflows") if isinstance(loaded2.base.get("workflows"), dict) else {}
+            if not bool(wf_cfg.get("auto_sync_on_change", True)):
+                return
+            res = sync_hosts_from_overlay(overlay=overlay2, project_id=pp.project_id, workflows=wf_store.enabled_workflows())
+            if not bool(res.get("ok", True)):
+                print(json.dumps(res, indent=2, sort_keys=True), file=sys.stderr)
+
+        if args.wf_cmd == "list":
+            ids = wf_store.list_ids()
+            if not ids:
+                print("(no workflows)")
+                return 0
+            for wid in ids:
+                try:
+                    w = wf_store.load(wid)
+                except Exception:
+                    print(f"{wid} (failed to load)")
+                    continue
+                name = str(w.get("name") or "").strip()
+                enabled = bool(w.get("enabled", False))
+                print(f"{wid} enabled={str(enabled).lower()} {name}".strip())
+            return 0
+
+        if args.wf_cmd == "show":
+            w = wf_store.load(str(args.id))
+            if args.json:
+                print(json.dumps(w, indent=2, sort_keys=True))
+                return 0
+            if args.markdown or (not args.json):
+                print(render_workflow_markdown(w), end="")
+                return 0
+
+        if args.wf_cmd == "create":
+            wid = new_workflow_id()
+            w = {
+                "version": "v1",
+                "id": wid,
+                "name": str(args.name),
+                "enabled": not bool(args.disabled),
+                "trigger": {"mode": str(args.trigger_mode), "pattern": str(args.pattern or "")},
+                "mermaid": "",
+                "steps": [],
+                "source": {"kind": "manual", "reason": "created via mi workflow create", "evidence_refs": []},
+                "created_ts": now_rfc3339(),
+                "updated_ts": now_rfc3339(),
+            }
+            wf_store.write(w)
+            _auto_sync_hosts()
+            print(wid)
+            return 0
+
+        if args.wf_cmd in ("enable", "disable"):
+            wid = str(args.id)
+            w0 = wf_store.load(wid)
+            w1 = dict(w0)
+            w1["enabled"] = True if args.wf_cmd == "enable" else False
+            wf_store.write(w1)
+            _auto_sync_hosts()
+            print(f"{wid} enabled={str(bool(w1['enabled'])).lower()}")
+            return 0
+
+        if args.wf_cmd == "delete":
+            wid = str(args.id)
+            wf_store.delete(wid)
+            _auto_sync_hosts()
+            print(f"deleted {wid}")
+            return 0
+
+        if args.wf_cmd == "edit":
+            wid = str(args.id)
+
+            def _run_once(req: str) -> int:
+                req = (req or "").strip()
+                if not req:
+                    return 0
+                w0 = wf_store.load(wid)
+                llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
+                prompt = edit_workflow_prompt(
+                    mindspec_base=loaded2.base,
+                    learned_text=loaded2.learned_text,
+                    project_overlay=overlay2,
+                    workflow=w0,
+                    user_request=req,
+                )
+                try:
+                    out = llm.call(schema_filename="edit_workflow.json", prompt=prompt, tag=f"edit_workflow:{wid}").obj
+                except Exception as e:
+                    print(f"edit_workflow failed: {e}", file=sys.stderr)
+                    return 2
+
+                if not isinstance(out, dict) or not isinstance(out.get("workflow"), dict):
+                    print("edit_workflow returned invalid output", file=sys.stderr)
+                    return 2
+
+                w1 = dict(out["workflow"])
+                # Enforce invariants regardless of model output.
+                w1["id"] = w0.get("id")
+                w1["version"] = w0.get("version")
+                w1["created_ts"] = w0.get("created_ts")
+
+                before = json.dumps(w0, indent=2, sort_keys=True) + "\n"
+                after = json.dumps(w1, indent=2, sort_keys=True) + "\n"
+                diff = _unified_diff(before, after, fromfile="before", tofile="after")
+                if diff:
+                    print(diff, end="")
+
+                change_summary = out.get("change_summary") if isinstance(out.get("change_summary"), list) else []
+                conflicts = out.get("conflicts") if isinstance(out.get("conflicts"), list) else []
+                notes = str(out.get("notes") or "").strip()
+                if change_summary:
+                    print("\nchange_summary:")
+                    for x in change_summary[:20]:
+                        xs = str(x).strip()
+                        if xs:
+                            print(f"- {xs}")
+                if conflicts:
+                    print("\nconflicts:")
+                    for x in conflicts[:20]:
+                        xs = str(x).strip()
+                        if xs:
+                            print(f"- {xs}")
+                if notes:
+                    print("\nnotes:\n" + notes)
+
+                if bool(args.dry_run):
+                    return 0
+                wf_store.write(w1)
+                _auto_sync_hosts()
+                return 0
+
+            req0 = args.request
+            if req0 == "-" or req0 is None:
+                req0 = _read_user_line("Edit request (blank to cancel):")
+            rc = _run_once(str(req0 or ""))
+            if rc != 0:
+                return rc
+            if not bool(args.loop):
+                return 0
+            while True:
+                nxt = _read_user_line("Next edit request (blank to stop):")
+                if not nxt.strip():
+                    return 0
+                rc2 = _run_once(nxt)
+                if rc2 != 0:
+                    return rc2
+
+        return 2
+
+    if args.cmd == "host":
+        project_root = Path(args.cd).resolve()
+        loaded2 = store.load(project_root)
+        overlay2 = loaded2.project_overlay if isinstance(loaded2.project_overlay, dict) else {}
+        if not isinstance(overlay2, dict):
+            overlay2 = {}
+        hb = overlay2.get("host_bindings")
+        bindings = hb if isinstance(hb, list) else []
+
+        home = Path(args.home) if args.home else default_home_dir()
+        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        wf_store = WorkflowStore(pp)
+
+        def _sync_hosts() -> dict[str, Any]:
+            return sync_hosts_from_overlay(overlay=overlay2, project_id=pp.project_id, workflows=wf_store.enabled_workflows())
+
+        if args.host_cmd == "list":
+            parsed = parse_host_bindings(overlay2)
+            if not parsed:
+                print("(no host bindings)")
+                return 0
+            for b in parsed:
+                print(f"{b.host} enabled={str(bool(b.enabled)).lower()} workspace_root={b.workspace_root} generated_rel_dir={b.generated_rel_dir}")
+            return 0
+
+        if args.host_cmd == "bind":
+            reg_dirs: list[dict[str, str]] = []
+            for item in args.symlink_dir or []:
+                s = str(item or "").strip()
+                if not s:
+                    continue
+                if ":" not in s:
+                    print(f"invalid --symlink-dir (expected SRC:DST): {s}", file=sys.stderr)
+                    return 2
+                src, dst = s.split(":", 1)
+                src = src.strip()
+                dst = dst.strip()
+                if not src or not dst:
+                    print(f"invalid --symlink-dir (empty SRC or DST): {s}", file=sys.stderr)
+                    return 2
+                reg_dirs.append({"src": src, "dst": dst})
+
+            new_binding: dict[str, Any] = {
+                "host": str(args.host),
+                "workspace_root": str(args.workspace),
+                "enabled": True,
+            }
+            if str(args.generated_rel_dir or "").strip():
+                new_binding["generated_rel_dir"] = str(args.generated_rel_dir).strip()
+            if reg_dirs:
+                new_binding["register"] = {"symlink_dirs": reg_dirs}
+
+            out: list[dict[str, Any]] = []
+            for b in bindings:
+                if isinstance(b, dict) and str(b.get("host") or "").strip() == str(args.host).strip():
+                    continue
+                if isinstance(b, dict):
+                    out.append(b)
+            out.append(new_binding)
+            overlay2["host_bindings"] = out
+            store.write_project_overlay(project_root, overlay2)
+
+            res = _sync_hosts()
+            if bool(args.host_cmd) and not bool(res.get("ok", True)):
+                print(json.dumps(res, indent=2, sort_keys=True), file=sys.stderr)
+
+            print(f"bound host={args.host} workspace={args.workspace}")
+            return 0
+
+        if args.host_cmd == "unbind":
+            host = str(args.host).strip()
+            old_overlay = dict(overlay2)
+            out: list[dict[str, Any]] = []
+            removed_any = False
+            for b in bindings:
+                if isinstance(b, dict) and str(b.get("host") or "").strip() == host:
+                    removed_any = True
+                    continue
+                if isinstance(b, dict):
+                    out.append(b)
+            overlay2["host_bindings"] = out
+            store.write_project_overlay(project_root, overlay2)
+
+            # Best-effort cleanup for the removed host binding.
+            parsed_old = parse_host_bindings(old_overlay)
+            cleanup_results: list[dict[str, Any]] = []
+            for b in parsed_old:
+                if b.host == host:
+                    cleanup_results.append(sync_host_binding(binding=b, project_id=pp.project_id, workflows=[]))
+            if cleanup_results and not all(bool(r.get("ok", True)) for r in cleanup_results):
+                print(json.dumps({"ok": False, "cleanup_results": cleanup_results}, indent=2, sort_keys=True), file=sys.stderr)
+
+            if not removed_any:
+                print(f"(host not bound) {host}")
+                return 0
+            print(f"unbound host={host}")
+            return 0
+
+        if args.host_cmd == "sync":
+            res = _sync_hosts()
+            if bool(args.json):
+                print(json.dumps(res, indent=2, sort_keys=True))
+                return 0
+            ok = bool(res.get("ok", True))
+            print(f"ok={str(ok).lower()}")
+            results = res.get("results") if isinstance(res.get("results"), list) else []
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                host = str(r.get("host") or "").strip()
+                ok2 = bool(r.get("ok", False))
+                gen = str(r.get("generated_root") or "").strip()
+                ws = str(r.get("workspace_root") or "").strip()
+                n = r.get("workflows_n")
+                print(f"- {host} ok={str(ok2).lower()} workflows_n={n} workspace_root={ws} generated_root={gen}")
+            return 0 if ok else 1
+
+        return 2
 
     if args.cmd == "learned":
         project_root = Path(args.cd).resolve()

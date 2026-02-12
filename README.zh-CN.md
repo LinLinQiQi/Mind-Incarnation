@@ -178,6 +178,31 @@ mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 
 说明：如果 MindSpec base 中 `violation_response.auto_learn=false`，MI 不会自动写入 `learned.jsonl`，而是把建议记录到 EvidenceLog（`kind=learn_suggested`），之后可用 `apply-suggested` 手动应用。
 
+## Workflows + Host Adapters（实验性）
+
+Workflow 是项目级（project-scoped）的可复用流程，MI 可以把它们导出到宿主 workspace（派生物）。
+
+创建/编辑 workflow：
+
+```bash
+mi workflow create --cd /path/to/your/project --name "My workflow"
+mi workflow list --cd /path/to/your/project
+mi workflow show <workflow_id> --cd /path/to/your/project --markdown
+mi workflow edit <workflow_id> --cd /path/to/your/project --request "把第 2 步改为跑测试"
+```
+
+绑定并同步 OpenClaw workspace（Skills-only 目标）：
+
+```bash
+mi host bind openclaw --workspace /path/to/openclaw/workspace --cd /path/to/your/project
+mi host sync --cd /path/to/your/project
+```
+
+说明：
+
+- MI 会把派生物写到 `/path/to/openclaw/workspace/.mi/generated/openclaw/...`（可随时重新生成）。
+- MI 会把生成的 skill 目录以 symlink 方式注册到 `/path/to/openclaw/workspace/skills/<skill_dir>`（best-effort，可回滚）。
+
 ## 你会得到什么
 
 - Hands 原始 transcript：`~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`

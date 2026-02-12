@@ -288,6 +288,24 @@ class MindSpecStore:
                 "updated_ts": "",
                 },
         )
+        ensure_key(
+            "workflow_run",
+            {
+                "version": "v1",
+                "active": False,
+                "workflow_id": "",
+                "workflow_name": "",
+                "thread_id": "",
+                "started_ts": "",
+                "updated_ts": "",
+                "completed_step_ids": [],
+                "next_step_id": "",
+                "last_batch_id": "",
+                "last_confidence": 0.0,
+                "last_notes": "",
+                "close_reason": "",
+            },
+        )
 
         # Update derived identity fields (used for stable cross-path resolution).
         ident = project_identity(project_root)
@@ -324,6 +342,44 @@ class MindSpecStore:
             for k, default_v in (("provider", ""), ("thread_id", ""), ("updated_ts", "")):
                 if k not in hs:
                     hs[k] = default_v
+                    changed = True
+
+        wr = overlay.get("workflow_run")
+        if not isinstance(wr, dict):
+            overlay["workflow_run"] = {
+                "version": "v1",
+                "active": False,
+                "workflow_id": "",
+                "workflow_name": "",
+                "thread_id": "",
+                "started_ts": "",
+                "updated_ts": "",
+                "completed_step_ids": [],
+                "next_step_id": "",
+                "last_batch_id": "",
+                "last_confidence": 0.0,
+                "last_notes": "",
+                "close_reason": "",
+            }
+            changed = True
+        else:
+            for k, default_v in (
+                ("version", "v1"),
+                ("active", False),
+                ("workflow_id", ""),
+                ("workflow_name", ""),
+                ("thread_id", ""),
+                ("started_ts", ""),
+                ("updated_ts", ""),
+                ("completed_step_ids", []),
+                ("next_step_id", ""),
+                ("last_batch_id", ""),
+                ("last_confidence", 0.0),
+                ("last_notes", ""),
+                ("close_reason", ""),
+            ):
+                if k not in wr:
+                    wr[k] = default_v
                     changed = True
 
         if changed:

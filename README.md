@@ -189,6 +189,7 @@ Workflows are project-scoped reusable procedures that MI can export into host wo
 In `mi run`:
 
 - If an enabled workflow matches the task (`trigger.mode=task_contains`), MI injects it into the first batch input.
+- If a workflow is active, MI maintains a best-effort step cursor in `ProjectOverlay.workflow_run` (does not force step-by-step reporting).
 - If `MindSpec.workflows.auto_mine=true` (default), MI may call `suggest_workflow` at LLM-judged checkpoints during `mi run` (including at run end) and may solidify a repeated workflow.
 
 Create/edit workflows:

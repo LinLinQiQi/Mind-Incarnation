@@ -189,6 +189,7 @@ Workflow 是项目级（project-scoped）的可复用流程，MI 可以把它们
 在 `mi run` 中：
 
 - 如果某个已启用 workflow 命中任务（`trigger.mode=task_contains`），MI 会把它注入到第一个 batch 的输入里。
+- 当 workflow 处于 active 状态时，MI 会在 `ProjectOverlay.workflow_run` 中维护一个 best-effort 的 step 指针（不会强制 step-by-step 汇报）。
 - 如果 `MindSpec.workflows.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `suggest_workflow`，并在重复出现时固化为 workflow。
 
 创建/编辑 workflow：

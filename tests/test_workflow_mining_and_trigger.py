@@ -69,6 +69,17 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                     "extract_evidence.json": [
                         {"facts": ["ok"], "actions": [], "results": ["done"], "unknowns": [], "risk_signals": []},
                     ],
+                    "workflow_progress.json": [
+                        {
+                            "should_update": False,
+                            "completed_step_ids": [],
+                            "next_step_id": "",
+                            "should_close": False,
+                            "close_reason": "",
+                            "confidence": 0.4,
+                            "notes": "skip",
+                        }
+                    ],
                     "decide_next.json": [
                         {
                             "next_action": "stop",

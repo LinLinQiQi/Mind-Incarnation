@@ -17,7 +17,7 @@ from .llm import MiLlm
 from .mind_errors import MindCallError
 from .mindspec import MindSpecStore
 from .paths import ProjectPaths, default_home_dir
-from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt, checkpoint_decide_prompt
+from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt, workflow_progress_prompt, checkpoint_decide_prompt
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt
@@ -409,9 +409,10 @@ def run_autopilot(
     # Cross-run Hands session persistence is stored in ProjectOverlay but only used when explicitly enabled.
     overlay: dict[str, Any]
     hands_state: dict[str, Any]
+    workflow_run: dict[str, Any]
 
     def _refresh_overlay_refs() -> None:
-        nonlocal overlay, hands_state
+        nonlocal overlay, hands_state, workflow_run
         overlay = loaded.project_overlay if isinstance(loaded.project_overlay, dict) else {}
         if not isinstance(overlay, dict):
             overlay = {}
@@ -421,6 +422,12 @@ def run_autopilot(
         else:
             hands_state = {}
             overlay["hands_state"] = hands_state
+        wr = overlay.get("workflow_run")
+        if isinstance(wr, dict):
+            workflow_run = wr
+        else:
+            workflow_run = {}
+            overlay["workflow_run"] = workflow_run
 
     _refresh_overlay_refs()
 
@@ -429,6 +436,8 @@ def run_autopilot(
         hands_state["provider"] = cur_provider
         hands_state["thread_id"] = ""
         hands_state["updated_ts"] = now_rfc3339()
+        # Reset any best-effort workflow cursor that may be tied to the previous Hands thread.
+        overlay["workflow_run"] = {}
         store.write_project_overlay(project_path, overlay)
         loaded = store.load(project_path)
         _refresh_overlay_refs()
@@ -455,6 +464,12 @@ def run_autopilot(
         if prev_tid and prev_tid != "unknown" and (not cur_provider or not prev_provider or prev_provider == cur_provider):
             thread_id = prev_tid
             resumed_from_overlay = True
+
+    # Default: do not carry an "active" workflow cursor across runs unless we are explicitly continuing the same Hands session.
+    if bool(workflow_run.get("active", False)) and not bool(resumed_from_overlay):
+        workflow_run.clear()
+        overlay["workflow_run"] = workflow_run
+        store.write_project_overlay(project_path, overlay)
     next_input: str = task
 
     status = "not_done"
@@ -482,12 +497,55 @@ def run_autopilot(
                 best_score = score
         return best
 
+    def _workflow_step_ids(workflow: dict[str, Any]) -> list[str]:
+        ids: list[str] = []
+        for s in workflow.get("steps") if isinstance(workflow.get("steps"), list) else []:
+            if not isinstance(s, dict):
+                continue
+            sid = str(s.get("id") or "").strip()
+            if sid:
+                ids.append(sid)
+        return ids
+
+    def _active_workflow() -> dict[str, Any] | None:
+        if not bool(workflow_run.get("active", False)):
+            return None
+        wid = str(workflow_run.get("workflow_id") or "").strip()
+        if not wid:
+            return None
+        try:
+            return wf_store.load(wid)
+        except Exception:
+            return None
+
     matched = _match_workflow_for_task(task)
     if matched:
         wid = str(matched.get("id") or "").strip()
         name = str(matched.get("name") or "").strip()
         trig = matched.get("trigger") if isinstance(matched.get("trigger"), dict) else {}
         pat = str(trig.get("pattern") or "").strip()
+        # Best-effort workflow cursor: internal only. It does NOT impose step-by-step reporting.
+        # The cursor is used to provide next-step context to Mind prompts.
+        step_ids = _workflow_step_ids(matched)
+        workflow_run.clear()
+        workflow_run.update(
+            {
+                "version": "v1",
+                "active": True,
+                "workflow_id": wid,
+                "workflow_name": name,
+                "thread_id": str(thread_id or hands_state.get("thread_id") or ""),
+                "started_ts": now_rfc3339(),
+                "updated_ts": now_rfc3339(),
+                "completed_step_ids": [],
+                "next_step_id": step_ids[0] if step_ids else "",
+                "last_batch_id": "b0.workflow_trigger",
+                "last_confidence": 0.0,
+                "last_notes": f"triggered: task_contains pattern={pat}",
+            }
+        )
+        overlay["workflow_run"] = workflow_run
+        store.write_project_overlay(project_path, overlay)
         injected = "\n".join(
             [
                 "[MI Workflow Triggered]",
@@ -1577,6 +1635,97 @@ def run_autopilot(
         _segment_add(evidence_item)
         _persist_segment_state()
 
+        # Best-effort workflow progress: infer which workflow steps are completed and what the next step is.
+        active_wf = _active_workflow()
+        if isinstance(active_wf, dict) and active_wf:
+            latest_evidence = {
+                "batch_id": batch_id,
+                "facts": evidence_obj.get("facts") if isinstance(evidence_obj, dict) else [],
+                "actions": evidence_obj.get("actions") if isinstance(evidence_obj, dict) else [],
+                "results": evidence_obj.get("results") if isinstance(evidence_obj, dict) else [],
+                "unknowns": evidence_obj.get("unknowns") if isinstance(evidence_obj, dict) else [],
+                "risk_signals": evidence_obj.get("risk_signals") if isinstance(evidence_obj, dict) else [],
+                "repo_observation": repo_obs,
+                "transcript_observation": summary.get("transcript_observation") or {},
+            }
+            wf_prog_prompt = workflow_progress_prompt(
+                task=task,
+                hands_provider=cur_provider,
+                mindspec_base=loaded.base,
+                learned_text=loaded.learned_text,
+                project_overlay=loaded.project_overlay,
+                workflow=active_wf,
+                workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+                latest_evidence=latest_evidence,
+                last_batch_input=batch_input,
+                codex_last_message=result.last_agent_message(),
+            )
+            wf_prog_obj, wf_prog_ref, wf_prog_state = _mind_call(
+                schema_filename="workflow_progress.json",
+                prompt=wf_prog_prompt,
+                tag=f"wf_progress_b{batch_idx}",
+                batch_id=f"{batch_id}.workflow_progress",
+            )
+            append_jsonl(
+                project_paths.evidence_log_path,
+                {
+                    "kind": "workflow_progress",
+                    "batch_id": f"{batch_id}.workflow_progress",
+                    "ts": now_rfc3339(),
+                    "thread_id": thread_id,
+                    "workflow_id": str(active_wf.get("id") or ""),
+                    "workflow_name": str(active_wf.get("name") or ""),
+                    "state": wf_prog_state,
+                    "mind_transcript_ref": wf_prog_ref,
+                    "output": wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
+                },
+            )
+
+            if isinstance(wf_prog_obj, dict) and bool(wf_prog_obj.get("should_update", False)):
+                step_allow = set(_workflow_step_ids(active_wf))
+                raw_done = wf_prog_obj.get("completed_step_ids") if isinstance(wf_prog_obj.get("completed_step_ids"), list) else []
+                done_ids: list[str] = []
+                seen_done: set[str] = set()
+                for x in raw_done:
+                    xs = str(x or "").strip()
+                    if not xs or xs in seen_done:
+                        continue
+                    if xs not in step_allow:
+                        continue
+                    seen_done.add(xs)
+                    done_ids.append(xs)
+
+                nxt = str(wf_prog_obj.get("next_step_id") or "").strip()
+                if nxt and nxt not in step_allow:
+                    nxt = ""
+                if not nxt:
+                    # Deterministic fallback: first step not marked done (list order).
+                    for sid in _workflow_step_ids(active_wf):
+                        if sid not in seen_done:
+                            nxt = sid
+                            break
+
+                workflow_run["version"] = str(workflow_run.get("version") or "v1")
+                workflow_run["active"] = bool(workflow_run.get("active", True))
+                workflow_run["workflow_id"] = str(active_wf.get("id") or workflow_run.get("workflow_id") or "")
+                workflow_run["workflow_name"] = str(active_wf.get("name") or workflow_run.get("workflow_name") or "")
+                if thread_id and thread_id != "unknown":
+                    workflow_run["thread_id"] = thread_id
+                workflow_run["completed_step_ids"] = done_ids
+                workflow_run["next_step_id"] = nxt
+                workflow_run["last_batch_id"] = batch_id
+                workflow_run["last_confidence"] = wf_prog_obj.get("confidence")
+                workflow_run["last_notes"] = str(wf_prog_obj.get("notes") or "").strip()
+                workflow_run["updated_ts"] = now_rfc3339()
+
+                should_close = bool(wf_prog_obj.get("should_close", False))
+                if should_close or not nxt:
+                    workflow_run["active"] = False
+                    workflow_run["close_reason"] = str(wf_prog_obj.get("close_reason") or "").strip()
+
+                overlay["workflow_run"] = workflow_run
+                store.write_project_overlay(project_path, overlay)
+
         # Post-hoc risk judgement (LLM) when heuristic signals are present.
         risk_signals = _detect_risk_signals(result)
         if not risk_signals and not (isinstance(getattr(result, "events", None), list) and result.events):
@@ -1928,6 +2077,8 @@ def run_autopilot(
             mindspec_base=loaded.base,
             learned_text=loaded.learned_text,
             project_overlay=loaded.project_overlay,
+            active_workflow=_active_workflow(),
+            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
             recent_evidence=evidence_window,
             codex_last_message=codex_last,
             repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -2143,6 +2294,8 @@ def run_autopilot(
                 mindspec_base=loaded.base,
                 learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
+                active_workflow=_active_workflow(),
+                workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
                 recent_evidence=evidence_window,
                 codex_last_message=codex_last,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},

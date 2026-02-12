@@ -57,6 +57,8 @@ flowchart TD
   I --> C[Run Hands (free execution)]
   C --> T[Capture raw transcript + optional repo observation]
   T --> E[MI: extract_evidence]
+  E --> WF[MI: workflow_progress (if workflow active)]
+  WF --> P
   E --> P[MI: plan_min_checks]
   P --> AA[MI: auto_answer_to_codex (if needed)]
   AA --> ARB[MI: pre-action arbitration]
@@ -76,6 +78,12 @@ Pre-action arbitration (deterministic, V1):
 - Otherwise: fall back to `decide_next`.
 
 Additionally, when `decide_next` outputs `next_action=ask_user`, MI may attempt `auto_answer_to_codex` on the `ask_user_question` before prompting the user (to further reduce user burden).
+
+Workflow cursor (best-effort, V1):
+
+- When a workflow is triggered, MI initializes `ProjectOverlay.workflow_run` as an internal cursor (active workflow id + completed/next step ids).
+- After each Hands batch (and when Mind circuit allows), MI calls `workflow_progress` to infer step completion from evidence and update the cursor.
+- Hands remains free to complete multiple steps in one batch; MI only tries to infer progress and provide better next-step context to `decide_next`.
 
 Loop/stuck guard (deterministic, V1):
 
@@ -193,35 +201,39 @@ MI uses the following internal prompts (all should return strict JSON):
    - Input: batch input MI sent to Hands, Hands provider hint (e.g., `codex|cli`), machine-extracted batch summary (incl. transcript event observation), and repo observation
    - Output: `EvidenceItem` with `facts`, `actions`, `results`, `unknowns`, `risk_signals`
 
-3) `risk_judge` (implemented; post-hoc)
+3) `workflow_progress` (implemented; internal)
+   - Input: workflow IR + current workflow cursor (`ProjectOverlay.workflow_run`) + latest evidence
+   - Output: best-effort step completion + next step id (does not ask the user; does not enforce step-by-step reporting)
+
+4) `risk_judge` (implemented; post-hoc)
    - Input: Hands provider hint + recent transcript snippets + `MindSpec` + `EvidenceLog`
    - Output: risk judgement with `category`, `severity`, `should_ask_user`, `mitigation`, and optional learned tightening
 
-4) `plan_min_checks` (implemented)
+5) `plan_min_checks` (implemented)
    - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, repo observation, recent `EvidenceLog`
    - Output: a minimal check plan and (when needed) a single Hands instruction (`codex_check_input`, legacy name) to execute the checks
 
-5) `auto_answer_to_codex` (implemented)
+6) `auto_answer_to_codex` (implemented)
    - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional minimal check plan, and the raw Hands last message (legacy prompt/schema naming uses "codex")
    - Output: an optional Hands reply (`codex_answer_input`, legacy name) that answers Hands' question(s) using values + evidence; only asks the user when MI cannot answer
 
-6) `decide_next` (implemented)
+7) `decide_next` (implemented)
    - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional risk judgement
    - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). `send_to_codex` is legacy naming and means "send the next batch input to Hands". This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
 
-7) `checkpoint_decide` (implemented; internal)
+8) `checkpoint_decide` (implemented; internal)
    - Input: MindSpec/Overlay/Learned + compact "segment evidence" buffer + planned next Hands input (if any) + a status hint
    - Output: whether MI should cut a checkpoint boundary (segment) now, and whether it should mine workflows/preferences at this boundary.
 
-8) `suggest_workflow` (implemented; optional)
+9) `suggest_workflow` (implemented; optional)
    - Input: task + MindSpec/Overlay/Learned + recent evidence (typically the current segment) + run notes
    - Output: either `should_suggest=false` or a suggested workflow IR + a stable `signature` (used to count occurrences across runs). MI may solidify it into stored workflows depending on `MindSpec.workflows` knobs.
 
-9) `edit_workflow` (implemented; CLI)
+10) `edit_workflow` (implemented; CLI)
    - Input: MindSpec/Overlay/Learned + existing workflow + natural-language edit request
    - Output: edited workflow IR + change_summary/conflicts/notes (used by `mi workflow edit`)
 
-10) `mine_preferences` (implemented; optional)
+11) `mine_preferences` (implemented; optional)
    - Input: task + MindSpec/Overlay/Learned + recent evidence (typically the current segment) + run notes
    - Output: a small list of suggested reversible learned rules (scope=`project|global`) with confidence/benefit. MI uses occurrence counts to avoid noisy one-off learning.
 
@@ -328,6 +340,21 @@ Minimal shape:
     "provider": "string",
     "thread_id": "string",
     "updated_ts": "string"
+  },
+  "workflow_run": {
+    "version": "v1",
+    "active": true,
+    "workflow_id": "string",
+    "workflow_name": "string",
+    "thread_id": "string",
+    "started_ts": "RFC3339 timestamp",
+    "updated_ts": "RFC3339 timestamp",
+    "completed_step_ids": ["string"],
+    "next_step_id": "string",
+    "last_batch_id": "string",
+    "last_confidence": 0.0,
+    "last_notes": "string",
+    "close_reason": "string"
   }
 }
 ```
@@ -385,6 +412,7 @@ Minimal shape:
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
 - `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
+- `workflow_progress` (best-effort workflow cursor update from `workflow_progress`; helps MI infer completed/next steps without forcing step-by-step reporting)
 - `checkpoint` (segment boundary judgement from `checkpoint_decide`; may trigger workflow/preference mining and segment reset)
 - `workflow_trigger` (an enabled workflow matched the user task and was injected into the first batch input)
 - `workflow_suggestion` (output from `suggest_workflow` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
@@ -563,6 +591,30 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
 }
 ```
 
+`workflow_progress` record shape (best-effort workflow cursor update):
+
+```json
+{
+  "kind": "workflow_progress",
+  "batch_id": "string",
+  "ts": "RFC3339 timestamp",
+  "thread_id": "string",
+  "workflow_id": "string",
+  "workflow_name": "string",
+  "state": "ok|error|skipped",
+  "mind_transcript_ref": "path",
+  "output": {
+    "should_update": true,
+    "completed_step_ids": ["string"],
+    "next_step_id": "string",
+    "should_close": false,
+    "close_reason": "string",
+    "confidence": 0.0,
+    "notes": "string"
+  }
+}
+```
+
 `checkpoint` record shape (segment checkpoint judgement):
 
 ```json
@@ -665,6 +717,7 @@ Workflow mining/solidification policy is values-driven, but MI exposes coarse kn
 Workflow behavior in `mi run` (V1):
 
 - Trigger routing: if an **enabled** workflow has `trigger.mode=task_contains` and its `pattern` matches the user task, MI injects the workflow into the **first** Hands batch input (lightweight; no step slicing). MI records `kind=workflow_trigger`.
+- Step cursor (best-effort): when a workflow is active, MI maintains `ProjectOverlay.workflow_run` and updates it via `workflow_progress` after each Hands batch. This is used as context for `decide_next` but does not force Hands into step-by-step reporting.
 - Auto mining (checkpoint-based): if `MindSpec.workflows.auto_mine=true`, MI may call `suggest_workflow` at LLM-judged checkpoints (segment boundaries) during `mi run` (including at run end) and records `kind=workflow_suggestion`.
   - MI increments the occurrence count for `suggestion.signature` in `projects/<project_id>/workflow_candidates.json` (at most once per `mi run` invocation per signature).
   - When the occurrence threshold is met (usually `min_occurrences`, or 1-shot when `benefit=high` and `allow_single_if_high_benefit=true`), MI writes a stored workflow JSON under `projects/<project_id>/workflows/` and records `kind=workflow_solidified`.

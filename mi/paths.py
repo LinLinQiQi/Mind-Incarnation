@@ -260,6 +260,58 @@ def resolve_project_id(home_dir: Path, project_root: Path) -> str:
     return pid
 
 
+def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None) -> tuple[Path, str]:
+    """Resolve an effective project root for CLI commands.
+
+    Goals:
+    - Reduce user burden: allow running MI commands from any subdir of a git repo
+      without having to pass `--cd` to the repo root.
+    - Preserve intentional "subproject roots": if the current working directory
+      (or a provided `--cd`) was previously used as a distinct project root, keep it.
+
+    Resolution order:
+    1) Explicit `--cd` (if provided)
+    2) $MI_PROJECT_ROOT (if set)
+    3) If inside git and the current dir is not a known project root, use git toplevel
+    4) Fall back to cwd
+
+    Returns: (project_root_path, reason)
+    """
+
+    cd_s = str(cd or "").strip()
+    if cd_s:
+        return Path(cd_s).expanduser().resolve(), "arg"
+
+    env_root = str(os.environ.get("MI_PROJECT_ROOT") or "").strip()
+    if env_root:
+        p = Path(env_root).expanduser().resolve()
+        if p.exists():
+            return p, "env:MI_PROJECT_ROOT"
+
+    cur = (cwd or Path.cwd()).resolve()
+    ident_cur = project_identity(cur)
+    key_cur = str(ident_cur.get("key") or "").strip()
+
+    mapping = _load_project_index(home_dir)
+
+    # If the current directory was previously used as a project root (e.g., a monorepo subproject),
+    # keep it stable by default.
+    if key_cur and mapping.get(key_cur):
+        return cur, "known:cwd"
+
+    git_top = str(ident_cur.get("git_toplevel") or "").strip()
+    if git_top:
+        top = Path(git_top).resolve()
+        if top != cur:
+            ident_top = project_identity(top)
+            key_top = str(ident_top.get("key") or "").strip()
+            if key_top and mapping.get(key_top):
+                return top, "known:git_toplevel"
+            return top, "git_toplevel"
+
+    return cur, "cwd"
+
+
 @dataclass(frozen=True)
 class ProjectPaths:
     home_dir: Path

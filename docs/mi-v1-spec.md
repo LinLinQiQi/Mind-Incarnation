@@ -860,6 +860,13 @@ Run batch autopilot:
 mi --home ~/.mind-incarnation run --cd <project_root> --show "<task>"
 ```
 
+Notes on `--cd` (project root):
+
+- `--cd` is optional. If omitted, MI infers a project root from your current working directory:
+  - for git repos: defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject)
+  - for non-git dirs: uses the current directory
+- You can also set `$MI_PROJECT_ROOT` to run MI commands from anywhere without repeating `--cd`.
+
 Common run flags:
 
 - `--max-batches N`: cap the number of Hands batches

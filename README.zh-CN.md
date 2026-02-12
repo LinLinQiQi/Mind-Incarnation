@@ -129,6 +129,11 @@ mi init --values "我的偏好：尽量少问；默认行为不变重构；没�
 mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。"
 ```
 
+关于 `--cd`（项目根目录）的说明：
+
+- `--cd` 可省略。如果你在 git repo 内部运行，MI 默认会使用 git toplevel（仓库根目录），除非当前目录曾经被你作为一个独立的 MI project root 使用过（例如 monorepo 子项目）。
+- 你也可以设置环境变量 `$MI_PROJECT_ROOT`，从任意目录运行 MI 命令而无需反复写 `--cd`。
+
 可选：跨多次运行恢复/重置 Hands 会话（best-effort）：
 
 ```bash

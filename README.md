@@ -129,6 +129,11 @@ Run MI batch autopilot above Hands (stores transcripts + evidence under `~/.mind
 mi run --cd /path/to/your/project --show "Do X, then verify with minimal checks."
 ```
 
+Notes on `--cd`:
+
+- `--cd` is optional. If omitted and you're inside a git repo, MI defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject).
+- You can set `$MI_PROJECT_ROOT` to run MI commands from anywhere without repeating `--cd`.
+
 Optional: resume/reset Hands session across runs (best-effort):
 
 ```bash

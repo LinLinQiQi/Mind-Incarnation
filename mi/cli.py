@@ -20,7 +20,7 @@ from .config import (
 from .mindspec import MindSpecStore
 from .prompts import compile_mindspec_prompt, edit_workflow_prompt
 from .runner import run_autopilot
-from .paths import ProjectPaths, default_home_dir, project_index_path
+from .paths import ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
 from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
 from .transcript import last_agent_message_from_transcript, tail_transcript_lines, resolve_transcript_path
 from .redact import redact_text
@@ -54,6 +54,20 @@ def _unified_diff(a: str, b: str, *, fromfile: str, tofile: str, limit_lines: in
     if len(diff) > limit_lines:
         diff = diff[:limit_lines] + ["... (diff truncated)\n"]
     return "".join(diff).rstrip() + "\n" if diff else ""
+
+
+def _resolve_project_root_from_args(store: MindSpecStore, cd_arg: str) -> Path:
+    """Resolve an effective project root for CLI handlers.
+
+    - If `--cd` is omitted, MI may infer git toplevel (see `resolve_cli_project_root`).
+    - Print a short stderr note when inference changes the root away from cwd.
+    """
+
+    root, reason = resolve_cli_project_root(store.home_dir, cd_arg, cwd=Path.cwd())
+    cwd = Path.cwd().resolve()
+    if reason != "arg" and root != cwd:
+        print(f"[mi] using inferred project_root={root} (reason={reason}, cwd={cwd})", file=sys.stderr)
+    return root
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,8 +126,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("task", help="User task for Hands to execute.")
     p_run.add_argument(
         "--cd",
-        default=os.getcwd(),
-        help="Working directory for the Hands run (project root).",
+        default="",
+        help="Project root for the Hands run (default: infer from cwd; git toplevel when available).",
     )
     p_run.add_argument(
         "--max-batches",
@@ -141,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     learned_sub = p_learned.add_subparsers(dest="learned_cmd", required=True)
 
     p_ll = learned_sub.add_parser("list", help="List learned entries (global + project).")
-    p_ll.add_argument("--cd", default=os.getcwd(), help="Project root used for project-scoped learned entries.")
+    p_ll.add_argument("--cd", default="", help="Project root used for project-scoped learned entries.")
 
     p_ld = learned_sub.add_parser("disable", help="Disable a learned entry by id (append-only).")
     p_ld.add_argument("id", help="Learned change id to disable.")
@@ -151,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         default="project",
         help="Where to record the disable action. 'project' disables only for this project; 'global' disables everywhere.",
     )
-    p_ld.add_argument("--cd", default=os.getcwd(), help="Project root used for project-scoped disable.")
+    p_ld.add_argument("--cd", default="", help="Project root used for project-scoped disable.")
     p_ld.add_argument("--rationale", default="user rollback", help="Reason to record for the rollback.")
 
     p_las = learned_sub.add_parser(
@@ -159,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Apply a previously suggested learned change from EvidenceLog (append-only).",
     )
     p_las.add_argument("suggestion_id", help="Suggestion id from EvidenceLog record kind=learn_suggested.")
-    p_las.add_argument("--cd", default=os.getcwd(), help="Project root used to locate EvidenceLog and learned storage.")
+    p_las.add_argument("--cd", default="", help="Project root used to locate EvidenceLog and learned storage.")
     p_las.add_argument("--dry-run", action="store_true", help="Show what would be applied without writing.")
     p_las.add_argument("--force", action="store_true", help="Apply even if the suggestion looks already applied.")
     p_las.add_argument(
@@ -172,16 +186,16 @@ def main(argv: list[str] | None = None) -> int:
     wf_sub = p_wf.add_subparsers(dest="wf_cmd", required=True)
 
     p_wfl = wf_sub.add_parser("list", help="List workflows for the project.")
-    p_wfl.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfl.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
 
     p_wfs = wf_sub.add_parser("show", help="Show a workflow by id.")
     p_wfs.add_argument("id", help="Workflow id (wf_...).")
-    p_wfs.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfs.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_wfs.add_argument("--json", action="store_true", help="Print workflow JSON.")
     p_wfs.add_argument("--markdown", action="store_true", help="Print workflow as Markdown.")
 
     p_wfc = wf_sub.add_parser("create", help="Create a new workflow (minimal stub).")
-    p_wfc.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfc.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_wfc.add_argument("--name", required=True, help="Workflow name.")
     p_wfc.add_argument("--disabled", action="store_true", help="Create as disabled (default is enabled).")
     p_wfc.add_argument("--trigger-mode", default="manual", choices=["manual", "task_contains"], help="Trigger mode.")
@@ -189,19 +203,19 @@ def main(argv: list[str] | None = None) -> int:
 
     p_wfe = wf_sub.add_parser("enable", help="Enable a workflow.")
     p_wfe.add_argument("id", help="Workflow id (wf_...).")
-    p_wfe.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfe.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
 
     p_wfd = wf_sub.add_parser("disable", help="Disable a workflow.")
     p_wfd.add_argument("id", help="Workflow id (wf_...).")
-    p_wfd.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfd.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
 
     p_wfx = wf_sub.add_parser("delete", help="Delete a workflow (source of truth).")
     p_wfx.add_argument("id", help="Workflow id (wf_...).")
-    p_wfx.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfx.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
 
     p_wfedit = wf_sub.add_parser("edit", help="Edit a workflow via natural language (uses Mind provider).")
     p_wfedit.add_argument("id", help="Workflow id (wf_...).")
-    p_wfedit.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfedit.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_wfedit.add_argument(
         "--request",
         default="-",
@@ -214,12 +228,12 @@ def main(argv: list[str] | None = None) -> int:
     host_sub = p_host.add_subparsers(dest="host_cmd", required=True)
 
     p_hl = host_sub.add_parser("list", help="List host bindings for the project.")
-    p_hl.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_hl.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
 
     p_hb = host_sub.add_parser("bind", help="Bind a host workspace to this project (writes ProjectOverlay).")
     p_hb.add_argument("host", help="Host name (e.g., openclaw).")
     p_hb.add_argument("--workspace", required=True, help="Host workspace root path.")
-    p_hb.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_hb.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_hb.add_argument(
         "--generated-rel-dir",
         default="",
@@ -234,21 +248,21 @@ def main(argv: list[str] | None = None) -> int:
 
     p_hu = host_sub.add_parser("unbind", help="Remove a host binding from this project.")
     p_hu.add_argument("host", help="Host name.")
-    p_hu.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_hu.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
 
     p_hs = host_sub.add_parser("sync", help="Sync enabled workflows into all bound host workspaces (derived artifacts).")
-    p_hs.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_hs.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_hs.add_argument("--json", action="store_true", help="Print sync result as JSON.")
 
     p_last = sub.add_parser("last", help="Show the latest MI batch bundle (input/output/evidence pointers).")
-    p_last.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_last.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_last.add_argument("--json", action="store_true", help="Print as JSON.")
     p_last.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
 
     p_evidence = sub.add_parser("evidence", help="Inspect EvidenceLog (JSONL).")
     ev_sub = p_evidence.add_subparsers(dest="evidence_cmd", required=True)
     p_ev_tail = ev_sub.add_parser("tail", help="Tail EvidenceLog records.")
-    p_ev_tail.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_ev_tail.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_ev_tail.add_argument("-n", "--lines", type=int, default=20, help="Number of records to show.")
     p_ev_tail.add_argument("--raw", action="store_true", help="Print raw JSONL lines.")
     p_ev_tail.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
@@ -256,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     p_tr = sub.add_parser("transcript", help="Inspect raw transcripts (Hands or Mind).")
     tr_sub = p_tr.add_subparsers(dest="tr_cmd", required=True)
     p_tr_show = tr_sub.add_parser("show", help="Show a transcript (defaults to the latest Hands transcript).")
-    p_tr_show.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_tr_show.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_tr_show.add_argument("--mind", action="store_true", help="Show Mind transcript instead of Hands.")
     p_tr_show.add_argument("--path", default="", help="Explicit transcript path to show (overrides --mind/--cd selection).")
     p_tr_show.add_argument("-n", "--lines", type=int, default=200, help="Number of transcript lines to show (tail).")
@@ -266,14 +280,14 @@ def main(argv: list[str] | None = None) -> int:
     p_proj = sub.add_parser("project", help="Inspect per-project MI state (overlay + resolved paths).")
     proj_sub = p_proj.add_subparsers(dest="project_cmd", required=True)
     p_ps = proj_sub.add_parser("show", help="Show the project overlay and resolved storage paths.")
-    p_ps.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_ps.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_ps.add_argument("--json", action="store_true", help="Print as JSON.")
     p_ps.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
 
     p_gc = sub.add_parser("gc", help="Garbage collect / archive MI artifacts (optional).")
     gc_sub = p_gc.add_subparsers(dest="gc_cmd", required=True)
     p_gct = gc_sub.add_parser("transcripts", help="Archive older transcripts to reduce disk usage (safe, reversible).")
-    p_gct.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_gct.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_gct.add_argument("--keep-hands", type=int, default=50, help="Keep N most recent raw Hands transcripts.")
     p_gct.add_argument("--keep-mind", type=int, default=200, help="Keep N most recent raw Mind transcripts.")
     p_gct.add_argument("--apply", action="store_true", help="Apply changes (default is dry-run).")
@@ -415,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "run":
         hands_exec, hands_resume = make_hands_functions(cfg)
-        project_root = Path(args.cd).resolve()
+        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
         project_paths = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
         llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=project_paths.transcripts_dir)
         hands_provider = ""
@@ -426,7 +440,7 @@ def main(argv: list[str] | None = None) -> int:
         continue_hands = bool(args.continue_hands or continue_default)
         result = run_autopilot(
             task=args.task,
-            project_root=args.cd,
+            project_root=str(project_root),
             home_dir=args.home,
             max_batches=args.max_batches,
             hands_exec=hands_exec,
@@ -441,9 +455,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result.status == "done" else 1
 
     if args.cmd == "last":
-        project_root = Path(args.cd).resolve()
-        home = Path(args.home) if args.home else default_home_dir()
-        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
 
         bundle = load_last_batch_bundle(pp.evidence_log_path)
         codex_input = bundle.get("codex_input") if isinstance(bundle.get("codex_input"), dict) else None
@@ -617,9 +630,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "evidence":
-        project_root = Path(args.cd).resolve()
-        home = Path(args.home) if args.home else default_home_dir()
-        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
         if args.evidence_cmd == "tail":
             if args.raw:
                 for line in tail_raw_lines(pp.evidence_log_path, args.lines):
@@ -631,9 +643,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     if args.cmd == "transcript":
-        project_root = Path(args.cd).resolve()
-        home = Path(args.home) if args.home else default_home_dir()
-        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
         if args.tr_cmd == "show":
             if args.path:
                 tp = Path(args.path).expanduser()
@@ -678,13 +689,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     if args.cmd == "project":
-        project_root = Path(args.cd).resolve()
-        home = Path(args.home) if args.home else default_home_dir()
-        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
         overlay = store.load_project_overlay(project_root)
 
         identity_key = str(overlay.get("identity_key") or "").strip()
-        idx_path = project_index_path(home)
+        idx_path = project_index_path(store.home_dir)
         idx_mapped = ""
         if identity_key:
             try:
@@ -745,9 +755,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "gc":
         if args.gc_cmd == "transcripts":
-            project_root = Path(args.cd).resolve()
-            home = Path(args.home) if args.home else default_home_dir()
-            pp = ProjectPaths(home_dir=home, project_root=project_root)
+            project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
+            pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
             res = archive_project_transcripts(
                 transcripts_dir=pp.transcripts_dir,
                 keep_hands=int(args.keep_hands),
@@ -769,9 +778,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     if args.cmd == "workflow":
-        project_root = Path(args.cd).resolve()
-        home = Path(args.home) if args.home else default_home_dir()
-        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
         wf_store = WorkflowStore(pp)
         loaded2 = store.load(project_root)
         overlay2 = loaded2.project_overlay if isinstance(loaded2.project_overlay, dict) else {}
@@ -926,7 +934,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.cmd == "host":
-        project_root = Path(args.cd).resolve()
+        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
         loaded2 = store.load(project_root)
         overlay2 = loaded2.project_overlay if isinstance(loaded2.project_overlay, dict) else {}
         if not isinstance(overlay2, dict):
@@ -934,8 +942,7 @@ def main(argv: list[str] | None = None) -> int:
         hb = overlay2.get("host_bindings")
         bindings = hb if isinstance(hb, list) else []
 
-        home = Path(args.home) if args.home else default_home_dir()
-        pp = ProjectPaths(home_dir=home, project_root=project_root)
+        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
         wf_store = WorkflowStore(pp)
 
         def _sync_hosts() -> dict[str, Any]:
@@ -1045,7 +1052,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.cmd == "learned":
-        project_root = Path(args.cd).resolve()
+        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
         if args.learned_cmd == "list":
             entries = store.list_learned_entries(project_root)
             if not entries:

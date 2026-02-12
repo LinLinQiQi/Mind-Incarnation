@@ -22,6 +22,7 @@ Status: V1 (draft), batch autopilot above Hands (default: Codex CLI).
 ## Docs
 
 - V1 spec (source of truth): `docs/mi-v1-spec.md`
+- Workflows + host adapters (experimental; includes OpenClaw Skills-only target): see `docs/mi-v1-spec.md`
 
 ## Requirements
 

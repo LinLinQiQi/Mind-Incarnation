@@ -1,4 +1,5 @@
 import argparse
+import difflib
 import json
 import os
 import sys
@@ -26,11 +27,33 @@ from .redact import redact_text
 from .provider_factory import make_hands_functions, make_mind_provider
 from .gc import archive_project_transcripts
 from .storage import append_jsonl, iter_jsonl, now_rfc3339
+from .workflows import WorkflowStore, new_workflow_id, render_workflow_markdown
+from .hosts import sync_hosts_from_overlay
 
 
 def _read_stdin_text() -> str:
     data = sys.stdin.read()
     return data.strip("\n")
+
+
+def _read_user_line(question: str) -> str:
+    print(question.strip(), file=sys.stderr)
+    print("> ", end="", file=sys.stderr, flush=True)
+    return sys.stdin.readline().strip()
+
+
+def _unified_diff(a: str, b: str, *, fromfile: str, tofile: str, limit_lines: int = 400) -> str:
+    diff = list(
+        difflib.unified_diff(
+            a.splitlines(True),
+            b.splitlines(True),
+            fromfile=fromfile,
+            tofile=tofile,
+        )
+    )
+    if len(diff) > limit_lines:
+        diff = diff[:limit_lines] + ["... (diff truncated)\n"]
+    return "".join(diff).rstrip() + "\n" if diff else ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -144,6 +167,78 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Optional extra rationale to append to the learned entry (for audit).",
     )
+
+    p_wf = sub.add_parser("workflow", help="Manage project-scoped workflows (MI IR).")
+    wf_sub = p_wf.add_subparsers(dest="wf_cmd", required=True)
+
+    p_wfl = wf_sub.add_parser("list", help="List workflows for the project.")
+    p_wfl.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+
+    p_wfs = wf_sub.add_parser("show", help="Show a workflow by id.")
+    p_wfs.add_argument("id", help="Workflow id (wf_...).")
+    p_wfs.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfs.add_argument("--json", action="store_true", help="Print workflow JSON.")
+    p_wfs.add_argument("--markdown", action="store_true", help="Print workflow as Markdown.")
+
+    p_wfc = wf_sub.add_parser("create", help="Create a new workflow (minimal stub).")
+    p_wfc.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfc.add_argument("--name", required=True, help="Workflow name.")
+    p_wfc.add_argument("--disabled", action="store_true", help="Create as disabled (default is enabled).")
+    p_wfc.add_argument("--trigger-mode", default="manual", choices=["manual", "task_contains"], help="Trigger mode.")
+    p_wfc.add_argument("--pattern", default="", help="Trigger pattern (used when trigger-mode=task_contains).")
+
+    p_wfe = wf_sub.add_parser("enable", help="Enable a workflow.")
+    p_wfe.add_argument("id", help="Workflow id (wf_...).")
+    p_wfe.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+
+    p_wfd = wf_sub.add_parser("disable", help="Disable a workflow.")
+    p_wfd.add_argument("id", help="Workflow id (wf_...).")
+    p_wfd.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+
+    p_wfx = wf_sub.add_parser("delete", help="Delete a workflow (source of truth).")
+    p_wfx.add_argument("id", help="Workflow id (wf_...).")
+    p_wfx.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+
+    p_wfedit = wf_sub.add_parser("edit", help="Edit a workflow via natural language (uses Mind provider).")
+    p_wfedit.add_argument("id", help="Workflow id (wf_...).")
+    p_wfedit.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_wfedit.add_argument(
+        "--request",
+        default="-",
+        help="Edit request text. If omitted or '-', read a single line from stdin.",
+    )
+    p_wfedit.add_argument("--loop", action="store_true", help="After applying, prompt for more edits until blank.")
+    p_wfedit.add_argument("--dry-run", action="store_true", help="Show proposed edits but do not write.")
+
+    p_host = sub.add_parser("host", help="Configure/sync derived artifacts into host workspaces.")
+    host_sub = p_host.add_subparsers(dest="host_cmd", required=True)
+
+    p_hl = host_sub.add_parser("list", help="List host bindings for the project.")
+    p_hl.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+
+    p_hb = host_sub.add_parser("bind", help="Bind a host workspace to this project (writes ProjectOverlay).")
+    p_hb.add_argument("host", help="Host name (e.g., openclaw).")
+    p_hb.add_argument("--workspace", required=True, help="Host workspace root path.")
+    p_hb.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_hb.add_argument(
+        "--generated-rel-dir",
+        default="",
+        help="Relative path under workspace_root for MI derived artifacts (default: .mi/generated/<host>).",
+    )
+    p_hb.add_argument(
+        "--symlink-dir",
+        action="append",
+        default=[],
+        help="Register by symlinking a generated subdir into workspace. Format: SRC:DST (both relative). Repeatable.",
+    )
+
+    p_hu = host_sub.add_parser("unbind", help="Remove a host binding from this project.")
+    p_hu.add_argument("host", help="Host name.")
+    p_hu.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+
+    p_hs = host_sub.add_parser("sync", help="Sync enabled workflows into all bound host workspaces (derived artifacts).")
+    p_hs.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")
+    p_hs.add_argument("--json", action="store_true", help="Print sync result as JSON.")
 
     p_last = sub.add_parser("last", help="Show the latest MI batch bundle (input/output/evidence pointers).")
     p_last.add_argument("--cd", default=os.getcwd(), help="Project root used to locate MI artifacts.")

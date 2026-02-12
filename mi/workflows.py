@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import secrets
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .paths import ProjectPaths
+from .storage import ensure_dir, now_rfc3339, read_json, write_json
+
+
+WORKFLOW_IR_VERSION = "v1"
+
+
+def new_workflow_id() -> str:
+    return f"wf_{time.time_ns()}_{secrets.token_hex(4)}"
+
+
+def _workflow_path(project_paths: ProjectPaths, workflow_id: str) -> Path:
+    return project_paths.workflows_dir / f"{workflow_id}.json"
+
+
+def _stable_json(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def _normalize_workflow(obj: dict[str, Any]) -> dict[str, Any]:
+    w = dict(obj)
+    if "version" not in w:
+        w["version"] = WORKFLOW_IR_VERSION
+    if "id" not in w:
+        w["id"] = ""
+    if "name" not in w:
+        w["name"] = ""
+    if "enabled" not in w:
+        w["enabled"] = True
+    if "trigger" not in w or not isinstance(w.get("trigger"), dict):
+        w["trigger"] = {"mode": "manual", "pattern": ""}
+    else:
+        t = dict(w["trigger"])
+        if "mode" not in t:
+            t["mode"] = "manual"
+        if "pattern" not in t:
+            t["pattern"] = ""
+        w["trigger"] = t
+    if "mermaid" not in w:
+        w["mermaid"] = ""
+    if "steps" not in w or not isinstance(w.get("steps"), list):
+        w["steps"] = []
+    if "source" not in w or not isinstance(w.get("source"), dict):
+        w["source"] = {"kind": "manual", "reason": "", "evidence_refs": []}
+    else:
+        s = dict(w["source"])
+        if "kind" not in s:
+            s["kind"] = "manual"
+        if "reason" not in s:
+            s["reason"] = ""
+        if "evidence_refs" not in s or not isinstance(s.get("evidence_refs"), list):
+            s["evidence_refs"] = []
+        w["source"] = s
+    if "created_ts" not in w:
+        w["created_ts"] = now_rfc3339()
+    if "updated_ts" not in w:
+        w["updated_ts"] = now_rfc3339()
+    return w
+
+
+@dataclass(frozen=True)
+class WorkflowStore:
+    project_paths: ProjectPaths
+
+    def list_ids(self) -> list[str]:
+        d = self.project_paths.workflows_dir
+        try:
+            items = sorted(d.glob("wf_*.json"))
+        except FileNotFoundError:
+            return []
+        ids: list[str] = []
+        for p in items:
+            if p.is_file() and p.suffix == ".json":
+                ids.append(p.stem)
+        return ids
+
+    def load(self, workflow_id: str) -> dict[str, Any]:
+        obj = read_json(_workflow_path(self.project_paths, workflow_id), default=None)
+        if not isinstance(obj, dict):
+            raise FileNotFoundError(f"workflow not found or invalid: {workflow_id}")
+        return _normalize_workflow(obj)
+
+    def write(self, workflow: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(workflow, dict):
+            raise TypeError("workflow must be a dict")
+        w = _normalize_workflow(workflow)
+        wid = str(w.get("id") or "").strip()
+        if not wid:
+            raise ValueError("workflow.id is required")
+        now = now_rfc3339()
+        if not str(w.get("created_ts") or "").strip():
+            w["created_ts"] = now
+        w["updated_ts"] = now
+        ensure_dir(self.project_paths.workflows_dir)
+        write_json(_workflow_path(self.project_paths, wid), w)
+        return w
+
+    def delete(self, workflow_id: str) -> None:
+        p = _workflow_path(self.project_paths, workflow_id)
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            return
+
+    def enabled_workflows(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for wid in self.list_ids():
+            try:
+                w = self.load(wid)
+            except Exception:
+                continue
+            if bool(w.get("enabled", False)):
+                out.append(w)
+        return out
+
+    def fingerprint(self, *, enabled_only: bool = False) -> str:
+        """Return a stable fingerprint of stored workflows (for auto-sync decisions)."""
+
+        ids = self.list_ids()
+        items: list[str] = []
+        for wid in ids:
+            try:
+                w = self.load(wid)
+            except Exception:
+                continue
+            if enabled_only and not bool(w.get("enabled", False)):
+                continue
+            items.append(_stable_json(w))
+        digest = hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()
+        return digest[:16]
+
+
+def render_workflow_markdown(workflow: dict[str, Any]) -> str:
+    w = _normalize_workflow(workflow if isinstance(workflow, dict) else {})
+    wid = str(w.get("id") or "").strip()
+    name = str(w.get("name") or "").strip()
+    enabled = bool(w.get("enabled", False))
+    trig = w.get("trigger") if isinstance(w.get("trigger"), dict) else {}
+    trig_mode = str(trig.get("mode") or "").strip()
+    trig_pat = str(trig.get("pattern") or "").strip()
+    mermaid = str(w.get("mermaid") or "").strip()
+    steps = w.get("steps") if isinstance(w.get("steps"), list) else []
+
+    lines: list[str] = []
+    title = name or wid or "workflow"
+    lines.append(f"# {title}")
+    if wid:
+        lines.append(f"- id: `{wid}`")
+    lines.append(f"- enabled: `{str(enabled).lower()}`")
+    if trig_mode:
+        lines.append(f"- trigger.mode: `{trig_mode}`")
+    if trig_pat:
+        lines.append(f"- trigger.pattern: `{trig_pat}`")
+    lines.append("")
+
+    if mermaid:
+        lines.append("## Flow")
+        lines.append("")
+        lines.append("```mermaid")
+        lines.append(mermaid)
+        lines.append("```")
+        lines.append("")
+
+    lines.append("## Steps")
+    lines.append("")
+    if not steps:
+        lines.append("(no steps)")
+        lines.append("")
+    else:
+        for i, s in enumerate(steps, start=1):
+            if not isinstance(s, dict):
+                continue
+            sid = str(s.get("id") or f"s{i}").strip()
+            kind = str(s.get("kind") or "").strip()
+            title2 = str(s.get("title") or "").strip()
+            lines.append(f"### {i}. {title2 or sid}")
+            if kind:
+                lines.append(f"- kind: `{kind}`")
+            hands_input = str(s.get("hands_input") or "").strip()
+            check_input = str(s.get("check_input") or "").strip()
+            notes = str(s.get("notes") or "").strip()
+            risk_category = str(s.get("risk_category") or "").strip()
+            policy = str(s.get("policy") or "").strip()
+            if risk_category:
+                lines.append(f"- risk_category: `{risk_category}`")
+            if policy:
+                lines.append(f"- policy: `{policy}`")
+            if hands_input:
+                lines.append("")
+                lines.append("Hands input:")
+                lines.append("")
+                lines.append("```")
+                lines.append(hands_input)
+                lines.append("```")
+            if check_input:
+                lines.append("")
+                lines.append("Check input:")
+                lines.append("")
+                lines.append("```")
+                lines.append(check_input)
+                lines.append("```")
+            if notes:
+                lines.append("")
+                lines.append("Notes:")
+                lines.append("")
+                lines.append(notes)
+            lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def load_workflow_candidates(project_paths: ProjectPaths) -> dict[str, Any]:
+    obj = read_json(project_paths.workflow_candidates_path, default=None)
+    if not isinstance(obj, dict):
+        return {"version": "v1", "by_signature": {}}
+    if "by_signature" not in obj or not isinstance(obj.get("by_signature"), dict):
+        obj["by_signature"] = {}
+    if "version" not in obj:
+        obj["version"] = "v1"
+    return obj
+
+
+def write_workflow_candidates(project_paths: ProjectPaths, obj: dict[str, Any]) -> None:
+    if not isinstance(obj, dict):
+        raise TypeError("candidates must be a dict")
+    if "version" not in obj:
+        obj["version"] = "v1"
+    if "by_signature" not in obj or not isinstance(obj.get("by_signature"), dict):
+        obj["by_signature"] = {}
+    write_json(project_paths.workflow_candidates_path, obj)
+

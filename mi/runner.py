@@ -20,9 +20,12 @@ from .paths import ProjectPaths, default_home_dir
 from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
+from .prompts import suggest_workflow_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from .storage import append_jsonl, now_rfc3339, ensure_dir
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
+from .workflows import WorkflowStore, load_workflow_candidates, write_workflow_candidates, new_workflow_id
+from .hosts import sync_hosts_from_overlay
 
 
 _DEFAULT = object()

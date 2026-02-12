@@ -294,6 +294,16 @@ class ProjectPaths:
     def transcripts_dir(self) -> Path:
         return self.project_dir / "transcripts"
 
+    @property
+    def workflows_dir(self) -> Path:
+        # Workflow IR is stored in MI home as the source of truth (project-scoped in V1).
+        return self.project_dir / "workflows"
+
+    @property
+    def workflow_candidates_path(self) -> Path:
+        # Signature -> count mapping for "suggested workflow" mining.
+        return self.project_dir / "workflow_candidates.json"
+
 
 @dataclass(frozen=True)
 class GlobalPaths:

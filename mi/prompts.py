@@ -247,6 +247,108 @@ def plan_min_checks_prompt(
     ).strip() + "\n"
 
 
+def suggest_workflow_prompt(
+    *,
+    task: str,
+    hands_provider: str,
+    mindspec_base: dict[str, Any],
+    learned_text: str,
+    project_overlay: dict[str, Any],
+    recent_evidence: list[dict[str, Any]],
+    notes: str,
+) -> str:
+    return "\n".join(
+        [
+            "You are MI (Mind Incarnation).",
+            "Suggest a reusable workflow IR only when it would significantly reduce user burden in future runs.",
+            "",
+            "Constraints:",
+            "- MI sits above Hands and only controls input + reads output.",
+            "- Do NOT enforce step-by-step protocol tyranny. Workflow steps should be coarse-grained and goal-oriented.",
+            "- Only suggest a workflow when it is likely to repeat (or the benefit is extremely high).",
+            "- Keep the workflow project-scoped (V1).",
+            "- The workflow IR will be stored as MI source-of-truth; host workspace files are derived artifacts.",
+            "- If you are not confident, set should_suggest=false and suggestion=null.",
+            "",
+            "Output rules:",
+            "- Output MUST be a single JSON object matching the provided JSON Schema.",
+            "- No markdown, no extra keys, no extra commentary.",
+            "",
+            "User task:",
+            task.strip(),
+            "",
+            f"Hands provider: {hands_provider.strip() or '(unknown)'}",
+            "",
+            "MindSpec base (structured):",
+            _to_json(mindspec_base),
+            "",
+            "Learned preferences (reversible text):",
+            learned_text.strip() or "(none)",
+            "",
+            "ProjectOverlay:",
+            _to_json(project_overlay),
+            "",
+            "Recent evidence (most recent last):",
+            _to_json(recent_evidence),
+            "",
+            "Run notes:",
+            (notes or "").strip(),
+            "",
+            "If you suggest a workflow:",
+            "- Provide a stable signature string (used to count occurrences across runs).",
+            "- Provide benefit=high ONLY when the user-burden reduction is substantial.",
+            "- Provide a small number of steps (3-7). Each step MUST have an id.",
+            "- Set workflow.enabled=false in the suggestion; MI decides whether to auto-enable.",
+            "- Set workflow.id to an empty string.",
+            "",
+            "Now output the JSON.",
+        ]
+    ).strip() + "\n"
+
+
+def edit_workflow_prompt(
+    *,
+    mindspec_base: dict[str, Any],
+    learned_text: str,
+    project_overlay: dict[str, Any],
+    workflow: dict[str, Any],
+    user_request: str,
+) -> str:
+    return "\n".join(
+        [
+            "You are MI (Mind Incarnation).",
+            "Edit a stored workflow IR based on the user's natural-language request.",
+            "",
+            "Constraints:",
+            "- Preserve workflow.id, workflow.version, and workflow.created_ts.",
+            "- Make the smallest change that satisfies the request.",
+            "- Keep step ids stable when possible; only add/remove steps when necessary.",
+            "- Ensure every step has all required fields, even if empty strings.",
+            "",
+            "Output rules:",
+            "- Output MUST be a single JSON object matching the provided JSON Schema.",
+            "- No markdown, no extra keys, no extra commentary.",
+            "",
+            "MindSpec base (structured):",
+            _to_json(mindspec_base),
+            "",
+            "Learned preferences (reversible text):",
+            learned_text.strip() or "(none)",
+            "",
+            "ProjectOverlay:",
+            _to_json(project_overlay),
+            "",
+            "Current workflow JSON:",
+            _to_json(workflow),
+            "",
+            "User request:",
+            (user_request or "").strip(),
+            "",
+            "Now output the edited workflow JSON + change_summary + conflicts + notes.",
+        ]
+    ).strip() + "\n"
+
+
 def auto_answer_to_codex_prompt(
     *,
     task: str,

@@ -22,6 +22,7 @@ Mind Incarnation（MI）是一个“心智层（mind layer）”：它位于执�
 ## 文档
 
 - V1 规范（事实来源）：`docs/mi-v1-spec.md`
+- Workflows + host adapters（实验性；包含 OpenClaw 的 Skills-only 目标）：详见 `docs/mi-v1-spec.md`
 
 ## 环境要求
 

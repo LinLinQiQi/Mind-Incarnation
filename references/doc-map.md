@@ -59,6 +59,16 @@ preferences.
 - Update: `docs/mi-v1-spec.md` Optional interrupt mode section
 - If templates/examples change: update `README.md`, `README.zh-CN.md`
 
+### Workflows / Host Adapters (Derived Artifacts)
+
+Examples: workflow IR fields, mining/solidification thresholds, host binding config,
+derived artifact layout, adapter implementations (e.g., OpenClaw skills generation),
+auto-sync behavior.
+
+- Update: `docs/mi-v1-spec.md` workflows + host bindings sections
+- Update: `docs/mi-v1-spec.md` Storage Layout section (if new files/dirs are added)
+- If users need to configure or invoke new commands: update `README.md`, `README.zh-CN.md`
+
 ### Storage Layout / Project Identity
 
 Examples: new files under `~/.mind-incarnation`, new indices, transcript GC/archive,
@@ -87,4 +97,3 @@ Examples: new subcommand/flag, renamed output keys, new JSON fields.
 - If any non-doc file changed, `docs/mi-v1-spec.md` should usually change too.
 - If CLI UX changed, `README.md` and `README.zh-CN.md` should usually change too.
 - If storage/record shape changed, update the relevant JSON snippets in `docs/mi-v1-spec.md`.
-

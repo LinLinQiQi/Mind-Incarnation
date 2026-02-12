@@ -10,6 +10,16 @@ from .paths import GlobalPaths, ProjectPaths, default_home_dir, project_identity
 from .storage import append_jsonl, now_rfc3339, read_json, write_json, iter_jsonl
 
 
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)  # type: ignore[arg-type]
+        else:
+            out[k] = v
+    return out
+
+
 def _default_base(values_text: str) -> dict[str, Any]:
     # Keep this minimal and user-editable; most decisions are still made by MI prompts at runtime.
     return {
@@ -54,6 +64,17 @@ def _default_base(values_text: str) -> dict[str, Any]:
             "store_raw_transcript": True,
             "store_evidence_log": True,
             "ui_expandable_transcript": True,
+        },
+        "workflows": {
+            # Workflow solidification is project-scoped in V1.
+            # Host workspaces get only derived artifacts via adapters.
+            "auto_mine": True,
+            "auto_enable": True,
+            # Usually require >=2 occurrences before solidifying; allow 1 when benefit is high.
+            "min_occurrences": 2,
+            "allow_single_if_high_benefit": True,
+            # When a workflow change is detected during `mi run`, sync derived artifacts to host workspaces.
+            "auto_sync_on_change": True,
         },
         "violation_response": {
             "auto_learn": True,
@@ -133,10 +154,18 @@ class MindSpecStore:
         write_json(self.base_path, _default_base(values_text=values_text))
 
     def write_base(self, base_obj: dict[str, Any]) -> None:
-        write_json(self.base_path, base_obj)
+        values_text = str(base_obj.get("values_text") or "") if isinstance(base_obj, dict) else ""
+        defaults = _default_base(values_text=values_text)
+        merged = _deep_merge(defaults, base_obj if isinstance(base_obj, dict) else {})
+        write_json(self.base_path, merged)
 
     def load_base(self) -> dict[str, Any]:
-        return read_json(self.base_path, default=_default_base(values_text=""))
+        raw = read_json(self.base_path, default=None)
+        if not isinstance(raw, dict):
+            return _default_base(values_text="")
+        values_text = str(raw.get("values_text") or "")
+        defaults = _default_base(values_text=values_text)
+        return _deep_merge(defaults, raw)
 
     def append_learned(self, *, project_root: Path, scope: str, text: str, rationale: str) -> str:
         entry_id = f"lc_{time.time_ns()}_{secrets.token_hex(4)}"
@@ -240,6 +269,7 @@ class MindSpecStore:
                 "rationale": "",
             },
         )
+        ensure_key("host_bindings", [])
         ensure_key(
             "hands_state",
             {

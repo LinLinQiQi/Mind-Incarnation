@@ -1,7 +1,7 @@
 # Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-10
+Last updated: 2026-02-12
 
 ## Goal
 
@@ -24,6 +24,7 @@ Non-negotiables (design intent):
 - MI optimizes for **low user burden**: default is to auto-advance using "values + evidence" and answer questions on behalf of the user; MI asks the user only when it cannot proceed safely or values are unclear.
 - MI is **transparent by default**: always store raw Hands transcripts + an EvidenceLog so users can audit what happened and why MI decided what it did.
 - MI is **personal and tunable**: values/preferences are expressed in prompts and compiled into structured logic; MI can learn tighter rules over time, but learning must be reversible (rollback).
+- MI is **host-decoupled**: MI's source of truth (values, evidence, workflows) lives in MI storage; anything written into a host workspace is a derived, regeneratable artifact.
 - MI avoids "protocol tyranny": it should not force Hands into rigid step-by-step reporting; light injection is allowed, but Hands should remain free to execute efficiently.
 - When "refactor" is requested, the default intent is **behavior-preserving** unless the user explicitly asks for behavior changes.
 
@@ -32,6 +33,7 @@ Non-negotiables (design intent):
 - MI MUST NOT intercept or gate Hands tool/command execution (no tool proxy / no allow/deny for shell commands).
 - MI MUST NOT force Hands into step-by-step protocols (no mandatory "STEP_REPORT" schema; no artificial step slicing).
 - MI MAY provide an optional "interrupt/terminate Hands process" mode for risk containment (implemented for Codex; best-effort for other CLIs).
+- MI MAY write derived artifacts into host workspaces (e.g., Skills) but MUST keep them inside an MI-owned generated directory and keep the write layer decoupled and reversible.
 - "Refactor" intent is **behavior-preserving by default** unless the user explicitly requests behavior changes.
 - If a project has **no tests**, MI asks the user ONCE per project to pick a verification strategy, then reuses it.
 - "Closed loop" completion is evaluated by MI itself (no default user acceptance prompt).
@@ -248,6 +250,13 @@ Minimal shape:
     "store_evidence_log": true,
     "ui_expandable_transcript": true
   },
+  "workflows": {
+    "auto_mine": true,
+    "auto_enable": true,
+    "min_occurrences": 2,
+    "allow_single_if_high_benefit": true,
+    "auto_sync_on_change": true
+  },
   "violation_response": {
     "auto_learn": true,
     "prompt_user_on_high_risk": true,
@@ -275,11 +284,61 @@ Minimal shape:
     "strategy": "string",
     "rationale": "string"
   },
+  "host_bindings": [
+    {
+      "host": "string",
+      "workspace_root": "string",
+      "enabled": true,
+      "generated_rel_dir": "string",
+      "register": {
+        "symlink_dirs": [{"src": "string", "dst": "string"}]
+      }
+    }
+  ],
   "hands_state": {
     "provider": "string",
     "thread_id": "string",
     "updated_ts": "string"
   }
+}
+```
+
+### Workflow IR (project-scoped)
+
+MI can store reusable workflows as project-scoped JSON files. A workflow is MI-owned **source of truth**; host workspaces (e.g., OpenClaw) receive only derived artifacts via adapters.
+
+Minimal shape:
+
+```json
+{
+  "version": "v1",
+  "id": "wf_<...>",
+  "name": "string",
+  "enabled": true,
+  "trigger": {
+    "mode": "manual | task_contains",
+    "pattern": "string"
+  },
+  "mermaid": "string",
+  "steps": [
+    {
+      "id": "string",
+      "kind": "hands | check | gate",
+      "title": "string",
+      "hands_input": "string",
+      "check_input": "string",
+      "risk_category": "network | install | push | publish | delete | privilege | privacy | cost | other",
+      "policy": "values_judged | allow | deny | ask",
+      "notes": "string"
+    }
+  ],
+  "source": {
+    "kind": "manual | suggested",
+    "reason": "string",
+    "evidence_refs": ["string"]
+  },
+  "created_ts": "RFC3339 timestamp",
+  "updated_ts": "RFC3339 timestamp"
 }
 ```
 
@@ -526,6 +585,27 @@ Learned changes are suggested by Mind outputs (`risk_judge.learned_changes` and 
 - If `auto_learn=true` (default): MI appends learned entries automatically (append-only) and also records a `learn_suggested` EvidenceLog record with `applied_entry_ids`.
 - If `auto_learn=false`: MI will **not** write `learned.jsonl` automatically; it records `learn_suggested` into EvidenceLog for audit and you can apply it later via CLI.
 
+## Workflows + Host Adapters (V1, Experimental)
+
+MI may "solidify" a user's habits into reusable workflows:
+
+- Workflows are **project-scoped** in V1.
+- Workflow IR is stored in MI home as the source of truth (`projects/<project_id>/workflows/*.json`).
+- Host workspace artifacts (e.g., Skills) are **derived** outputs written into a host workspace under an MI-owned generated directory (by default: `./.mi/generated/<host>/...`), and can be regenerated at any time.
+
+Workflow mining/solidification policy is values-driven, but MI exposes coarse knobs in `MindSpec.workflows`:
+
+- `auto_mine`: allow MI to call `suggest_workflow` and record candidates.
+- `min_occurrences`: usually require >=2 similar occurrences before writing a stored workflow.
+- `allow_single_if_high_benefit`: allow 1-shot solidification when benefit is extremely high.
+- `auto_enable`: when solidified, whether workflows default to enabled.
+- `auto_sync_on_change`: when workflows change (create/edit/enable/disable), sync derived artifacts to bound host workspaces.
+
+OpenClaw adapter (Skills-only):
+
+- The OpenClaw integration target is the *Skills* mechanism (AgentSkills-compatible `SKILL.md` skill folders).
+- MI generates skill folders under `./.mi/generated/openclaw/skills/...` and (optionally) registers them into the host workspace's `skills/` directory via a symlink rule in `ProjectOverlay.host_bindings`.
+
 ## Storage Layout (V1)
 
 Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home ...`).
@@ -539,6 +619,8 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/<project_id>/overlay.json`
   - `projects/<project_id>/learned.jsonl`
   - `projects/<project_id>/evidence.jsonl`
+  - `projects/<project_id>/workflows/*.json` (workflow IR; source of truth)
+  - `projects/<project_id>/workflow_candidates.json` (signature -> count; used for workflow mining)
   - `projects/<project_id>/transcripts/hands/*.jsonl`
   - `projects/<project_id>/transcripts/hands/archive/*.jsonl.gz` (optional; created by `mi gc transcripts`)
   - `projects/<project_id>/transcripts/mind/*.jsonl`

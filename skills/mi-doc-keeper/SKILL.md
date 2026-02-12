@@ -18,13 +18,14 @@ If `.mi-project` is missing, do not apply this skill's workflow.
 1) Identify the user-visible behavior change (even if "behavior-preserving").
 2) Update docs in the same patch:
    - Always update `docs/mi-v1-spec.md` when V1 behavior/loop/prompts/schemas change.
-   - Also update any other impacted docs (typically `README.md`, `README.zh-CN.md`, and any relevant files under `docs/`).
+   - Also update any other impacted docs (typically `README.md`, `README.zh-CN.md`, `references/doc-map.md`, and any relevant files under `docs/`).
 3) Ensure the following stay consistent with the implementation:
    - Constraints (no tool interception, no forced step slicing)
    - Runtime loop (batch autopilot)
    - Prompt pack semantics and IO contracts
-   - Data models / config knobs
-   - Violation handling and learned rules
+    - Data models / config knobs
+    - Violation handling and learned rules
+    - Workflow IR / host adapters / derived artifact layout (when applicable)
 4) Run a quick doc drift check:
    - If any non-doc files changed, `docs/mi-v1-spec.md` should usually change too.
    - If CLI UX or usage changed, `README.md` and `README.zh-CN.md` should usually change too.

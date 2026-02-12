@@ -162,7 +162,7 @@ def _render_openclaw_skill_markdown(*, workflow: dict[str, Any], project_id: str
     lines.append(f"name: {_openclaw_skill_dirname(wid)}")
     lines.append(f"description: {_single_line(f'MI workflow: {name}')}")
     # OpenClaw expects metadata to be a single-line JSON string.
-    lines.append(f"metadata: {meta_json}")
+    lines.append(f"metadata: '{meta_json}'")
     lines.append("---")
     lines.append("")
     lines.append(f"# {name}")

@@ -48,6 +48,7 @@ Examples: new learned semantics, auto-learn gating, new CLI for applying/rolling
 new storage files.
 
 - Update: `docs/mi-v1-spec.md` Learned section + CLI section
+- If memory architecture changes (recall backends, long-term reasoning stores): update `docs/mi-thought-db.md` (design notes)
 - Update: `README.md`, `README.zh-CN.md` with new commands/examples
 
 ### Risk / Interrupt / External Actions

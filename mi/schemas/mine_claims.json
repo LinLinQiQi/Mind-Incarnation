@@ -11,6 +11,7 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "local_id",
           "claim_type",
           "text",
           "scope",
@@ -23,6 +24,7 @@
           "notes"
         ],
         "properties": {
+          "local_id": { "type": "string" },
           "claim_type": { "type": "string", "enum": ["fact", "preference", "assumption", "goal"] },
           "text": { "type": "string" },
           "scope": { "type": "string", "enum": ["project", "global"] },
@@ -68,4 +70,3 @@
     "notes": { "type": "string" }
   }
 }
-

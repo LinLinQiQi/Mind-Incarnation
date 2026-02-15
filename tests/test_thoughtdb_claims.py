@@ -19,6 +19,7 @@ class TestThoughtDbClaims(unittest.TestCase):
             applied = tdb.apply_mined_claims(
                 mined_claims=[
                     {
+                        "local_id": "c1",
                         "claim_type": "fact",
                         "text": "alpha beta is supported",
                         "scope": "project",
@@ -48,6 +49,78 @@ class TestThoughtDbClaims(unittest.TestCase):
             mem.ingest_structured()
             hits = mem.search(query="alpha beta", top_k=5, kinds={"claim"}, include_global=True, exclude_project_id="")
             self.assertTrue(any(h.kind == "claim" and h.project_id == pp.project_id for h in hits))
+
+    def test_apply_mined_output_writes_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:
+            home = Path(td_home)
+            project_root = Path(td_proj)
+
+            pp = ProjectPaths(home_dir=home, project_root=project_root)
+            tdb = ThoughtDbStore(home_dir=home, project_paths=pp)
+
+            out = {
+                "claims": [
+                    {
+                        "local_id": "c1",
+                        "claim_type": "goal",
+                        "text": "Ship v1 with minimal user burden",
+                        "scope": "project",
+                        "visibility": "project",
+                        "valid_from": None,
+                        "valid_to": None,
+                        "confidence": 0.95,
+                        "source_event_ids": ["ev_test_a"],
+                        "tags": [],
+                        "notes": "",
+                    },
+                    {
+                        "local_id": "c2",
+                        "claim_type": "preference",
+                        "text": "Avoid asking the user repeatedly during refactors",
+                        "scope": "project",
+                        "visibility": "project",
+                        "valid_from": None,
+                        "valid_to": None,
+                        "confidence": 0.95,
+                        "source_event_ids": ["ev_test_b"],
+                        "tags": [],
+                        "notes": "",
+                    },
+                ],
+                "edges": [
+                    {
+                        "edge_type": "depends_on",
+                        "from_claim_id": "c1",
+                        "to_claim_id": "c2",
+                        "confidence": 0.95,
+                        "source_event_ids": ["ev_test_b"],
+                        "notes": "",
+                    }
+                ],
+                "notes": "ok",
+            }
+
+            applied = tdb.apply_mined_output(
+                output=out,
+                allowed_event_ids={"ev_test_a", "ev_test_b"},
+                min_confidence=0.9,
+                max_claims=6,
+            )
+            self.assertTrue(isinstance(applied, dict))
+            self.assertEqual(len(applied.get("written_edges") or []), 1)
+
+            mapping = {}
+            for it in applied.get("written") or []:
+                if isinstance(it, dict) and it.get("local_id") and it.get("claim_id"):
+                    mapping[str(it["local_id"])] = str(it["claim_id"])
+            self.assertIn("c1", mapping)
+            self.assertIn("c2", mapping)
+
+            v = tdb.load_view(scope="project")
+            # There should be at least one depends_on edge linking the two new claims.
+            edges = [e for e in v.edges if isinstance(e, dict) and e.get("edge_type") == "depends_on"]
+            self.assertTrue(bool(edges))
+            self.assertTrue(any(str(e.get("from_id") or "") == mapping["c1"] and str(e.get("to_id") or "") == mapping["c2"] for e in edges))
 
     def test_supersedes_and_same_as_affect_view_status(self) -> None:
         with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:
@@ -138,4 +211,3 @@ class TestThoughtDbClaims(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

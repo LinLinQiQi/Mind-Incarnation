@@ -1320,9 +1320,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
 
             out = res.obj if hasattr(res, "obj") else {}
-            mined = out.get("claims") if isinstance(out, dict) and isinstance(out.get("claims"), list) else []
-            applied = tdb.apply_mined_claims(
-                mined_claims=mined if isinstance(mined, list) else [],
+            applied = tdb.apply_mined_output(
+                output=out if isinstance(out, dict) else {},
                 allowed_event_ids=allowed_set,
                 min_confidence=min_conf,
                 max_claims=max_claims,

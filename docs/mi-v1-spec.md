@@ -820,7 +820,7 @@ Knobs in `MindSpec.thought_db`:
 Behavior in `mi run` (V1):
 
 - At checkpoint boundaries, MI may call `mine_claims` and records `kind=claim_mining`.
-- Only "high-confidence, reusable" claims should be written; otherwise MI writes none (to avoid noisy graphs).
+- Only "high-confidence, reusable" claims (and optional edges) should be written; otherwise MI writes none (to avoid noisy graphs).
 
 Notes:
 

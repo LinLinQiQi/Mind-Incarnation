@@ -1453,9 +1453,8 @@ def run_autopilot(
 
         applied: dict[str, Any] = {"written": [], "skipped": []}
         if isinstance(out, dict):
-            raw_claims = out.get("claims") if isinstance(out.get("claims"), list) else []
-            applied = tdb.apply_mined_claims(
-                mined_claims=raw_claims,
+            applied = tdb.apply_mined_output(
+                output=out,
                 allowed_event_ids=allowed_set,
                 min_confidence=tdb_min_conf,
                 max_claims=tdb_max_claims,

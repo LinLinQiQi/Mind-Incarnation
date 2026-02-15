@@ -18,6 +18,7 @@ Implemented in V1 (incremental; safe foundation):
 
 - Append-only Claim + Edge stores (project + global) with `source_refs` that cite **EvidenceLog `event_id` only**
 - Checkpoint-only, high-threshold claim mining during `mi run` (no per-step protocol; no user prompts)
+- When the model outputs high-confidence edges, MI also appends `Edge` records (best-effort; scoped to project/global).
 - On-demand mining + basic management via CLI (`mi claim ...`)
 - Memory index ingestion of **active canonical** claims (`kind=claim`) for optional text recall/search
 

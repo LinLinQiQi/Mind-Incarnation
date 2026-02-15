@@ -32,6 +32,23 @@ def claim_signature(*, claim_type: str, scope: str, project_id: str, text: str) 
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
+def _min_visibility(a: str, b: str) -> str:
+    """Return the more restrictive visibility label (private < project < global)."""
+
+    rank = {"private": 0, "project": 1, "global": 2}
+    aa = (a or "").strip()
+    bb = (b or "").strip()
+    if aa not in rank:
+        aa = "project"
+    if bb not in rank:
+        bb = "project"
+    return aa if rank[aa] <= rank[bb] else bb
+
+
+def _edge_key(*, edge_type: str, from_id: str, to_id: str) -> str:
+    return f"{(edge_type or '').strip()}|{(from_id or '').strip()}|{(to_id or '').strip()}"
+
+
 def _follow_redirects(start: str, redirects: dict[str, str], *, limit: int = 20) -> str:
     cur = (start or "").strip()
     if not cur:
@@ -207,6 +224,39 @@ class ThoughtDbStore:
             out.add(claim_signature(claim_type=ct, scope=v.scope, project_id=v.project_id, text=text))
         return out
 
+    def existing_signature_map(self, *, scope: str) -> dict[str, str]:
+        """Return signature -> canonical claim_id for the scope (best-effort)."""
+
+        v = self.load_view(scope=scope)
+        out: dict[str, str] = {}
+        for cid, c in v.claims_by_id.items():
+            if cid in v.redirects_same_as:
+                continue
+            if not isinstance(c, dict):
+                continue
+            ct = str(c.get("claim_type") or "").strip()
+            text = str(c.get("text") or "").strip()
+            if not ct or not text:
+                continue
+            sig = claim_signature(claim_type=ct, scope=v.scope, project_id=v.project_id, text=text)
+            if sig and sig not in out:
+                out[sig] = cid
+        return out
+
+    def existing_edge_keys(self, *, scope: str) -> set[str]:
+        v = self.load_view(scope=scope)
+        out: set[str] = set()
+        for e in v.edges:
+            if not isinstance(e, dict):
+                continue
+            et = str(e.get("edge_type") or "").strip()
+            frm = str(e.get("from_id") or "").strip()
+            to = str(e.get("to_id") or "").strip()
+            if not et or not frm or not to:
+                continue
+            out.add(_edge_key(edge_type=et, from_id=frm, to_id=to))
+        return out
+
     def append_claim_create(
         self,
         *,
@@ -352,12 +402,39 @@ class ThoughtDbStore:
         min_confidence: float,
         max_claims: int,
     ) -> dict[str, Any]:
-        """Validate+append mined claims (high-threshold active claims).
+        """Back-compat wrapper: apply mined claims only (ignore edges).
+
+        Prefer using `apply_mined_output(...)` when you have the full mine_claims output.
+        """
+
+        res = self.apply_mined_output(
+            output={"claims": mined_claims or [], "edges": [], "notes": ""},
+            allowed_event_ids=allowed_event_ids,
+            min_confidence=min_confidence,
+            max_claims=max_claims,
+        )
+        # Keep the older return surface.
+        return {
+            "written": res.get("written", []) if isinstance(res, dict) else [],
+            "skipped": res.get("skipped", []) if isinstance(res, dict) else [],
+        }
+
+    def apply_mined_output(
+        self,
+        *,
+        output: dict[str, Any],
+        allowed_event_ids: set[str],
+        min_confidence: float,
+        max_claims: int,
+    ) -> dict[str, Any]:
+        """Validate+append mined claims + edges (high-threshold active claims; best-effort).
 
         Returns:
         {
-          "written": [{"claim_id": "...", "scope": "..."}],
-          "skipped": [{"reason": "...", "text": "..."}]
+          "written": [{"local_id": "...", "claim_id": "...", "scope": "..."}],
+          "linked_existing": [{"local_id": "...", "claim_id": "...", "scope": "..."}],
+          "written_edges": [{"edge_id": "...", "scope": "...", "edge_type": "...", "from_id": "...", "to_id": "..."}],
+          "skipped": [{"kind":"claim|edge", "reason":"...", "detail":"..."}]
         }
         """
 
@@ -365,24 +442,34 @@ class ThoughtDbStore:
             min_conf = float(min_confidence)
         except Exception:
             min_conf = 0.9
-        if min_conf < 0:
-            min_conf = 0.0
-        if min_conf > 1:
-            min_conf = 1.0
+        min_conf = max(0.0, min(1.0, min_conf))
 
         try:
             max_n = int(max_claims)
         except Exception:
             max_n = 6
-        if max_n < 0:
-            max_n = 0
-        if max_n > 20:
-            max_n = 20
+        max_n = max(0, min(20, max_n))
         if max_n == 0:
-            return {"written": [], "skipped": []}
+            return {"written": [], "linked_existing": [], "written_edges": [], "skipped": []}
 
+        mined_claims = output.get("claims") if isinstance(output, dict) else None
+        mined_edges = output.get("edges") if isinstance(output, dict) else None
+        claims_in = mined_claims if isinstance(mined_claims, list) else []
+        edges_in = mined_edges if isinstance(mined_edges, list) else []
+
+        # Dedup obvious identical claims per-scope; also allow linking to an existing canonical claim id.
+        existing_sig_to_id = {
+            "project": self.existing_signature_map(scope="project"),
+            "global": self.existing_signature_map(scope="global"),
+        }
+        existing_sig = {
+            "project": set(existing_sig_to_id["project"].keys()),
+            "global": set(existing_sig_to_id["global"].keys()),
+        }
+
+        # Filter and sort claims by confidence descending.
         sugs: list[dict[str, Any]] = []
-        for raw in mined_claims or []:
+        for idx, raw in enumerate(claims_in or []):
             if not isinstance(raw, dict):
                 continue
             text = str(raw.get("text") or "").strip()
@@ -394,9 +481,12 @@ class ThoughtDbStore:
                 conf = 0.0
             if conf < min_conf:
                 continue
+            # Back-compat: allow missing local_id (synthetic).
+            if not str(raw.get("local_id") or "").strip():
+                raw = dict(raw)
+                raw["local_id"] = f"c{idx+1}"
             sugs.append(raw)
 
-        # Sort by confidence descending and cap.
         sugs2 = sorted(
             sugs,
             key=lambda x: float(x.get("confidence") or 0.0) if isinstance(x, dict) else 0.0,
@@ -405,14 +495,19 @@ class ThoughtDbStore:
 
         skipped: list[dict[str, str]] = []
         written: list[dict[str, str]] = []
+        linked_existing: list[dict[str, str]] = []
 
-        # Dedup obvious identical claims per-scope.
-        existing_by_scope = {
-            "project": self.existing_signatures(scope="project"),
-            "global": self.existing_signatures(scope="global"),
-        }
+        local_to_claim: dict[str, str] = {}
+        local_meta: dict[str, dict[str, str]] = {}
 
         for raw in sugs2:
+            local_id = str(raw.get("local_id") or "").strip()
+            if not local_id:
+                continue
+            if local_id in local_to_claim:
+                skipped.append({"kind": "claim", "reason": "duplicate_local_id", "detail": local_id})
+                continue
+
             ct = str(raw.get("claim_type") or "").strip()
             text = str(raw.get("text") or "").strip()
             scope = str(raw.get("scope") or "project").strip()
@@ -427,12 +522,18 @@ class ThoughtDbStore:
             ev_ids = [str(x).strip() for x in raw_ev if str(x).strip()]
             ev_ids2 = [x for x in ev_ids if x in allowed_event_ids]
             if not ev_ids2:
-                skipped.append({"reason": "no_valid_source_event_ids", "text": text[:200]})
+                skipped.append({"kind": "claim", "reason": "no_valid_source_event_ids", "detail": text[:200]})
                 continue
 
             sig = claim_signature(claim_type=ct, scope=scope, project_id=self._project_id_for_scope(scope), text=text)
-            if sig in existing_by_scope.get(scope, set()):
-                skipped.append({"reason": "duplicate_signature", "text": text[:200]})
+            if sig in existing_sig.get(scope, set()):
+                existing_id = existing_sig_to_id.get(scope, {}).get(sig, "")
+                if existing_id:
+                    local_to_claim[local_id] = existing_id
+                    local_meta[local_id] = {"scope": scope, "visibility": vis}
+                    linked_existing.append({"local_id": local_id, "claim_id": existing_id, "scope": scope})
+                    continue
+                skipped.append({"kind": "claim", "reason": "duplicate_signature", "detail": text[:200]})
                 continue
 
             vf = raw.get("valid_from")
@@ -461,11 +562,108 @@ class ThoughtDbStore:
                     notes=notes,
                 )
             except Exception as e:
-                skipped.append({"reason": f"write_error:{type(e).__name__}", "text": text[:200]})
+                skipped.append({"kind": "claim", "reason": f"write_error:{type(e).__name__}", "detail": text[:200]})
                 continue
 
-            existing_by_scope.setdefault(scope, set()).add(sig)
-            written.append({"claim_id": cid, "scope": scope})
+            existing_sig.setdefault(scope, set()).add(sig)
+            existing_sig_to_id.setdefault(scope, {})[sig] = cid
+            local_to_claim[local_id] = cid
+            local_meta[local_id] = {"scope": scope, "visibility": vis}
+            written.append({"local_id": local_id, "claim_id": cid, "scope": scope})
 
-        return {"written": written, "skipped": skipped}
+        # Apply edges (optional, best-effort). Edge refs can be local_id or existing claim_id.
+        written_edges: list[dict[str, str]] = []
+        edge_keys_by_scope = {
+            "project": self.existing_edge_keys(scope="project"),
+            "global": self.existing_edge_keys(scope="global"),
+        }
+        view_project = self.load_view(scope="project")
+        view_global = self.load_view(scope="global")
 
+        def resolve_ref(ref: str) -> tuple[str, str, str]:
+            """Return (scope, claim_id, visibility) or ("","","") if unresolved."""
+            r = (ref or "").strip()
+            if not r:
+                return "", "", ""
+            if r in local_to_claim:
+                meta = local_meta.get(r, {})
+                return str(meta.get("scope") or ""), local_to_claim[r], str(meta.get("visibility") or "")
+            # Existing claim id (project/global).
+            if r in view_project.claims_by_id:
+                vis2 = str(view_project.claims_by_id.get(r, {}).get("visibility") or "")
+                return "project", r, vis2
+            if r in view_global.claims_by_id:
+                vis2 = str(view_global.claims_by_id.get(r, {}).get("visibility") or "")
+                return "global", r, vis2
+            return "", "", ""
+
+        # Cap edge count to avoid noisy graphs.
+        max_edges = max(0, min(40, max_n * 6))
+        for raw in edges_in[:max_edges]:
+            if not isinstance(raw, dict):
+                continue
+            et = str(raw.get("edge_type") or "").strip()
+            frm_ref = str(raw.get("from_claim_id") or "").strip()
+            to_ref = str(raw.get("to_claim_id") or "").strip()
+            if not et or not frm_ref or not to_ref:
+                skipped.append({"kind": "edge", "reason": "missing_fields", "detail": f"{et}:{frm_ref}->{to_ref}"})
+                continue
+            try:
+                conf = float(raw.get("confidence") or 0.0)
+            except Exception:
+                conf = 0.0
+            if conf < min_conf:
+                skipped.append({"kind": "edge", "reason": "below_confidence", "detail": f"{et}:{frm_ref}->{to_ref}"})
+                continue
+
+            sc1, frm_id, vis1 = resolve_ref(frm_ref)
+            sc2, to_id, vis2 = resolve_ref(to_ref)
+            if not frm_id or not to_id:
+                skipped.append({"kind": "edge", "reason": "unresolved_ref", "detail": f"{et}:{frm_ref}->{to_ref}"})
+                continue
+            if sc1 != sc2:
+                skipped.append({"kind": "edge", "reason": "cross_scope", "detail": f"{et}:{frm_id}({sc1})->{to_id}({sc2})"})
+                continue
+            sc = sc1
+            if sc not in ("project", "global"):
+                skipped.append({"kind": "edge", "reason": "invalid_scope", "detail": sc})
+                continue
+
+            # Only allow EvidenceLog event_id citations.
+            raw_ev = raw.get("source_event_ids") if isinstance(raw.get("source_event_ids"), list) else []
+            ev_ids = [str(x).strip() for x in raw_ev if str(x).strip()]
+            ev_ids2 = [x for x in ev_ids if x in allowed_event_ids]
+            if not ev_ids2:
+                skipped.append({"kind": "edge", "reason": "no_valid_source_event_ids", "detail": f"{et}:{frm_id}->{to_id}"})
+                continue
+
+            ek = _edge_key(edge_type=et, from_id=frm_id, to_id=to_id)
+            if ek in edge_keys_by_scope.get(sc, set()):
+                skipped.append({"kind": "edge", "reason": "duplicate_edge", "detail": ek})
+                continue
+
+            vis = _min_visibility(vis1, vis2)
+            notes = str(raw.get("notes") or "").strip()
+            try:
+                eid = self.append_edge(
+                    edge_type=et,
+                    from_id=frm_id,
+                    to_id=to_id,
+                    scope=sc,
+                    visibility=vis,
+                    source_event_ids=ev_ids2,
+                    notes=notes,
+                )
+            except Exception as e:
+                skipped.append({"kind": "edge", "reason": f"write_error:{type(e).__name__}", "detail": ek})
+                continue
+
+            edge_keys_by_scope.setdefault(sc, set()).add(ek)
+            written_edges.append({"edge_id": eid, "scope": sc, "edge_type": et, "from_id": frm_id, "to_id": to_id})
+
+        return {
+            "written": written,
+            "linked_existing": linked_existing,
+            "written_edges": written_edges,
+            "skipped": skipped,
+        }

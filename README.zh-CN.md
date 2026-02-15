@@ -189,7 +189,7 @@ mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 
 ## Workflows + Host Adapters（实验性）
 
-Workflow 是项目级（project-scoped）的可复用流程，MI 可以把它们导出到宿主 workspace（派生物）。
+Workflow 是可复用流程，可以是**项目级（project-scoped）**或**全局（global）**。MI 会把项目的**有效（effective）**启用 workflow（project + global，且 project 优先）导出到宿主 workspace（派生物）。
 
 在 `mi run` 中：
 
@@ -200,10 +200,14 @@ Workflow 是项目级（project-scoped）的可复用流程，MI 可以把它们
 创建/编辑 workflow：
 
 ```bash
-mi workflow create --cd /path/to/your/project --name "My workflow"
-mi workflow list --cd /path/to/your/project
+mi workflow create --cd /path/to/your/project --scope project --name "My workflow"
+mi workflow create --cd /path/to/your/project --scope global --name "My global workflow"
+mi workflow list --cd /path/to/your/project --scope effective
 mi workflow show <workflow_id> --cd /path/to/your/project --markdown
-mi workflow edit <workflow_id> --cd /path/to/your/project --request "把第 2 步改为跑测试"
+mi workflow edit <workflow_id> --cd /path/to/your/project --scope effective --request "把第 2 步改为跑测试"
+
+# 对某个 global workflow 做项目级覆盖（不修改 global 源文件）：
+mi workflow disable <workflow_id> --cd /path/to/your/project --scope global --project-override
 ```
 
 绑定并同步 OpenClaw workspace（Skills-only 目标）：
@@ -222,7 +226,8 @@ mi host sync --cd /path/to/your/project
 
 - Hands 原始 transcript：`~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`
 - Mind transcripts（MI prompt-pack 调用）：`~/.mind-incarnation/projects/<id>/transcripts/mind/*.jsonl`
-- EvidenceLog（追加写入）：`~/.mind-incarnation/projects/<id>/evidence.jsonl`
+- EvidenceLog（追加写入；包含 `snapshot` + `cross_project_recall` 等记录）：`~/.mind-incarnation/projects/<id>/evidence.jsonl`
+- 记忆文本索引（materialized view；可重建）：`~/.mind-incarnation/indexes/memory.sqlite`
 
 ## V1 的非目标
 

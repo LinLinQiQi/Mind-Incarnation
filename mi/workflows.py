@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .paths import ProjectPaths
+from .paths import GlobalPaths, ProjectPaths
 from .storage import ensure_dir, now_rfc3339, read_json, write_json
 
 
@@ -19,8 +19,8 @@ def new_workflow_id() -> str:
     return f"wf_{time.time_ns()}_{secrets.token_hex(4)}"
 
 
-def _workflow_path(project_paths: ProjectPaths, workflow_id: str) -> Path:
-    return project_paths.workflows_dir / f"{workflow_id}.json"
+def _workflow_path_dir(workflows_dir: Path, workflow_id: str) -> Path:
+    return Path(workflows_dir) / f"{workflow_id}.json"
 
 
 def _stable_json(obj: Any) -> str:
@@ -85,7 +85,7 @@ class WorkflowStore:
         return ids
 
     def load(self, workflow_id: str) -> dict[str, Any]:
-        obj = read_json(_workflow_path(self.project_paths, workflow_id), default=None)
+        obj = read_json(_workflow_path_dir(self.project_paths.workflows_dir, workflow_id), default=None)
         if not isinstance(obj, dict):
             raise FileNotFoundError(f"workflow not found or invalid: {workflow_id}")
         return _normalize_workflow(obj)
@@ -102,11 +102,11 @@ class WorkflowStore:
             w["created_ts"] = now
         w["updated_ts"] = now
         ensure_dir(self.project_paths.workflows_dir)
-        write_json(_workflow_path(self.project_paths, wid), w)
+        write_json(_workflow_path_dir(self.project_paths.workflows_dir, wid), w)
         return w
 
     def delete(self, workflow_id: str) -> None:
-        p = _workflow_path(self.project_paths, workflow_id)
+        p = _workflow_path_dir(self.project_paths.workflows_dir, workflow_id)
         try:
             p.unlink()
         except FileNotFoundError:
@@ -138,6 +138,171 @@ class WorkflowStore:
             items.append(_stable_json(w))
         digest = hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()
         return digest[:16]
+
+
+@dataclass(frozen=True)
+class GlobalWorkflowStore:
+    global_paths: GlobalPaths
+
+    @property
+    def workflows_dir(self) -> Path:
+        return self.global_paths.global_workflows_dir
+
+    def list_ids(self) -> list[str]:
+        d = self.workflows_dir
+        try:
+            items = sorted(d.glob("wf_*.json"))
+        except FileNotFoundError:
+            return []
+        ids: list[str] = []
+        for p in items:
+            if p.is_file() and p.suffix == ".json":
+                ids.append(p.stem)
+        return ids
+
+    def load(self, workflow_id: str) -> dict[str, Any]:
+        obj = read_json(_workflow_path_dir(self.workflows_dir, workflow_id), default=None)
+        if not isinstance(obj, dict):
+            raise FileNotFoundError(f"global workflow not found or invalid: {workflow_id}")
+        return _normalize_workflow(obj)
+
+    def write(self, workflow: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(workflow, dict):
+            raise TypeError("workflow must be a dict")
+        w = _normalize_workflow(workflow)
+        wid = str(w.get("id") or "").strip()
+        if not wid:
+            raise ValueError("workflow.id is required")
+        now = now_rfc3339()
+        if not str(w.get("created_ts") or "").strip():
+            w["created_ts"] = now
+        w["updated_ts"] = now
+        ensure_dir(self.workflows_dir)
+        write_json(_workflow_path_dir(self.workflows_dir, wid), w)
+        return w
+
+    def delete(self, workflow_id: str) -> None:
+        p = _workflow_path_dir(self.workflows_dir, workflow_id)
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            return
+
+    def enabled_workflows(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for wid in self.list_ids():
+            try:
+                w = self.load(wid)
+            except Exception:
+                continue
+            if bool(w.get("enabled", False)):
+                out.append(w)
+        return out
+
+    def fingerprint(self, *, enabled_only: bool = False) -> str:
+        ids = self.list_ids()
+        items: list[str] = []
+        for wid in ids:
+            try:
+                w = self.load(wid)
+            except Exception:
+                continue
+            if enabled_only and not bool(w.get("enabled", False)):
+                continue
+            items.append(_stable_json(w))
+        digest = hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()
+        return digest[:16]
+
+
+def _apply_global_overrides(
+    workflow: dict[str, Any],
+    *,
+    overlay: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply project overlay overrides to a global workflow (non-destructive)."""
+
+    ov = overlay.get("global_workflow_overrides") if isinstance(overlay.get("global_workflow_overrides"), dict) else {}
+    if not isinstance(ov, dict):
+        return workflow
+    wid = str(workflow.get("id") or "").strip()
+    if not wid:
+        return workflow
+    entry = ov.get(wid) if isinstance(ov.get(wid), dict) else {}
+    if not isinstance(entry, dict):
+        return workflow
+
+    w2 = dict(workflow)
+    if "enabled" in entry:
+        w2["enabled"] = bool(entry.get("enabled"))
+    return w2
+
+
+@dataclass(frozen=True)
+class WorkflowRegistry:
+    """Merge project + global workflow stores (project always wins)."""
+
+    project_store: WorkflowStore
+    global_store: GlobalWorkflowStore
+
+    def load_effective(self, workflow_id: str) -> dict[str, Any]:
+        wid = str(workflow_id or "").strip()
+        if not wid:
+            raise FileNotFoundError("empty workflow id")
+        try:
+            w = self.project_store.load(wid)
+            return dict(w, _mi_scope="project")
+        except Exception:
+            w = self.global_store.load(wid)
+            return dict(w, _mi_scope="global")
+
+    def enabled_workflows_effective(self, *, overlay: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return effective enabled workflows for this project (global + project; project overrides global)."""
+
+        return self.workflows_effective(overlay=overlay, enabled_only=True)
+
+    def workflows_effective(self, *, overlay: dict[str, Any], enabled_only: bool) -> list[dict[str, Any]]:
+        """Return effective workflows for this project.
+
+        - Applies project overlay overrides to global workflows.
+        - Applies precedence: project workflow id shadows global workflow id.
+        - When enabled_only=true, returns only enabled workflows after overrides.
+        """
+
+        out_by_id: dict[str, dict[str, Any]] = {}
+
+        # Start with global (apply overlay overrides), then overlay project on top.
+        for wid in self.global_store.list_ids():
+            try:
+                w = self.global_store.load(wid)
+            except Exception:
+                continue
+            if not isinstance(w, dict):
+                continue
+            w2 = _apply_global_overrides(w, overlay=overlay if isinstance(overlay, dict) else {})
+            wid2 = str(w2.get("id") or "").strip()
+            if not wid2:
+                continue
+            out_by_id[wid2] = dict(w2, _mi_scope="global")
+
+        for wid in self.project_store.list_ids():
+            try:
+                w = self.project_store.load(wid)
+            except Exception:
+                continue
+            if not isinstance(w, dict):
+                continue
+            wid2 = str(w.get("id") or "").strip()
+            if not wid2:
+                continue
+            out_by_id[wid2] = dict(w, _mi_scope="project")
+
+        if enabled_only:
+            out_by_id = {wid: w for wid, w in out_by_id.items() if bool(w.get("enabled", False))}
+
+        # Stable list order: project first, then global, both sorted by id.
+        proj_ids = sorted([wid for wid, w in out_by_id.items() if str(w.get("_mi_scope")) == "project"])
+        glob_ids = sorted([wid for wid, w in out_by_id.items() if str(w.get("_mi_scope")) == "global"])
+        return [out_by_id[wid] for wid in (proj_ids + glob_ids)]
 
 
 def render_workflow_markdown(workflow: dict[str, Any]) -> str:
@@ -238,4 +403,3 @@ def write_workflow_candidates(project_paths: ProjectPaths, obj: dict[str, Any]) 
     if "by_signature" not in obj or not isinstance(obj.get("by_signature"), dict):
         obj["by_signature"] = {}
     write_json(project_paths.workflow_candidates_path, obj)
-

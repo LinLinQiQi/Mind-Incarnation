@@ -348,7 +348,8 @@ class ProjectPaths:
 
     @property
     def workflows_dir(self) -> Path:
-        # Workflow IR is stored in MI home as the source of truth (project-scoped in V1).
+        # Project workflow IR is stored in MI home as the source of truth.
+        # (Global workflows live under GlobalPaths.global_workflows_dir.)
         return self.project_dir / "workflows"
 
     @property
@@ -382,3 +383,13 @@ class GlobalPaths:
     @property
     def learned_path(self) -> Path:
         return self.minds_dir / "learned.jsonl"
+
+    @property
+    def global_workflows_dir(self) -> Path:
+        # Global workflow IR (source of truth, shared across projects; project can override).
+        return self.home_dir / "workflows" / "global"
+
+    @property
+    def indexes_dir(self) -> Path:
+        # Materialized views (e.g., text index) live here; ledger remains under projects/*.
+        return self.home_dir / "indexes"

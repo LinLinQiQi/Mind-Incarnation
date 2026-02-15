@@ -407,7 +407,7 @@ def suggest_workflow_prompt(
             "- MI sits above Hands and only controls input + reads output.",
             "- Do NOT enforce step-by-step protocol tyranny. Workflow steps should be coarse-grained and goal-oriented.",
             "- Only suggest a workflow when it is likely to repeat (or the benefit is extremely high).",
-            "- Keep the workflow project-scoped (V1).",
+            "- Prefer project-scoped workflow suggestions by default (V1 solidification writes to the project store).",
             "- The workflow IR will be stored as MI source-of-truth; host workspace files are derived artifacts.",
             "- If you are not confident, set should_suggest=false and suggestion=null.",
             "",

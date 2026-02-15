@@ -1,7 +1,7 @@
 # Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-12
+Last updated: 2026-02-15
 
 ## Goal
 
@@ -57,9 +57,10 @@ flowchart TD
   I --> C[Run Hands (free execution)]
   C --> T[Capture raw transcript + optional repo observation]
   T --> E[MI: extract_evidence]
-  E --> WF[MI: workflow_progress (if workflow active)]
+  E --> R[MI: cross_project_recall (on-demand)]
+  R --> WF[MI: workflow_progress (if workflow active)]
   WF --> P
-  E --> P[MI: plan_min_checks]
+  R --> P[MI: plan_min_checks]
   P --> AA[MI: auto_answer_to_codex (if needed)]
   AA --> ARB[MI: pre-action arbitration]
   ARB -->|answer/checks available| I
@@ -85,6 +86,13 @@ Workflow cursor (best-effort, V1):
 - After each Hands batch (and when Mind circuit allows), MI calls `workflow_progress` to infer step completion from evidence and update the cursor.
 - Hands remains free to complete multiple steps in one batch; MI only tries to infer progress and provide better next-step context to `decide_next`.
 
+Cross-project recall (on-demand, V1):
+
+- Default: **enabled but conservative** (no embeddings required). Uses only MI-owned stores: `snapshot` + `learned` + `workflow` items, searched by text.
+- Trigger points (default): once at run start, before MI asks the user, and when risk signals are detected.
+- Output is recorded as `kind="cross_project_recall"` in EvidenceLog and is included in `recent_evidence` for later Mind prompts.
+- MI maintains a best-effort materialized text index under `<home>/indexes/memory.sqlite` (rebuildable; source of truth remains MI logs/stores).
+
 Loop/stuck guard (deterministic, V1):
 
 - Whenever MI is about to send a next input to Hands, it computes a bounded signature of `(codex_last_message, next_input)` (field name is legacy, but it is "Hands last message").
@@ -96,7 +104,7 @@ Checkpointing (segments; internal, V1):
 
 - MI maintains a compact internal "segment buffer" while `mi run` continues across multiple Hands batches.
 - Before sending the next batch input to Hands (and once again when the run ends), MI calls `checkpoint_decide` to judge whether a segment boundary exists.
-- When `checkpoint_decide.should_checkpoint=true`, MI may mine workflows and/or preferences using only the current segment evidence, then resets the segment buffer for the next phase.
+- When `checkpoint_decide.should_checkpoint=true`, MI may mine workflows and/or preferences using only the current segment evidence, **writes a compact `snapshot` record** (traceable to the segment), then resets the segment buffer for the next phase.
 - This mechanism exists to avoid tying workflow solidification to "user exits" and to support long-running sessions without forcing Hands into step-by-step protocols.
 
 Mind failure handling (deterministic, V1):
@@ -291,6 +299,18 @@ Minimal shape:
     "allow_single_if_high_benefit": true,
     "auto_sync_on_change": true
   },
+  "cross_project_recall": {
+    "enabled": true,
+    "top_k": 3,
+    "max_chars": 1800,
+    "include_kinds": ["snapshot", "learned", "workflow"],
+    "exclude_current_project": true,
+    "triggers": {
+      "run_start": true,
+      "before_ask_user": true,
+      "risk_signal": true
+    }
+  },
   "preference_mining": {
     "auto_mine": true,
     "min_occurrences": 2,
@@ -341,6 +361,9 @@ Minimal shape:
     "thread_id": "string",
     "updated_ts": "string"
   },
+  "global_workflow_overrides": {
+    "wf_<id>": { "enabled": false }
+  },
   "workflow_run": {
     "version": "v1",
     "active": true,
@@ -359,9 +382,16 @@ Minimal shape:
 }
 ```
 
-### Workflow IR (project-scoped)
+### Workflow IR (project + global)
 
-MI can store reusable workflows as project-scoped JSON files. A workflow is MI-owned **source of truth**; host workspaces (e.g., OpenClaw) receive only derived artifacts via adapters.
+MI can store reusable workflows as **project** or **global** JSON files. A workflow is MI-owned **source of truth**; host workspaces (e.g., OpenClaw) receive only derived artifacts via adapters.
+
+Storage + precedence (V1):
+
+- Project workflows: `<home>/projects/<project_id>/workflows/wf_*.json`
+- Global workflows: `<home>/workflows/global/wf_*.json`
+- Effective workflows for a project are a merge of (global + project), with **project always winning** when ids collide.
+- A project may override a global workflow's enabled flag via `ProjectOverlay.global_workflow_overrides[workflow_id].enabled`.
 
 Minimal shape:
 
@@ -414,6 +444,8 @@ Minimal shape:
 - `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
 - `workflow_progress` (best-effort workflow cursor update from `workflow_progress`; helps MI infer completed/next steps without forcing step-by-step reporting)
 - `checkpoint` (segment boundary judgement from `checkpoint_decide`; may trigger workflow/preference mining and segment reset)
+- `snapshot` (a compact segment snapshot written at checkpoint boundaries; used for cross-project recall; traceable to the segment via `source_refs`)
+- `cross_project_recall` (on-demand recall results for this run; includes a compact list of recalled items + traceable `source_refs`)
 - `workflow_trigger` (an enabled workflow matched the user task and was injected into the first batch input)
 - `workflow_suggestion` (output from `suggest_workflow` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
 - `workflow_solidified` (MI created a stored workflow IR from a repeated signature)
@@ -702,8 +734,11 @@ Learned changes are suggested by Mind outputs (`risk_judge.learned_changes` and 
 
 MI may "solidify" a user's habits into reusable workflows:
 
-- Workflows are **project-scoped** in V1.
-- Workflow IR is stored in MI home as the source of truth (`projects/<project_id>/workflows/*.json`).
+- Workflows can be **project-scoped** or **global** in V1 (project always wins when ids collide).
+- Workflow IR is stored in MI home as the source of truth:
+  - project: `projects/<project_id>/workflows/*.json`
+  - global: `workflows/global/*.json`
+- A project may override a global workflow's enabled flag via `ProjectOverlay.global_workflow_overrides[workflow_id].enabled`.
 - Host workspace artifacts (e.g., Skills) are **derived** outputs written into a host workspace under an MI-owned generated directory (by default: `./.mi/generated/<host>/...`), and can be regenerated at any time.
 
 Workflow mining/solidification policy is values-driven, but MI exposes coarse knobs in `MindSpec.workflows`:
@@ -716,11 +751,11 @@ Workflow mining/solidification policy is values-driven, but MI exposes coarse kn
 
 Workflow behavior in `mi run` (V1):
 
-- Trigger routing: if an **enabled** workflow has `trigger.mode=task_contains` and its `pattern` matches the user task, MI injects the workflow into the **first** Hands batch input (lightweight; no step slicing). MI records `kind=workflow_trigger`.
+- Trigger routing: if an **enabled effective** workflow has `trigger.mode=task_contains` and its `pattern` matches the user task, MI injects the workflow into the **first** Hands batch input (lightweight; no step slicing). MI records `kind=workflow_trigger`.
 - Step cursor (best-effort): when a workflow is active, MI maintains `ProjectOverlay.workflow_run` and updates it via `workflow_progress` after each Hands batch. This is used as context for `decide_next` but does not force Hands into step-by-step reporting.
 - Auto mining (checkpoint-based): if `MindSpec.workflows.auto_mine=true`, MI may call `suggest_workflow` at LLM-judged checkpoints (segment boundaries) during `mi run` (including at run end) and records `kind=workflow_suggestion`.
   - MI increments the occurrence count for `suggestion.signature` in `projects/<project_id>/workflow_candidates.json` (at most once per `mi run` invocation per signature).
-  - When the occurrence threshold is met (usually `min_occurrences`, or 1-shot when `benefit=high` and `allow_single_if_high_benefit=true`), MI writes a stored workflow JSON under `projects/<project_id>/workflows/` and records `kind=workflow_solidified`.
+  - When the occurrence threshold is met (usually `min_occurrences`, or 1-shot when `benefit=high` and `allow_single_if_high_benefit=true`), MI writes a stored **project** workflow JSON under `projects/<project_id>/workflows/` and records `kind=workflow_solidified` (V1 solidification is project-scoped by default).
   - If `auto_sync_on_change=true`, MI then syncs derived artifacts into all bound host workspaces and records `kind=host_sync`.
 
 OpenClaw adapter (Skills-only):
@@ -930,17 +965,29 @@ mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <proj
 mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root> --dry-run
 ```
 
-Manage project-scoped workflows:
+Manage workflows (project/global/effective):
 
 ```bash
-mi --home ~/.mind-incarnation workflow list --cd <project_root>
-mi --home ~/.mind-incarnation workflow show <workflow_id> --cd <project_root> --markdown
-mi --home ~/.mind-incarnation workflow show <workflow_id> --cd <project_root> --json
-mi --home ~/.mind-incarnation workflow create --cd <project_root> --name "My workflow"
-mi --home ~/.mind-incarnation workflow edit <workflow_id> --cd <project_root> --request "Change step 2 to run tests"
-mi --home ~/.mind-incarnation workflow enable <workflow_id> --cd <project_root>
-mi --home ~/.mind-incarnation workflow disable <workflow_id> --cd <project_root>
-mi --home ~/.mind-incarnation workflow delete <workflow_id> --cd <project_root>
+mi --home ~/.mind-incarnation workflow list --cd <project_root> --scope project
+mi --home ~/.mind-incarnation workflow list --cd <project_root> --scope global
+mi --home ~/.mind-incarnation workflow list --cd <project_root> --scope effective
+
+mi --home ~/.mind-incarnation workflow show <workflow_id> --cd <project_root> --scope effective --markdown
+mi --home ~/.mind-incarnation workflow show <workflow_id> --cd <project_root> --scope effective --json
+
+mi --home ~/.mind-incarnation workflow create --cd <project_root> --scope project --name "My workflow"
+mi --home ~/.mind-incarnation workflow create --cd <project_root> --scope global --name "My global workflow"
+
+mi --home ~/.mind-incarnation workflow edit <workflow_id> --cd <project_root> --scope effective --request "Change step 2 to run tests"
+
+mi --home ~/.mind-incarnation workflow enable <workflow_id> --cd <project_root> --scope effective
+mi --home ~/.mind-incarnation workflow disable <workflow_id> --cd <project_root> --scope effective
+
+# Per-project override for a global workflow (does not edit the global file):
+mi --home ~/.mind-incarnation workflow disable <workflow_id> --cd <project_root> --scope global --project-override
+
+mi --home ~/.mind-incarnation workflow delete <workflow_id> --cd <project_root> --scope project
+mi --home ~/.mind-incarnation workflow delete <workflow_id> --cd <project_root> --scope global
 ```
 
 Bind/sync host workspaces (derived artifacts, e.g., OpenClaw Skills):
@@ -954,8 +1001,8 @@ mi --home ~/.mind-incarnation host unbind openclaw --cd <project_root>
 
 Notes:
 
-- `mi workflow ...` auto-syncs to any bound host workspaces when `MindSpec.workflows.auto_sync_on_change=true` (default).
-- The OpenClaw adapter exports enabled workflows as generated skill folders under `./.mi/generated/openclaw/skills/` and registers them under `./skills/` in the host workspace as symlinks (best-effort, reversible).
+- `mi workflow ...` auto-syncs to any bound host workspaces when `MindSpec.workflows.auto_sync_on_change=true` (default). Sync uses **effective enabled workflows** (project + global, with project precedence and optional per-project overrides for global workflows).
+- The OpenClaw adapter exports enabled effective workflows as generated skill folders under `./.mi/generated/openclaw/skills/` and registers them under `./skills/` in the host workspace as symlinks (best-effort, reversible).
 
 ## Doc Update Policy (Source of Truth)
 

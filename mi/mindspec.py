@@ -66,7 +66,7 @@ def _default_base(values_text: str) -> dict[str, Any]:
             "ui_expandable_transcript": True,
         },
         "workflows": {
-            # Workflow solidification is project-scoped in V1.
+            # Workflow solidification is project-scoped in V1 by default, but workflows may also be global.
             # Host workspaces get only derived artifacts via adapters.
             "auto_mine": True,
             "auto_enable": True,
@@ -75,6 +75,19 @@ def _default_base(values_text: str) -> dict[str, Any]:
             "allow_single_if_high_benefit": True,
             # When a workflow change is detected during `mi run`, sync derived artifacts to host workspaces.
             "auto_sync_on_change": True,
+        },
+        "cross_project_recall": {
+            # Default: enabled but very conservative. Uses snapshot/learned/workflow + text search (no embeddings required).
+            "enabled": True,
+            "top_k": 3,
+            "max_chars": 1800,
+            "include_kinds": ["snapshot", "learned", "workflow"],
+            "exclude_current_project": True,
+            "triggers": {
+                "run_start": True,
+                "before_ask_user": True,
+                "risk_signal": True,
+            },
         },
         "preference_mining": {
             # Preference prediction: mine possible learned rules from MI-captured transcript/evidence.

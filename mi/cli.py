@@ -20,14 +20,14 @@ from .config import (
 from .mindspec import MindSpecStore
 from .prompts import compile_mindspec_prompt, edit_workflow_prompt
 from .runner import run_autopilot
-from .paths import ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
+from .paths import GlobalPaths, ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
 from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
 from .transcript import last_agent_message_from_transcript, tail_transcript_lines, resolve_transcript_path
 from .redact import redact_text
 from .provider_factory import make_hands_functions, make_mind_provider
 from .gc import archive_project_transcripts
 from .storage import append_jsonl, iter_jsonl, now_rfc3339
-from .workflows import WorkflowStore, new_workflow_id, render_workflow_markdown
+from .workflows import WorkflowStore, GlobalWorkflowStore, WorkflowRegistry, new_workflow_id, render_workflow_markdown
 from .hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
 
 
@@ -182,20 +182,38 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional extra rationale to append to the learned entry (for audit).",
     )
 
-    p_wf = sub.add_parser("workflow", help="Manage project-scoped workflows (MI IR).")
+    p_wf = sub.add_parser("workflow", help="Manage workflows (project or global; MI IR).")
     wf_sub = p_wf.add_subparsers(dest="wf_cmd", required=True)
 
     p_wfl = wf_sub.add_parser("list", help="List workflows for the project.")
     p_wfl.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_wfl.add_argument(
+        "--scope",
+        choices=["project", "global", "effective"],
+        default="project",
+        help="Which store to list (effective merges project+global with project precedence).",
+    )
 
     p_wfs = wf_sub.add_parser("show", help="Show a workflow by id.")
     p_wfs.add_argument("id", help="Workflow id (wf_...).")
     p_wfs.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_wfs.add_argument(
+        "--scope",
+        choices=["project", "global", "effective"],
+        default="project",
+        help="Which store to load from (effective tries project first, then global).",
+    )
     p_wfs.add_argument("--json", action="store_true", help="Print workflow JSON.")
     p_wfs.add_argument("--markdown", action="store_true", help="Print workflow as Markdown.")
 
     p_wfc = wf_sub.add_parser("create", help="Create a new workflow (minimal stub).")
     p_wfc.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_wfc.add_argument(
+        "--scope",
+        choices=["project", "global"],
+        default="project",
+        help="Where to create the workflow (project is default).",
+    )
     p_wfc.add_argument("--name", required=True, help="Workflow name.")
     p_wfc.add_argument("--disabled", action="store_true", help="Create as disabled (default is enabled).")
     p_wfc.add_argument("--trigger-mode", default="manual", choices=["manual", "task_contains"], help="Trigger mode.")
@@ -204,18 +222,32 @@ def main(argv: list[str] | None = None) -> int:
     p_wfe = wf_sub.add_parser("enable", help="Enable a workflow.")
     p_wfe.add_argument("id", help="Workflow id (wf_...).")
     p_wfe.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_wfe.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to modify.")
+    p_wfe.add_argument(
+        "--project-override",
+        action="store_true",
+        help="When scope=global, write a per-project override instead of editing the global workflow file.",
+    )
 
     p_wfd = wf_sub.add_parser("disable", help="Disable a workflow.")
     p_wfd.add_argument("id", help="Workflow id (wf_...).")
     p_wfd.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_wfd.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to modify.")
+    p_wfd.add_argument(
+        "--project-override",
+        action="store_true",
+        help="When scope=global, write a per-project override instead of editing the global workflow file.",
+    )
 
     p_wfx = wf_sub.add_parser("delete", help="Delete a workflow (source of truth).")
     p_wfx.add_argument("id", help="Workflow id (wf_...).")
     p_wfx.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_wfx.add_argument("--scope", choices=["project", "global"], default="project", help="Which store to delete from.")
 
     p_wfedit = wf_sub.add_parser("edit", help="Edit a workflow via natural language (uses Mind provider).")
     p_wfedit.add_argument("id", help="Workflow id (wf_...).")
     p_wfedit.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_wfedit.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to edit.")
     p_wfedit.add_argument(
         "--request",
         default="-",
@@ -780,19 +812,62 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "workflow":
         project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
         pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
-        wf_store = WorkflowStore(pp)
         loaded2 = store.load(project_root)
         overlay2 = loaded2.project_overlay if isinstance(loaded2.project_overlay, dict) else {}
+        if not isinstance(overlay2, dict):
+            overlay2 = {}
+
+        wf_store = WorkflowStore(pp)
+        wf_global = GlobalWorkflowStore(GlobalPaths(home_dir=store.home_dir))
+        wf_reg = WorkflowRegistry(project_store=wf_store, global_store=wf_global)
+
+        def _effective_enabled_workflows() -> list[dict[str, Any]]:
+            eff = wf_reg.enabled_workflows_effective(overlay=overlay2)
+            # Internal markers should not leak into derived artifacts.
+            return [{k: v for k, v in w.items() if k != "_mi_scope"} for w in eff if isinstance(w, dict)]
 
         def _auto_sync_hosts() -> None:
             wf_cfg = loaded2.base.get("workflows") if isinstance(loaded2.base.get("workflows"), dict) else {}
             if not bool(wf_cfg.get("auto_sync_on_change", True)):
                 return
-            res = sync_hosts_from_overlay(overlay=overlay2, project_id=pp.project_id, workflows=wf_store.enabled_workflows())
+            res = sync_hosts_from_overlay(overlay=overlay2, project_id=pp.project_id, workflows=_effective_enabled_workflows())
             if not bool(res.get("ok", True)):
                 print(json.dumps(res, indent=2, sort_keys=True), file=sys.stderr)
 
         if args.wf_cmd == "list":
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            if scope == "global":
+                ids = wf_global.list_ids()
+                if not ids:
+                    print("(no workflows)")
+                    return 0
+                for wid in ids:
+                    try:
+                        w = wf_global.load(wid)
+                    except Exception:
+                        print(f"{wid} (failed to load)")
+                        continue
+                    name = str(w.get("name") or "").strip()
+                    enabled = bool(w.get("enabled", False))
+                    print(f"{wid} enabled={str(enabled).lower()} {name}".strip())
+                return 0
+
+            if scope == "effective":
+                items = wf_reg.workflows_effective(overlay=overlay2, enabled_only=False)
+                if not items:
+                    print("(no workflows)")
+                    return 0
+                for w in items:
+                    if not isinstance(w, dict):
+                        continue
+                    wid = str(w.get("id") or "").strip()
+                    name = str(w.get("name") or "").strip()
+                    enabled = bool(w.get("enabled", False))
+                    sc = str(w.get("_mi_scope") or "").strip() or "?"
+                    print(f"{wid} scope={sc} enabled={str(enabled).lower()} {name}".strip())
+                return 0
+
+            # project (default)
             ids = wf_store.list_ids()
             if not ids:
                 print("(no workflows)")
@@ -809,7 +884,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.wf_cmd == "show":
-            w = wf_store.load(str(args.id))
+            wid = str(args.id)
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            if scope == "global":
+                w = wf_global.load(wid)
+            elif scope == "effective":
+                # Apply overlay overrides when the workflow is global.
+                items = wf_reg.workflows_effective(overlay=overlay2, enabled_only=False)
+                by_id = {str(x.get("id") or "").strip(): x for x in items if isinstance(x, dict)}
+                if wid not in by_id:
+                    raise FileNotFoundError(f"workflow not found: {wid}")
+                w = by_id[wid]
+            else:
+                w = wf_store.load(wid)
             if args.json:
                 print(json.dumps(w, indent=2, sort_keys=True))
                 return 0
@@ -831,36 +918,85 @@ def main(argv: list[str] | None = None) -> int:
                 "created_ts": now_rfc3339(),
                 "updated_ts": now_rfc3339(),
             }
-            wf_store.write(w)
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            if scope == "global":
+                wf_global.write(w)
+            else:
+                wf_store.write(w)
             _auto_sync_hosts()
             print(wid)
             return 0
 
         if args.wf_cmd in ("enable", "disable"):
             wid = str(args.id)
-            w0 = wf_store.load(wid)
-            w1 = dict(w0)
-            w1["enabled"] = True if args.wf_cmd == "enable" else False
-            wf_store.write(w1)
+            enabled_target = True if args.wf_cmd == "enable" else False
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+
+            if scope == "global" and bool(getattr(args, "project_override", False)):
+                overlay2.setdefault("global_workflow_overrides", {})
+                ov = overlay2.get("global_workflow_overrides")
+                if not isinstance(ov, dict):
+                    ov = {}
+                    overlay2["global_workflow_overrides"] = ov
+                ov[wid] = {"enabled": bool(enabled_target)}
+                store.write_project_overlay(project_root, overlay2)
+                _auto_sync_hosts()
+                print(f"{wid} project_override_enabled={str(bool(enabled_target)).lower()}")
+                return 0
+
+            # Mutate the workflow source of truth (project/global/effective resolution).
+            if scope == "global":
+                w0 = wf_global.load(wid)
+                w1 = dict(w0)
+                w1["enabled"] = bool(enabled_target)
+                wf_global.write(w1)
+            elif scope == "effective":
+                try:
+                    w0 = wf_store.load(wid)
+                    w1 = dict(w0)
+                    w1["enabled"] = bool(enabled_target)
+                    wf_store.write(w1)
+                except Exception:
+                    w0 = wf_global.load(wid)
+                    w1 = dict(w0)
+                    w1["enabled"] = bool(enabled_target)
+                    wf_global.write(w1)
+            else:
+                w0 = wf_store.load(wid)
+                w1 = dict(w0)
+                w1["enabled"] = bool(enabled_target)
+                wf_store.write(w1)
             _auto_sync_hosts()
             print(f"{wid} enabled={str(bool(w1['enabled'])).lower()}")
             return 0
 
         if args.wf_cmd == "delete":
             wid = str(args.id)
-            wf_store.delete(wid)
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            if scope == "global":
+                wf_global.delete(wid)
+            else:
+                wf_store.delete(wid)
             _auto_sync_hosts()
-            print(f"deleted {wid}")
+            print(f"deleted {wid} (scope={scope})")
             return 0
 
         if args.wf_cmd == "edit":
             wid = str(args.id)
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            if scope == "effective":
+                # Resolve once for the edit loop.
+                try:
+                    wf_store.load(wid)
+                    scope = "project"
+                except Exception:
+                    scope = "global"
 
             def _run_once(req: str) -> int:
                 req = (req or "").strip()
                 if not req:
                     return 0
-                w0 = wf_store.load(wid)
+                w0 = wf_global.load(wid) if scope == "global" else wf_store.load(wid)
                 llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
                 prompt = edit_workflow_prompt(
                     mindspec_base=loaded2.base,
@@ -911,7 +1047,10 @@ def main(argv: list[str] | None = None) -> int:
 
                 if bool(args.dry_run):
                     return 0
-                wf_store.write(w1)
+                if scope == "global":
+                    wf_global.write(w1)
+                else:
+                    wf_store.write(w1)
                 _auto_sync_hosts()
                 return 0
 
@@ -944,9 +1083,13 @@ def main(argv: list[str] | None = None) -> int:
 
         pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
         wf_store = WorkflowStore(pp)
+        wf_global = GlobalWorkflowStore(GlobalPaths(home_dir=store.home_dir))
+        wf_reg = WorkflowRegistry(project_store=wf_store, global_store=wf_global)
 
         def _sync_hosts() -> dict[str, Any]:
-            return sync_hosts_from_overlay(overlay=overlay2, project_id=pp.project_id, workflows=wf_store.enabled_workflows())
+            eff = wf_reg.enabled_workflows_effective(overlay=overlay2)
+            eff2 = [{k: v for k, v in w.items() if k != "_mi_scope"} for w in eff if isinstance(w, dict)]
+            return sync_hosts_from_overlay(overlay=overlay2, project_id=pp.project_id, workflows=eff2)
 
         if args.host_cmd == "list":
             parsed = parse_host_bindings(overlay2)

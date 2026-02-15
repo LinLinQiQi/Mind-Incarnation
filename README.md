@@ -189,7 +189,7 @@ Experimental: preference mining
 
 ## Workflows + Host Adapters (Experimental)
 
-Workflows are project-scoped reusable procedures that MI can export into host workspaces (derived artifacts).
+Workflows are reusable procedures that can be **project-scoped** or **global**. MI exports the project's **effective** enabled workflows (project + global with project precedence) into host workspaces (derived artifacts).
 
 In `mi run`:
 
@@ -200,10 +200,14 @@ In `mi run`:
 Create/edit workflows:
 
 ```bash
-mi workflow create --cd /path/to/your/project --name "My workflow"
-mi workflow list --cd /path/to/your/project
+mi workflow create --cd /path/to/your/project --scope project --name "My workflow"
+mi workflow create --cd /path/to/your/project --scope global --name "My global workflow"
+mi workflow list --cd /path/to/your/project --scope effective
 mi workflow show <workflow_id> --cd /path/to/your/project --markdown
-mi workflow edit <workflow_id> --cd /path/to/your/project --request "Change step 2 to run tests"
+mi workflow edit <workflow_id> --cd /path/to/your/project --scope effective --request "Change step 2 to run tests"
+
+# Per-project override for a global workflow:
+mi workflow disable <workflow_id> --cd /path/to/your/project --scope global --project-override
 ```
 
 Bind and sync an OpenClaw workspace (Skills-only target):
@@ -222,7 +226,8 @@ Notes:
 
 - Raw Hands transcript: `~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`
 - Mind transcripts (MI prompt-pack calls): `~/.mind-incarnation/projects/<id>/transcripts/mind/*.jsonl`
-- EvidenceLog (append-only): `~/.mind-incarnation/projects/<id>/evidence.jsonl`
+- EvidenceLog (append-only; includes `snapshot` + `cross_project_recall` kinds): `~/.mind-incarnation/projects/<id>/evidence.jsonl`
+- Memory text index (materialized view; rebuildable): `~/.mind-incarnation/indexes/memory.sqlite`
 
 ## Non-Goals (V1)
 

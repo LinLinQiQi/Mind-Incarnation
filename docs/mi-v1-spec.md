@@ -91,7 +91,8 @@ Cross-project recall (on-demand, V1):
 - Default: **enabled but conservative** (no embeddings required). Uses only MI-owned stores: `snapshot` + `learned` + `workflow` items, searched by text.
 - Trigger points (default): once at run start, before MI asks the user, and when risk signals are detected.
 - Output is recorded as `kind="cross_project_recall"` in EvidenceLog and is included in `recent_evidence` for later Mind prompts.
-- MI maintains a best-effort materialized text index under `<home>/indexes/memory.sqlite` (rebuildable; source of truth remains MI logs/stores).
+- MI maintains a best-effort materialized text index under `<home>/indexes/memory.sqlite` (materialized view; source of truth remains MI logs/stores). Rebuild via `mi memory index rebuild`.
+- Index sync prunes disabled/deleted `learned`/`workflow` items so rolled-back preferences don't reappear in recall.
 
 Loop/stuck guard (deterministic, V1):
 
@@ -935,6 +936,18 @@ mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20
 mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw
 mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw --redact
 ```
+
+Memory index (for cross-project recall; materialized view):
+
+```bash
+mi --home ~/.mind-incarnation memory index status
+mi --home ~/.mind-incarnation memory index rebuild
+mi --home ~/.mind-incarnation memory index rebuild --no-snapshots
+```
+
+Notes:
+
+- Rebuild deletes and recreates `<home>/indexes/memory.sqlite` from MI stores and EvidenceLog `snapshot` records (safe; derived).
 
 Show raw transcript (defaults to latest Hands transcript; Mind transcripts optional):
 

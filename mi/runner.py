@@ -35,7 +35,7 @@ from .workflows import (
 )
 from .preferences import load_preference_candidates, write_preference_candidates, preference_signature
 from .hosts import sync_hosts_from_overlay
-from .memory import MemoryIndex, ingest_learned_and_workflows, build_snapshot_item, render_recall_context
+from .memory_facade import MemoryFacade
 
 
 _DEFAULT = object()
@@ -458,7 +458,7 @@ def run_autopilot(
     wf_store = WorkflowStore(project_paths)
     wf_global_store = GlobalWorkflowStore(GlobalPaths(home_dir=home))
     wf_registry = WorkflowRegistry(project_store=wf_store, global_store=wf_global_store)
-    mem_index = MemoryIndex(home)
+    mem = MemoryFacade(home_dir=home, project_paths=project_paths, mindspec_base=loaded.base)
 
     if llm is None:
         llm = MiLlm(project_root=project_path, transcripts_dir=project_paths.transcripts_dir)
@@ -594,29 +594,6 @@ def run_autopilot(
                 "trigger_pattern": pat,
             }
         )
-
-    # Cross-project recall (V1 default: enabled but conservative; text search only).
-    recall_cfg = loaded.base.get("cross_project_recall") if isinstance(loaded.base.get("cross_project_recall"), dict) else {}
-    recall_enabled = bool(recall_cfg.get("enabled", True))
-    recall_triggers = recall_cfg.get("triggers") if isinstance(recall_cfg.get("triggers"), dict) else {}
-    recall_run_start = bool(recall_triggers.get("run_start", True))
-    recall_before_ask = bool(recall_triggers.get("before_ask_user", True))
-    recall_risk_signal = bool(recall_triggers.get("risk_signal", True))
-    try:
-        recall_top_k = int(recall_cfg.get("top_k", 3) or 3)
-    except Exception:
-        recall_top_k = 3
-    recall_top_k = max(1, min(10, recall_top_k))
-    try:
-        recall_max_chars = int(recall_cfg.get("max_chars", 1800) or 1800)
-    except Exception:
-        recall_max_chars = 1800
-    recall_max_chars = max(200, min(6000, recall_max_chars))
-    kinds_raw = recall_cfg.get("include_kinds") if isinstance(recall_cfg.get("include_kinds"), list) else ["snapshot", "learned", "workflow"]
-    recall_kinds = {str(x).strip() for x in kinds_raw if str(x).strip()}
-    if not recall_kinds:
-        recall_kinds = {"snapshot", "learned", "workflow"}
-    recall_exclude_current = bool(recall_cfg.get("exclude_current_project", True))
 
     # Checkpoint/segment mining settings (V1):
     # - Segments are internal; they do NOT impose a step protocol on Hands.
@@ -1059,78 +1036,22 @@ def run_autopilot(
             segment_records.append(seg)
             segment_records[:] = segment_records[-segment_max_records:]
 
-    _last_recall_key = ""
-
     def _maybe_cross_project_recall(*, batch_id: str, reason: str, query: str) -> None:
         """On-demand cross-project recall (best-effort).
 
         This writes an EvidenceLog record and appends a compact version to evidence_window so Mind prompts can use it.
         """
-
-        nonlocal _last_recall_key
-
-        if not recall_enabled:
+        out = mem.maybe_cross_project_recall(batch_id=batch_id, reason=reason, query=query, thread_id=str(thread_id or ""))
+        if not out:
             return
-        if reason == "run_start" and not recall_run_start:
-            return
-        if reason == "before_ask_user" and not recall_before_ask:
-            return
-        if reason == "risk_signal" and not recall_risk_signal:
-            return
-
-        q = str(query or "").strip()
-        if not q:
-            return
-
-        # Guard: avoid repeated identical recalls in a tight loop.
-        key = f"{reason}:{batch_id}:{_truncate(q, 120)}"
-        if key == _last_recall_key:
-            return
-        _last_recall_key = key
-
-        # Ingest small structured stores (workflows/learned) before querying.
-        ingest_learned_and_workflows(home_dir=home, index=mem_index)
-
-        items = mem_index.search(
-            query=q,
-            top_k=recall_top_k,
-            kinds=set(recall_kinds),
-            include_global=True,
-            exclude_project_id=(project_paths.project_id if recall_exclude_current else ""),
-        )
-        if not items:
-            return
-
-        rendered_items, context_text = render_recall_context(items=items, max_chars=recall_max_chars)
-        ev = {
-            "kind": "cross_project_recall",
-            "batch_id": batch_id,
-            "ts": now_rfc3339(),
-            "thread_id": thread_id or "",
-            "reason": reason,
-            "query": _truncate(q, 800),
-            "top_k": recall_top_k,
-            "include_kinds": sorted(recall_kinds),
-            "exclude_current_project": bool(recall_exclude_current),
-            "items": rendered_items,
-            "context_text": context_text,
-        }
-        append_jsonl(project_paths.evidence_log_path, ev)
-        evidence_window.append(
-            {
-                "kind": "cross_project_recall",
-                "batch_id": batch_id,
-                "reason": reason,
-                "query": _truncate(q, 200),
-                "items": rendered_items,
-            }
-        )
+        append_jsonl(project_paths.evidence_log_path, out.evidence_event)
+        evidence_window.append(out.window_entry)
         evidence_window[:] = evidence_window[-8:]
-        _segment_add(ev)
+        _segment_add(out.evidence_event)
         _persist_segment_state()
 
     # Seed one conservative recall at run start so later Mind calls can use it without bothering the user.
-    if recall_enabled and recall_run_start and str(task or "").strip():
+    if str(task or "").strip():
         _maybe_cross_project_recall(batch_id="b0.recall", reason="run_start", query=task)
 
     def _mine_workflow_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
@@ -1544,35 +1465,20 @@ def run_autopilot(
             _mine_preferences_from_segment(seg_evidence=segment_records, base_batch_id=base_bid, source="checkpoint")
 
         # Materialize a compact snapshot for cross-project recall (append-only; traceable to segment records).
-        try:
-            seg_id = str(segment_state.get("segment_id") or "") if isinstance(segment_state, dict) else ""
-            task_hint = str(segment_state.get("task_hint") or task) if isinstance(segment_state, dict) else task
-            snap_ev, snap_item = build_snapshot_item(
-                project_id=project_paths.project_id,
-                segment_id=seg_id,
-                thread_id=str(thread_id or ""),
-                batch_id=f"{base_bid}.snapshot",
-                task_hint=task_hint,
-                checkpoint_kind=str(out.get("checkpoint_kind") or ""),
-                status_hint=str(status_hint or ""),
-                checkpoint_notes=str(out.get("notes") or ""),
-                segment_records=segment_records,
-            )
-            append_jsonl(project_paths.evidence_log_path, snap_ev)
-            evidence_window.append(
-                {
-                    "kind": "snapshot",
-                    "batch_id": snap_ev.get("batch_id"),
-                    "checkpoint_kind": snap_ev.get("checkpoint_kind"),
-                    "status_hint": snap_ev.get("status_hint"),
-                    "tags": snap_ev.get("tags"),
-                    "text": _truncate(str(snap_ev.get("text") or ""), 600),
-                }
-            )
+        snap = mem.materialize_snapshot(
+            segment_state=segment_state if isinstance(segment_state, dict) else {},
+            segment_records=segment_records,
+            batch_id=f"{base_bid}.snapshot",
+            thread_id=str(thread_id or ""),
+            task_fallback=task,
+            checkpoint_kind=str(out.get("checkpoint_kind") or ""),
+            status_hint=str(status_hint or ""),
+            checkpoint_notes=str(out.get("notes") or ""),
+        )
+        if snap:
+            append_jsonl(project_paths.evidence_log_path, snap.evidence_event)
+            evidence_window.append(snap.window_entry)
             evidence_window[:] = evidence_window[-8:]
-            mem_index.upsert_items([snap_item])
-        except Exception:
-            pass
 
         # Reset segment buffer for the next phase.
         segment_state = _new_segment_state(reason=f"checkpoint:{out.get('checkpoint_kind')}", thread_hint=str(thread_id or ""))

@@ -5,7 +5,7 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from .paths import GlobalPaths, ProjectPaths
 from .storage import ensure_dir, iter_jsonl, now_rfc3339, read_json
@@ -25,6 +25,16 @@ class MemoryItem:
     body: str
     tags: list[str]
     source_refs: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class MemoryGroup:
+    """A group of items to sync+prune as a unit (kind+scope+project_id)."""
+
+    kind: str
+    scope: str
+    project_id: str
+    items: list[MemoryItem]
 
 
 def _json_dumps(obj: Any) -> str:
@@ -65,6 +75,13 @@ def _tokenize_query(text: str) -> list[str]:
         seen.add(t)
         out.append(t)
     return out[:24]
+
+
+def _chunks(items: list[str], *, size: int) -> Iterator[list[str]]:
+    if size <= 0:
+        size = 200
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
 
 
 class MemoryIndex:
@@ -172,6 +189,107 @@ class MemoryIndex:
             # Best-effort: indexing must never break MI runs.
             return
 
+    def sync_groups(self, groups: list[MemoryGroup], *, existing_project_ids: set[str] | None = None) -> None:
+        """Sync groups into the index and prune stale learned/workflow items.
+
+        This prevents cross-project recall from resurfacing disabled/deleted learned rules
+        or workflows that were previously indexed.
+        """
+
+        if not groups and existing_project_ids is None:
+            return
+
+        try:
+            conn = self._connect()
+            try:
+                fts = self._ensure_schema(conn)
+                cur = conn.cursor()
+
+                def delete_ids(ids: list[str]) -> None:
+                    if not ids:
+                        return
+                    for chunk in _chunks(ids, size=400):
+                        qs = ",".join(["?"] * len(chunk))
+                        cur.execute(f"DELETE FROM items WHERE item_id IN ({qs})", chunk)
+                        if fts in ("fts5", "fts4"):
+                            cur.execute(f"DELETE FROM items_fts WHERE item_id IN ({qs})", chunk)
+
+                for g in groups:
+                    kind = str(g.kind or "").strip()
+                    scope = str(g.scope or "").strip()
+                    pid = str(g.project_id or "").strip()
+                    keep_ids = {str(it.item_id or "").strip() for it in g.items if str(it.item_id or "").strip()}
+
+                    # Upsert all group items.
+                    for it in g.items:
+                        cur.execute(
+                            """
+                            INSERT OR REPLACE INTO items(item_id,kind,scope,project_id,ts,title,body,tags,source_refs)
+                            VALUES(?,?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                it.item_id,
+                                it.kind,
+                                it.scope,
+                                it.project_id,
+                                it.ts,
+                                it.title,
+                                it.body,
+                                _json_dumps(it.tags),
+                                _json_dumps(it.source_refs),
+                            ),
+                        )
+                        if fts in ("fts5", "fts4"):
+                            cur.execute("DELETE FROM items_fts WHERE item_id=?", (it.item_id,))
+                            cur.execute(
+                                "INSERT INTO items_fts(item_id,title,body,tags) VALUES(?,?,?,?)",
+                                (it.item_id, it.title, it.body, " ".join(it.tags)),
+                            )
+
+                    # Prune: delete any items in this group that are no longer present.
+                    if kind and scope:
+                        rows = cur.execute(
+                            "SELECT item_id FROM items WHERE kind=? AND scope=? AND project_id=?",
+                            (kind, scope, pid),
+                        ).fetchall()
+                        existing_ids = [str(r[0] or "") for r in rows if r and str(r[0] or "").strip()]
+                        stale = [x for x in existing_ids if x not in keep_ids]
+                        delete_ids(stale)
+
+                # Prune orphaned project-scoped learned/workflow items when projects were deleted.
+                if existing_project_ids is not None:
+                    keep = sorted({str(x).strip() for x in existing_project_ids if str(x).strip()})
+                    if keep:
+                        qs = ",".join(["?"] * len(keep))
+                        rows = cur.execute(
+                            f"""
+                            SELECT item_id FROM items
+                            WHERE scope='project'
+                              AND kind IN ('learned','workflow')
+                              AND project_id NOT IN ({qs})
+                            """,
+                            keep,
+                        ).fetchall()
+                    else:
+                        rows = cur.execute(
+                            """
+                            SELECT item_id FROM items
+                            WHERE scope='project' AND kind IN ('learned','workflow')
+                            """
+                        ).fetchall()
+                    orphan_ids = [str(r[0] or "") for r in rows if r and str(r[0] or "").strip()]
+                    delete_ids(orphan_ids)
+
+                conn.commit()
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            # Best-effort: indexing must never break MI runs.
+            return
+
     def search(
         self,
         *,
@@ -263,6 +381,55 @@ class MemoryIndex:
                     source_refs=[x for x in refs if isinstance(x, dict)] if isinstance(refs, list) else [],
                 )
             )
+        return out
+
+    def status(self) -> dict[str, Any]:
+        """Return a best-effort status summary (without raising)."""
+
+        out: dict[str, Any] = {
+            "db_path": str(self._db_path),
+            "exists": bool(self._db_path.exists()),
+            "fts_version": "unknown",
+            "total_items": 0,
+            "groups": [],
+        }
+        if not out["exists"]:
+            return out
+
+        try:
+            conn = self._connect()
+            try:
+                fts = self._ensure_schema(conn)
+                out["fts_version"] = fts
+                cur = conn.cursor()
+                row = cur.execute("SELECT COUNT(*) AS n FROM items").fetchone()
+                out["total_items"] = int(row["n"] if row and row["n"] is not None else 0)
+                rows = cur.execute(
+                    """
+                    SELECT kind, scope, project_id, COUNT(*) AS n
+                    FROM items
+                    GROUP BY kind, scope, project_id
+                    ORDER BY kind, scope, project_id
+                    """
+                ).fetchall()
+                groups: list[dict[str, Any]] = []
+                for r in rows or []:
+                    groups.append(
+                        {
+                            "kind": str(r["kind"] or ""),
+                            "scope": str(r["scope"] or ""),
+                            "project_id": str(r["project_id"] or ""),
+                            "count": int(r["n"] if r["n"] is not None else 0),
+                        }
+                    )
+                out["groups"] = groups
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            return out
         return out
 
 
@@ -373,22 +540,27 @@ def ingest_learned_and_workflows(*, home_dir: Path, index: MemoryIndex) -> None:
     """Best-effort ingestion for small structured stores (no event log scanning)."""
 
     gp = GlobalPaths(home_dir=Path(home_dir).expanduser().resolve())
-    items: list[MemoryItem] = []
+    groups: list[MemoryGroup] = []
 
     # Global learned.
-    items.extend(_learned_items_for_file(learned_path=gp.learned_path, scope="global", project_id=""))
+    gl = _learned_items_for_file(learned_path=gp.learned_path, scope="global", project_id="")
+    groups.append(MemoryGroup(kind="learned", scope="global", project_id="", items=gl))
 
     # Global workflows.
     wf_global_dir = gp.global_workflows_dir
-    items.extend(_workflow_items_for_dir(workflows_dir=wf_global_dir, scope="global", project_id=""))
+    gw = _workflow_items_for_dir(workflows_dir=wf_global_dir, scope="global", project_id="")
+    groups.append(MemoryGroup(kind="workflow", scope="global", project_id="", items=gw))
 
     # Per-project learned + workflows.
-    for pid in _iter_project_ids(gp.home_dir):
+    project_ids = {str(pid).strip() for pid in _iter_project_ids(gp.home_dir) if str(pid).strip()}
+    for pid in sorted(project_ids):
         pp = ProjectPaths(home_dir=gp.home_dir, project_root=Path("."), _project_id=pid)  # project_root unused when _project_id provided
-        items.extend(_learned_items_for_file(learned_path=pp.learned_path, scope="project", project_id=pid))
-        items.extend(_workflow_items_for_dir(workflows_dir=pp.workflows_dir, scope="project", project_id=pid))
+        pl = _learned_items_for_file(learned_path=pp.learned_path, scope="project", project_id=pid)
+        pw = _workflow_items_for_dir(workflows_dir=pp.workflows_dir, scope="project", project_id=pid)
+        groups.append(MemoryGroup(kind="learned", scope="project", project_id=pid, items=pl))
+        groups.append(MemoryGroup(kind="workflow", scope="project", project_id=pid, items=pw))
 
-    index.upsert_items(items)
+    index.sync_groups(groups, existing_project_ids=project_ids)
 
 
 def build_snapshot_item(
@@ -530,6 +702,80 @@ def build_snapshot_item(
         source_refs=snap_event["source_refs"],
     )
     return snap_event, item
+
+
+def snapshot_item_from_event(ev: dict[str, Any]) -> MemoryItem | None:
+    """Convert an EvidenceLog snapshot record into a recallable MemoryItem."""
+
+    if not isinstance(ev, dict) or ev.get("kind") != "snapshot":
+        return None
+    project_id = str(ev.get("project_id") or "").strip()
+    if not project_id:
+        return None
+    segment_id = str(ev.get("segment_id") or "").strip() or "unknown_segment"
+    batch_id = str(ev.get("batch_id") or "").strip() or "unknown_batch"
+    ts = str(ev.get("ts") or "").strip() or now_rfc3339()
+    task_hint = str(ev.get("task_hint") or "").strip()
+    text = str(ev.get("text") or "").strip()
+    tags = ev.get("tags") if isinstance(ev.get("tags"), list) else []
+    refs = ev.get("source_refs") if isinstance(ev.get("source_refs"), list) else []
+    title = _truncate(task_hint or text or "snapshot", 140)
+    body = _truncate(text or "(empty snapshot)", 8000)
+    return MemoryItem(
+        item_id=f"snapshot:project:{project_id}:{segment_id}:{batch_id}",
+        kind="snapshot",
+        scope="project",
+        project_id=project_id,
+        ts=ts,
+        title=title,
+        body=body,
+        tags=[str(x) for x in tags if str(x).strip()] if isinstance(tags, list) else ["snapshot"],
+        source_refs=[x for x in refs if isinstance(x, dict)] if isinstance(refs, list) else [],
+    )
+
+
+def rebuild_memory_index(*, home_dir: Path, include_snapshots: bool = True) -> dict[str, Any]:
+    """Rebuild the materialized memory index from MI stores and EvidenceLog snapshots.
+
+    Source of truth remains MI's append-only ledgers and workflow/learned stores.
+    """
+
+    home = Path(home_dir).expanduser().resolve()
+    index = MemoryIndex(home)
+    try:
+        if index.db_path.exists():
+            index.db_path.unlink()
+    except Exception:
+        # Best-effort: treat rebuild as optional.
+        pass
+
+    # Seed learned/workflow stores.
+    ingest_learned_and_workflows(home_dir=home, index=index)
+
+    snap_count = 0
+    if include_snapshots:
+        batch: list[MemoryItem] = []
+        for pid in _iter_project_ids(home):
+            pp = ProjectPaths(home_dir=home, project_root=Path("."), _project_id=str(pid))
+            for obj in iter_jsonl(pp.evidence_log_path):
+                if not isinstance(obj, dict) or obj.get("kind") != "snapshot":
+                    continue
+                it = snapshot_item_from_event(obj)
+                if not it:
+                    continue
+                batch.append(it)
+                snap_count += 1
+                if len(batch) >= 200:
+                    index.upsert_items(batch)
+                    batch = []
+        if batch:
+            index.upsert_items(batch)
+
+    st = index.status()
+    st["rebuilt"] = True
+    st["included_snapshots"] = bool(include_snapshots)
+    st["indexed_snapshots"] = snap_count
+    return st
 
 
 def render_recall_context(

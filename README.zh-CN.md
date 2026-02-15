@@ -229,6 +229,13 @@ mi host sync --cd /path/to/your/project
 - EvidenceLog（追加写入；包含 `snapshot` + `cross_project_recall` 等记录）：`~/.mind-incarnation/projects/<id>/evidence.jsonl`
 - 记忆文本索引（materialized view；可重建）：`~/.mind-incarnation/indexes/memory.sqlite`
 
+记忆索引维护：
+
+```bash
+mi memory index status
+mi memory index rebuild
+```
+
 ## V1 的非目标
 
 - 多 agent 路由

@@ -1,0 +1,198 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .memory import MemoryIndex, ingest_learned_and_workflows, build_snapshot_item, render_recall_context, MemoryItem
+from .storage import now_rfc3339
+from .paths import ProjectPaths
+
+
+def _truncate(text: str, limit: int) -> str:
+    s = str(text or "")
+    if len(s) <= limit:
+        return s
+    return s[: max(0, limit - 3)] + "..."
+
+
+@dataclass(frozen=True)
+class CrossProjectRecallConfig:
+    enabled: bool
+    top_k: int
+    max_chars: int
+    include_kinds: set[str]
+    exclude_current_project: bool
+    triggers: dict[str, bool]
+
+    @classmethod
+    def from_mindspec_base(cls, base: dict[str, Any]) -> CrossProjectRecallConfig:
+        cfg = base.get("cross_project_recall") if isinstance(base.get("cross_project_recall"), dict) else {}
+        enabled = bool(cfg.get("enabled", True))
+
+        triggers = cfg.get("triggers") if isinstance(cfg.get("triggers"), dict) else {}
+        tri = {
+            "run_start": bool(triggers.get("run_start", True)),
+            "before_ask_user": bool(triggers.get("before_ask_user", True)),
+            "risk_signal": bool(triggers.get("risk_signal", True)),
+        }
+
+        try:
+            top_k = int(cfg.get("top_k", 3) or 3)
+        except Exception:
+            top_k = 3
+        top_k = max(1, min(10, top_k))
+
+        try:
+            max_chars = int(cfg.get("max_chars", 1800) or 1800)
+        except Exception:
+            max_chars = 1800
+        max_chars = max(200, min(6000, max_chars))
+
+        kinds_raw = cfg.get("include_kinds") if isinstance(cfg.get("include_kinds"), list) else ["snapshot", "learned", "workflow"]
+        include_kinds = {str(x).strip() for x in kinds_raw if str(x).strip()}
+        if not include_kinds:
+            include_kinds = {"snapshot", "learned", "workflow"}
+
+        exclude_current_project = bool(cfg.get("exclude_current_project", True))
+
+        return cls(
+            enabled=enabled,
+            top_k=top_k,
+            max_chars=max_chars,
+            include_kinds=include_kinds,
+            exclude_current_project=exclude_current_project,
+            triggers=tri,
+        )
+
+    def should_trigger(self, reason: str) -> bool:
+        if not self.enabled:
+            return False
+        r = str(reason or "").strip()
+        if not r:
+            return False
+        return bool(self.triggers.get(r, False))
+
+
+@dataclass(frozen=True)
+class RecallOutcome:
+    evidence_event: dict[str, Any]
+    window_entry: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SnapshotOutcome:
+    evidence_event: dict[str, Any]
+    window_entry: dict[str, Any]
+    indexed_item: MemoryItem
+
+
+class MemoryFacade:
+    """A small facade around MI's memory/recall system (V1 text index).
+
+    Runner should not depend on the underlying index implementation; keep all
+    "materialized view" mechanics here so memory backends can evolve.
+    """
+
+    def __init__(self, *, home_dir: Path, project_paths: ProjectPaths, mindspec_base: dict[str, Any]) -> None:
+        self._home_dir = Path(home_dir).expanduser().resolve()
+        self._project_paths = project_paths
+        self._recall_cfg = CrossProjectRecallConfig.from_mindspec_base(mindspec_base if isinstance(mindspec_base, dict) else {})
+        self._index = MemoryIndex(self._home_dir)
+        self._last_recall_key = ""
+
+    def maybe_cross_project_recall(self, *, batch_id: str, reason: str, query: str, thread_id: str) -> RecallOutcome | None:
+        if not self._recall_cfg.should_trigger(reason):
+            return None
+
+        q = str(query or "").strip()
+        if not q:
+            return None
+
+        # Guard: avoid repeated identical recalls in a tight loop.
+        key = f"{reason}:{batch_id}:{_truncate(q, 120)}"
+        if key == self._last_recall_key:
+            return None
+        self._last_recall_key = key
+
+        # Ingest small structured stores (workflows/learned) before querying.
+        ingest_learned_and_workflows(home_dir=self._home_dir, index=self._index)
+
+        exclude_pid = self._project_paths.project_id if self._recall_cfg.exclude_current_project else ""
+        items = self._index.search(
+            query=q,
+            top_k=self._recall_cfg.top_k,
+            kinds=set(self._recall_cfg.include_kinds),
+            include_global=True,
+            exclude_project_id=exclude_pid,
+        )
+        if not items:
+            return None
+
+        rendered_items, context_text = render_recall_context(items=items, max_chars=self._recall_cfg.max_chars)
+        ev = {
+            "kind": "cross_project_recall",
+            "batch_id": batch_id,
+            "ts": now_rfc3339(),
+            "thread_id": (thread_id or "").strip(),
+            "reason": reason,
+            "query": _truncate(q, 800),
+            "top_k": self._recall_cfg.top_k,
+            "include_kinds": sorted(self._recall_cfg.include_kinds),
+            "exclude_current_project": bool(self._recall_cfg.exclude_current_project),
+            "items": rendered_items,
+            "context_text": context_text,
+        }
+        win = {
+            "kind": "cross_project_recall",
+            "batch_id": batch_id,
+            "reason": reason,
+            "query": _truncate(q, 200),
+            "items": rendered_items,
+        }
+        return RecallOutcome(evidence_event=ev, window_entry=win)
+
+    def materialize_snapshot(
+        self,
+        *,
+        segment_state: dict[str, Any],
+        segment_records: list[dict[str, Any]],
+        batch_id: str,
+        thread_id: str,
+        task_fallback: str,
+        checkpoint_kind: str,
+        status_hint: str,
+        checkpoint_notes: str,
+    ) -> SnapshotOutcome | None:
+        """Build+index a snapshot based on the current segment buffer."""
+
+        try:
+            seg_id = str(segment_state.get("segment_id") or "") if isinstance(segment_state, dict) else ""
+            task_hint = str(segment_state.get("task_hint") or "") if isinstance(segment_state, dict) else ""
+            if not task_hint:
+                task_hint = str(task_fallback or "")
+            snap_ev, snap_item = build_snapshot_item(
+                project_id=self._project_paths.project_id,
+                segment_id=seg_id,
+                thread_id=(thread_id or "").strip(),
+                batch_id=batch_id,
+                task_hint=task_hint,
+                checkpoint_kind=str(checkpoint_kind or ""),
+                status_hint=str(status_hint or ""),
+                checkpoint_notes=str(checkpoint_notes or ""),
+                segment_records=segment_records,
+            )
+            self._index.upsert_items([snap_item])
+        except Exception:
+            return None
+
+        win = {
+            "kind": "snapshot",
+            "batch_id": snap_ev.get("batch_id"),
+            "checkpoint_kind": snap_ev.get("checkpoint_kind"),
+            "status_hint": snap_ev.get("status_hint"),
+            "tags": snap_ev.get("tags"),
+            "text": _truncate(str(snap_ev.get("text") or ""), 600),
+        }
+        return SnapshotOutcome(evidence_event=snap_ev, window_entry=win, indexed_item=snap_item)
+

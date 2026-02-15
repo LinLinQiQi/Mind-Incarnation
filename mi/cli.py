@@ -29,6 +29,7 @@ from .gc import archive_project_transcripts
 from .storage import append_jsonl, iter_jsonl, now_rfc3339
 from .workflows import WorkflowStore, GlobalWorkflowStore, WorkflowRegistry, new_workflow_id, render_workflow_markdown
 from .hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
+from .memory import MemoryIndex, rebuild_memory_index
 
 
 def _read_stdin_text() -> str:
@@ -308,6 +309,16 @@ def main(argv: list[str] | None = None) -> int:
     p_tr_show.add_argument("-n", "--lines", type=int, default=200, help="Number of transcript lines to show (tail).")
     p_tr_show.add_argument("--jsonl", action="store_true", help="Print stored JSONL lines (no pretty formatting).")
     p_tr_show.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
+
+    p_mem = sub.add_parser("memory", help="Manage MI memory index (materialized view).")
+    mem_sub = p_mem.add_subparsers(dest="mem_cmd", required=True)
+    p_mi = mem_sub.add_parser("index", help="Manage the memory text index (rebuildable).")
+    mi_sub = p_mi.add_subparsers(dest="mi_cmd", required=True)
+    p_mis = mi_sub.add_parser("status", help="Show memory index status.")
+    p_mis.add_argument("--json", action="store_true", help="Print status as JSON.")
+    p_mir = mi_sub.add_parser("rebuild", help="Rebuild memory index from MI stores (learned/workflows + snapshots).")
+    p_mir.add_argument("--no-snapshots", action="store_true", help="Skip indexing snapshot records from EvidenceLog.")
+    p_mir.add_argument("--json", action="store_true", help="Print rebuild result as JSON.")
 
     p_proj = sub.add_parser("project", help="Inspect per-project MI state (overlay + resolved paths).")
     proj_sub = p_proj.add_subparsers(dest="project_cmd", required=True)
@@ -719,6 +730,49 @@ def main(argv: list[str] | None = None) -> int:
                     payload_s = redact_text(payload_s)
                 print(f"{ts} {stream} {payload_s}")
             return 0
+
+    if args.cmd == "memory":
+        if args.mem_cmd == "index":
+            index = MemoryIndex(store.home_dir)
+            if args.mi_cmd == "status":
+                st = index.status()
+                if args.json:
+                    print(json.dumps(st, indent=2, sort_keys=True))
+                    return 0
+                if not bool(st.get("exists", False)):
+                    print(f"memory index: (missing) {st.get('db_path')}")
+                    return 0
+                print(f"memory index: {st.get('db_path')}")
+                print(f"fts_version: {st.get('fts_version')}")
+                print(f"total_items: {st.get('total_items')}")
+                groups = st.get("groups") if isinstance(st.get("groups"), list) else []
+                if groups:
+                    print("groups:")
+                    for g in groups:
+                        if not isinstance(g, dict):
+                            continue
+                        proj = str(g.get("project_id") or "").strip() or "global"
+                        kind = str(g.get("kind") or "").strip() or "?"
+                        scope = str(g.get("scope") or "").strip() or "?"
+                        try:
+                            n = int(g.get("count") or 0)
+                        except Exception:
+                            n = 0
+                        print(f"- {kind}/{scope}/{proj}: {n}")
+                return 0
+
+            if args.mi_cmd == "rebuild":
+                res = rebuild_memory_index(home_dir=store.home_dir, include_snapshots=not bool(args.no_snapshots))
+                if args.json:
+                    print(json.dumps(res, indent=2, sort_keys=True))
+                    return 0
+                print(f"rebuilt: {bool(res.get('rebuilt', False))}")
+                print(f"db_path: {res.get('db_path')}")
+                print(f"fts_version: {res.get('fts_version')}")
+                print(f"total_items: {res.get('total_items')}")
+                if "indexed_snapshots" in res:
+                    print(f"indexed_snapshots: {res.get('indexed_snapshots')}")
+                return 0
 
     if args.cmd == "project":
         project_root = _resolve_project_root_from_args(store, str(args.cd or ""))

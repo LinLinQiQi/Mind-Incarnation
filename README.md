@@ -229,6 +229,13 @@ Notes:
 - EvidenceLog (append-only; includes `snapshot` + `cross_project_recall` kinds): `~/.mind-incarnation/projects/<id>/evidence.jsonl`
 - Memory text index (materialized view; rebuildable): `~/.mind-incarnation/indexes/memory.sqlite`
 
+Memory index maintenance:
+
+```bash
+mi memory index status
+mi memory index rebuild
+```
+
 ## Non-Goals (V1)
 
 - Multi-agent routing

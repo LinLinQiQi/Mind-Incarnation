@@ -457,6 +457,7 @@ Minimal shape:
 - `host_sync` (MI synced derived artifacts into bound host workspaces; includes sync results)
 - `preference_mining` (output from `mine_preferences` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
 - `preference_solidified` (MI emitted a learned suggestion (and may auto-apply) when a mined preference reaches its occurrence threshold)
+- `claim_mining` (output from `mine_claims` at a checkpoint/segment boundary; includes applied Thought DB claim ids; best-effort, high-threshold)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
 - `hands_resume_failed` (best-effort: resume by stored thread/session id failed; MI fell back to a fresh exec)
@@ -798,6 +799,34 @@ Behavior in `mi run` (V1):
 - When the occurrence threshold is met, MI emits a `kind=learn_suggested` record (source=`mine_preferences`) and records `kind=preference_solidified`.
   - If `violation_response.auto_learn=true`, MI also appends the learned rule into `learned.jsonl` and includes `applied_entry_ids` in the `learn_suggested` record.
 
+## Thought DB (Claims) (V1, Experimental)
+
+MI can maintain a durable, provenance-traceable "Thought DB" of atomic reusable `Claim`s (the "basic arguments") that support future root-cause tracing ("why did we do this?").
+
+V1 scope (implemented):
+
+- Append-only Claim + Edge stores (project + global)
+- `source_refs` cite **EvidenceLog `event_id` only** (no direct references to external logs)
+- Checkpoint-only, high-threshold claim mining during `mi run` (no user prompts)
+- Basic CLI management via `mi claim ...`
+
+Knobs in `MindSpec.thought_db`:
+
+- `enabled`: enable Thought DB features (default true)
+- `auto_mine`: allow MI to call `mine_claims` at LLM-judged checkpoints during `mi run` (default true)
+- `min_confidence`: skip claims below this confidence (default 0.9)
+- `max_claims_per_checkpoint`: cap the number of claims written per checkpoint (default 6)
+
+Behavior in `mi run` (V1):
+
+- At checkpoint boundaries, MI may call `mine_claims` and records `kind=claim_mining`.
+- Only "high-confidence, reusable" claims should be written; otherwise MI writes none (to avoid noisy graphs).
+
+Notes:
+
+- Root-cause tracing via minimal-support-set subgraph selection is a future extension; see `docs/mi-thought-db.md`.
+- Claims are optionally indexed into the memory text index as `kind=claim` (active, canonical only).
+
 ## Storage Layout (V1)
 
 Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home ...`).
@@ -805,6 +834,8 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
 - Global:
   - `mindspec/base.json`
   - `mindspec/learned.jsonl`
+  - `thoughtdb/global/claims.jsonl` (global Claims)
+  - `thoughtdb/global/edges.jsonl` (global Edges)
 - Project index (stable identity -> project_id mapping):
   - `projects/index.json`
 - Per project (keyed by a resolved `project_id`):
@@ -812,6 +843,8 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/<project_id>/learned.jsonl`
   - `projects/<project_id>/evidence.jsonl`
   - `projects/<project_id>/segment_state.json` (best-effort segment buffer for checkpoint-based mining; internal)
+  - `projects/<project_id>/thoughtdb/claims.jsonl` (project Claims)
+  - `projects/<project_id>/thoughtdb/edges.jsonl` (project Edges)
   - `projects/<project_id>/workflows/*.json` (workflow IR; source of truth)
   - `projects/<project_id>/workflow_candidates.json` (signature -> count; used for workflow mining)
   - `projects/<project_id>/preference_candidates.json` (signature -> count; used for preference mining)
@@ -961,9 +994,9 @@ mi --home ~/.mind-incarnation memory index rebuild --no-snapshots
 Notes:
 
 - Rebuild deletes and recreates `<home>/indexes/memory.sqlite` from MI stores and EvidenceLog `snapshot` records (safe; derived).
-- Recall is text-only in V1: it searches indexed `snapshot` / `learned` / `workflow` items. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
+- Recall is text-only in V1: it searches indexed items (default: `snapshot` / `learned` / `workflow`; `claim` is available when `cross_project_recall.include_kinds` contains `"claim"`). When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
 - Memory backend is pluggable (internal): default is `sqlite_fts` (persisted at `<home>/indexes/memory.sqlite`). You can override via `$MI_MEMORY_BACKEND` (e.g., `in_memory` for ephemeral/test runs). `mi memory index status` prints the active backend.
-- Future direction (design-only): a provenance-traceable "Thought DB" built on atomic reusable `Claim`s + a derived ClaimGraph with root-cause tracing and temporal validity (`asserted_ts` + `valid_from/valid_to`). See `docs/mi-thought-db.md`.
+- Thought DB direction: V1 includes append-only Claim/Edge stores + checkpoint-only claim mining; full root-cause tracing and whole-graph refactors remain future extensions. See `docs/mi-thought-db.md`.
 
 Show raw transcript (defaults to latest Hands transcript; Mind transcripts optional):
 
@@ -992,6 +1025,21 @@ Apply a recorded suggestion (when `violation_response.auto_learn=false` or if yo
 ```bash
 mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root>
 mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root> --dry-run
+```
+
+Manage Thought DB claims (project/global/effective):
+
+```bash
+mi --home ~/.mind-incarnation claim list --cd <project_root> --scope project
+mi --home ~/.mind-incarnation claim list --cd <project_root> --scope global
+mi --home ~/.mind-incarnation claim list --cd <project_root> --scope effective
+
+mi --home ~/.mind-incarnation claim show <claim_id> --cd <project_root> --scope effective
+mi --home ~/.mind-incarnation claim mine --cd <project_root>
+
+mi --home ~/.mind-incarnation claim retract <claim_id> --cd <project_root> --scope project
+mi --home ~/.mind-incarnation claim supersede <claim_id> --cd <project_root> --text "..."
+mi --home ~/.mind-incarnation claim same-as <dup_id> <canonical_id> --cd <project_root>
 ```
 
 Manage workflows (project/global/effective):

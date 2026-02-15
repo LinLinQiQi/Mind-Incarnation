@@ -137,6 +137,9 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                             "notes": "ok",
                         }
                     ],
+                    "mine_claims.json": [
+                        {"claims": [], "edges": [], "notes": "skip"}
+                    ],
                 }
             )
 
@@ -221,6 +224,9 @@ class TestWorkflowMiningAndTrigger(unittest.TestCase):
                             },
                             "notes": "ok",
                         }
+                    ],
+                    "mine_claims.json": [
+                        {"claims": [], "edges": [], "notes": "skip"}
                     ],
                 }
             )

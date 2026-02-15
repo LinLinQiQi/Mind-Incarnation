@@ -18,7 +18,7 @@ from .config import (
     rollback_config,
 )
 from .mindspec import MindSpecStore
-from .prompts import compile_mindspec_prompt, edit_workflow_prompt
+from .prompts import compile_mindspec_prompt, edit_workflow_prompt, mine_claims_prompt
 from .runner import run_autopilot
 from .paths import GlobalPaths, ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
 from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
@@ -27,6 +27,7 @@ from .redact import redact_text
 from .provider_factory import make_hands_functions, make_mind_provider
 from .gc import archive_project_transcripts
 from .storage import append_jsonl, iter_jsonl, now_rfc3339
+from .thoughtdb import ThoughtDbStore, claim_signature
 from .workflows import (
     WorkflowStore,
     GlobalWorkflowStore,
@@ -191,6 +192,51 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Optional extra rationale to append to the learned entry (for audit).",
     )
+
+    p_claim = sub.add_parser("claim", help="Manage Thought DB claims (atomic reusable arguments).")
+    claim_sub = p_claim.add_subparsers(dest="claim_cmd", required=True)
+
+    p_cll = claim_sub.add_parser("list", help="List claims (default: active + canonical).")
+    p_cll.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_cll.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to list.")
+    p_cll.add_argument("--all", action="store_true", help="Include superseded/retracted and alias claims.")
+    p_cll.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_cls = claim_sub.add_parser("show", help="Show a claim by id.")
+    p_cls.add_argument("id", help="Claim id (cl_...).")
+    p_cls.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_cls.add_argument("--scope", choices=["project", "global", "effective"], default="effective", help="Where to resolve the id.")
+    p_cls.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_clm = claim_sub.add_parser("mine", help="On-demand mine claims from the current segment buffer (best-effort).")
+    p_clm.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_clm.add_argument("--min-confidence", type=float, default=-1.0, help="Override MindSpec.thought_db.min_confidence.")
+    p_clm.add_argument("--max-claims", type=int, default=-1, help="Override MindSpec.thought_db.max_claims_per_checkpoint.")
+    p_clm.add_argument("--json", action="store_true", help="Print result as JSON.")
+
+    p_clr = claim_sub.add_parser("retract", help="Retract a claim (append-only).")
+    p_clr.add_argument("id", help="Claim id to retract.")
+    p_clr.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_clr.add_argument("--scope", choices=["project", "global"], default="project", help="Which store to write to.")
+    p_clr.add_argument("--rationale", default="user retract", help="Reason recorded for audit.")
+
+    p_clsup = claim_sub.add_parser("supersede", help="Supersede a claim by creating a replacement and linking supersedes(old->new).")
+    p_clsup.add_argument("id", help="Old claim id to supersede.")
+    p_clsup.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_clsup.add_argument("--scope", choices=["project", "global", "effective"], default="effective", help="Where to resolve the old id.")
+    p_clsup.add_argument("--text", required=True, help="New claim text.")
+    p_clsup.add_argument("--claim-type", choices=["fact", "preference", "assumption", "goal"], default="", help="New claim type (defaults to old).")
+    p_clsup.add_argument("--visibility", choices=["private", "project", "global"], default="", help="New claim visibility (defaults to old).")
+    p_clsup.add_argument("--valid-from", default="", help="Optional RFC3339 valid_from.")
+    p_clsup.add_argument("--valid-to", default="", help="Optional RFC3339 valid_to.")
+    p_clsup.add_argument("--tag", action="append", default=[], help="Tag to attach (repeatable).")
+
+    p_clsa = claim_sub.add_parser("same-as", help="Mark two claims equivalent via same_as(dup->canonical) (append-only).")
+    p_clsa.add_argument("dup_id", help="Duplicate claim id.")
+    p_clsa.add_argument("canonical_id", help="Canonical claim id.")
+    p_clsa.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_clsa.add_argument("--scope", choices=["project", "global"], default="project", help="Which store to write to.")
+    p_clsa.add_argument("--notes", default="", help="Optional notes for audit.")
 
     p_wf = sub.add_parser("workflow", help="Manage workflows (project or global; MI IR).")
     wf_sub = p_wf.add_subparsers(dest="wf_cmd", required=True)
@@ -838,6 +884,9 @@ def main(argv: list[str] | None = None) -> int:
             "evidence_log": str(pp.evidence_log_path),
             "learned_path": str(pp.learned_path),
             "transcripts_dir": str(pp.transcripts_dir),
+            "thoughtdb_dir": str(pp.thoughtdb_dir),
+            "thoughtdb_claims": str(pp.thoughtdb_claims_path),
+            "thoughtdb_edges": str(pp.thoughtdb_edges_path),
             "overlay": overlay if isinstance(overlay, dict) else {},
         }
 
@@ -868,6 +917,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"evidence_log={out['evidence_log']}")
         print(f"learned_path={out['learned_path']}")
         print(f"transcripts_dir={out['transcripts_dir']}")
+        print(f"thoughtdb_dir={out['thoughtdb_dir']}")
         return 0
 
     if args.cmd == "gc":
@@ -893,6 +943,415 @@ def main(argv: list[str] | None = None) -> int:
             if not bool(args.apply):
                 print("Re-run with --apply to archive.")
             return 0
+
+    if args.cmd == "claim":
+        project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
+        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        loaded2 = store.load(project_root)
+        overlay2 = loaded2.project_overlay if isinstance(loaded2.project_overlay, dict) else {}
+        if not isinstance(overlay2, dict):
+            overlay2 = {}
+
+        tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+
+        def _view_for_scope(scope: str) -> object:
+            sc = str(scope or "project").strip()
+            if sc not in ("project", "global"):
+                sc = "project"
+            return tdb.load_view(scope=sc)
+
+        def _iter_effective_claims(*, include_inactive: bool, include_aliases: bool) -> list[dict]:
+            proj = tdb.load_view(scope="project")
+            glob = tdb.load_view(scope="global")
+            out: list[dict] = []
+            seen: set[str] = set()
+
+            def sig_for(c: dict) -> str:
+                ct = str(c.get("claim_type") or "").strip()
+                text = str(c.get("text") or "").strip()
+                return claim_signature(claim_type=ct, scope="effective", project_id="", text=text)
+
+            for c in proj.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases):
+                if not isinstance(c, dict):
+                    continue
+                s = sig_for(c)
+                if s:
+                    seen.add(s)
+                out.append(c)
+
+            for c in glob.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases):
+                if not isinstance(c, dict):
+                    continue
+                s = sig_for(c)
+                if s and s in seen:
+                    continue
+                out.append(c)
+
+            # Sort newest first when possible.
+            out.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
+            return out
+
+        def _find_claim_effective(cid: str) -> tuple[str, dict[str, Any] | None]:
+            """Return (scope, claim) searching project then global."""
+            c = (cid or "").strip()
+            if not c:
+                return "", None
+            for sc in ("project", "global"):
+                v = tdb.load_view(scope=sc)
+                if c in v.claims_by_id:
+                    obj = dict(v.claims_by_id[c])
+                    obj["status"] = v.claim_status(c)
+                    obj["canonical_id"] = v.resolve_id(c)
+                    return sc, obj
+                canon = v.resolve_id(c)
+                if canon and canon in v.claims_by_id:
+                    obj = dict(v.claims_by_id[canon])
+                    obj["status"] = v.claim_status(canon)
+                    obj["canonical_id"] = v.resolve_id(canon)
+                    obj["requested_id"] = c
+                    return sc, obj
+            return "", None
+
+        if args.claim_cmd == "list":
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            include_inactive = bool(getattr(args, "all", False))
+            include_aliases = bool(getattr(args, "all", False))
+
+            if scope == "effective":
+                items = _iter_effective_claims(include_inactive=include_inactive, include_aliases=include_aliases)
+            else:
+                v = tdb.load_view(scope=scope)
+                items = list(v.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases))
+                items.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
+
+            if getattr(args, "json", False):
+                print(json.dumps(items, indent=2, sort_keys=True))
+                return 0
+
+            if not items:
+                print("(no claims)")
+                return 0
+            for c in items:
+                if not isinstance(c, dict):
+                    continue
+                cid = str(c.get("claim_id") or "").strip()
+                ct = str(c.get("claim_type") or "").strip()
+                st = str(c.get("status") or "").strip()
+                sc = str(c.get("scope") or scope).strip()
+                text = str(c.get("text") or "").strip().replace("\n", " ")
+                if len(text) > 140:
+                    text = text[:137] + "..."
+                print(f"{cid} scope={sc} status={st} type={ct} {text}".strip())
+            return 0
+
+        if args.claim_cmd == "show":
+            cid = str(args.id or "").strip()
+            scope = str(getattr(args, "scope", "effective") or "effective").strip()
+            found_scope = ""
+            obj: dict[str, Any] | None = None
+            edges: list[dict[str, Any]] = []
+
+            if scope == "effective":
+                found_scope, obj = _find_claim_effective(cid)
+                if found_scope:
+                    v = tdb.load_view(scope=found_scope)
+                    canon = v.resolve_id(cid)
+                    for e in v.edges:
+                        if not isinstance(e, dict):
+                            continue
+                        frm = str(e.get("from_id") or "").strip()
+                        to = str(e.get("to_id") or "").strip()
+                        if cid in (frm, to) or (canon and canon in (frm, to)):
+                            edges.append(e)
+            else:
+                v = tdb.load_view(scope=scope)
+                if cid in v.claims_by_id:
+                    obj = dict(v.claims_by_id[cid])
+                    obj["status"] = v.claim_status(cid)
+                    obj["canonical_id"] = v.resolve_id(cid)
+                    found_scope = scope
+                else:
+                    canon = v.resolve_id(cid)
+                    if canon and canon in v.claims_by_id:
+                        obj = dict(v.claims_by_id[canon])
+                        obj["status"] = v.claim_status(canon)
+                        obj["canonical_id"] = v.resolve_id(canon)
+                        obj["requested_id"] = cid
+                        found_scope = scope
+                if found_scope:
+                    canon = v.resolve_id(cid)
+                    for e in v.edges:
+                        if not isinstance(e, dict):
+                            continue
+                        frm = str(e.get("from_id") or "").strip()
+                        to = str(e.get("to_id") or "").strip()
+                        if cid in (frm, to) or (canon and canon in (frm, to)):
+                            edges.append(e)
+
+            if not obj:
+                print(f"claim not found: {cid}", file=sys.stderr)
+                return 2
+
+            payload = {"scope": found_scope, "claim": obj, "edges": edges}
+            if getattr(args, "json", False):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+
+            c = obj
+            print(f"claim_id={c.get('claim_id')}")
+            if c.get("requested_id") and c.get("requested_id") != c.get("claim_id"):
+                print(f"requested_id={c.get('requested_id')}")
+            print(f"scope={found_scope}")
+            print(f"type={c.get('claim_type')}")
+            print(f"status={c.get('status')}")
+            canon = c.get("canonical_id")
+            if canon and canon != c.get("claim_id"):
+                print(f"canonical_id={canon}")
+            text = str(c.get("text") or "").strip()
+            if text:
+                print("text:")
+                print(text)
+            if edges:
+                print(f"edges={len(edges)}")
+            return 0
+
+        if args.claim_cmd == "retract":
+            cid = str(args.id or "").strip()
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+
+            # Record a user-driven event in EvidenceLog and cite it in Thought DB.
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            ev = evw.append(
+                {
+                    "kind": "claim_retract",
+                    "batch_id": "cli.claim_retract",
+                    "ts": now_rfc3339(),
+                    "thread_id": "",
+                    "scope": scope,
+                    "claim_id": cid,
+                    "rationale": str(getattr(args, "rationale", "") or "").strip(),
+                }
+            )
+            try:
+                tdb.append_claim_retract(
+                    claim_id=cid,
+                    scope=scope,
+                    rationale=str(getattr(args, "rationale", "") or "").strip(),
+                    source_event_ids=[str(ev.get("event_id") or "").strip()],
+                )
+            except Exception as e:
+                print(f"retract failed: {e}", file=sys.stderr)
+                return 2
+            print(cid)
+            return 0
+
+        if args.claim_cmd == "supersede":
+            old_id = str(args.id or "").strip()
+            scope = str(getattr(args, "scope", "effective") or "effective").strip()
+
+            if scope == "effective":
+                found_scope, old = _find_claim_effective(old_id)
+                if not old or not found_scope:
+                    print(f"old claim not found: {old_id}", file=sys.stderr)
+                    return 2
+                scope = found_scope
+            else:
+                v = tdb.load_view(scope=scope)
+                old = dict(v.claims_by_id.get(old_id) or {})
+                if not old:
+                    print(f"old claim not found: {old_id}", file=sys.stderr)
+                    return 2
+
+            new_text = str(getattr(args, "text", "") or "").strip()
+            if not new_text:
+                print("--text is required", file=sys.stderr)
+                return 2
+
+            ct = str(getattr(args, "claim_type", "") or "").strip() or str(old.get("claim_type") or "").strip() or "fact"
+            vis = str(getattr(args, "visibility", "") or "").strip() or str(old.get("visibility") or "").strip() or ("global" if scope == "global" else "project")
+            vf = str(getattr(args, "valid_from", "") or "").strip() or None
+            vt = str(getattr(args, "valid_to", "") or "").strip() or None
+            tags = [str(x).strip() for x in (getattr(args, "tag", None) or []) if str(x).strip()]
+
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            ev = evw.append(
+                {
+                    "kind": "claim_supersede",
+                    "batch_id": "cli.claim_supersede",
+                    "ts": now_rfc3339(),
+                    "thread_id": "",
+                    "scope": scope,
+                    "old_claim_id": old_id,
+                    "new_text": new_text,
+                    "claim_type": ct,
+                    "visibility": vis,
+                    "valid_from": vf,
+                    "valid_to": vt,
+                    "tags": tags,
+                }
+            )
+            ev_id = str(ev.get("event_id") or "").strip()
+            try:
+                new_id = tdb.append_claim_create(
+                    claim_type=ct,
+                    text=new_text,
+                    scope=scope,
+                    visibility=vis,
+                    valid_from=vf,
+                    valid_to=vt,
+                    tags=tags,
+                    source_event_ids=[ev_id] if ev_id else [],
+                    confidence=1.0,
+                    notes="supersede via cli",
+                )
+                tdb.append_edge(
+                    edge_type="supersedes",
+                    from_id=old_id,
+                    to_id=new_id,
+                    scope=scope,
+                    visibility=vis,
+                    source_event_ids=[ev_id] if ev_id else [],
+                    notes="supersede via cli",
+                )
+            except Exception as e:
+                print(f"supersede failed: {e}", file=sys.stderr)
+                return 2
+            print(new_id)
+            return 0
+
+        if args.claim_cmd == "same-as":
+            dup_id = str(args.dup_id or "").strip()
+            canon_id = str(args.canonical_id or "").strip()
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+
+            v = tdb.load_view(scope=scope)
+            if dup_id not in v.claims_by_id or canon_id not in v.claims_by_id:
+                print("both dup_id and canonical_id must exist in the same scope store", file=sys.stderr)
+                return 2
+
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            ev = evw.append(
+                {
+                    "kind": "claim_same_as",
+                    "batch_id": "cli.claim_same_as",
+                    "ts": now_rfc3339(),
+                    "thread_id": "",
+                    "scope": scope,
+                    "dup_id": dup_id,
+                    "canonical_id": canon_id,
+                    "notes": str(getattr(args, "notes", "") or "").strip(),
+                }
+            )
+            ev_id = str(ev.get("event_id") or "").strip()
+            try:
+                tdb.append_edge(
+                    edge_type="same_as",
+                    from_id=dup_id,
+                    to_id=canon_id,
+                    scope=scope,
+                    visibility=str(v.claims_by_id.get(dup_id, {}).get("visibility") or ("global" if scope == "global" else "project")),
+                    source_event_ids=[ev_id] if ev_id else [],
+                    notes=str(getattr(args, "notes", "") or "").strip(),
+                )
+            except Exception as e:
+                print(f"same-as failed: {e}", file=sys.stderr)
+                return 2
+            print(f"{dup_id} -> {canon_id}")
+            return 0
+
+        if args.claim_cmd == "mine":
+            # On-demand mining uses the Mind provider (same as other CLI model calls).
+            tcfg = loaded2.base.get("thought_db") if isinstance(loaded2.base.get("thought_db"), dict) else {}
+            try:
+                min_conf = float(tcfg.get("min_confidence", 0.9) or 0.9)
+            except Exception:
+                min_conf = 0.9
+            try:
+                max_claims = int(tcfg.get("max_claims_per_checkpoint", 6) or 6)
+            except Exception:
+                max_claims = 6
+            if getattr(args, "min_confidence", -1.0) is not None and float(getattr(args, "min_confidence")) >= 0:
+                min_conf = float(getattr(args, "min_confidence"))
+            if getattr(args, "max_claims", -1) is not None and int(getattr(args, "max_claims")) >= 0:
+                max_claims = int(getattr(args, "max_claims"))
+
+            # Prefer the current open segment buffer; fall back to EvidenceLog tail.
+            seg: dict[str, Any] | None = None
+            try:
+                seg = json.loads(pp.segment_state_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                seg = None
+            except Exception:
+                seg = None
+
+            seg_records: list[dict[str, Any]] = []
+            if isinstance(seg, dict) and bool(seg.get("open", False)) and isinstance(seg.get("records"), list):
+                seg_records = [x for x in seg.get("records") if isinstance(x, dict)]  # type: ignore[arg-type]
+            if not seg_records:
+                seg_records = tail_json_objects(pp.evidence_log_path, 60)
+
+            allowed: list[str] = []
+            seen: set[str] = set()
+            for r in seg_records:
+                eid = r.get("event_id")
+                if isinstance(eid, str) and eid.strip() and eid.strip() not in seen:
+                    seen.add(eid.strip())
+                    allowed.append(eid.strip())
+            allowed_set = set(allowed)
+
+            pp.transcripts_dir.mkdir(parents=True, exist_ok=True)
+            mind = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
+            prompt = mine_claims_prompt(
+                task=str("(manual claim mine) " + (seg.get("task_hint") if isinstance(seg, dict) else "")).strip(),
+                hands_provider=str(cfg.get("hands", {}).get("provider") or ""),
+                mindspec_base=loaded2.base,
+                learned_text=loaded2.learned_text,
+                project_overlay=overlay2,
+                segment_evidence=seg_records,
+                allowed_event_ids=allowed,
+                min_confidence=min_conf,
+                max_claims=max_claims,
+                notes="source=cli",
+            )
+            try:
+                res = mind.call(schema_filename="mine_claims.json", prompt=prompt, tag="mine_claims_cli")
+            except Exception as e:
+                print(f"mind call failed: {e}", file=sys.stderr)
+                return 2
+
+            out = res.obj if hasattr(res, "obj") else {}
+            mined = out.get("claims") if isinstance(out, dict) and isinstance(out.get("claims"), list) else []
+            applied = tdb.apply_mined_claims(
+                mined_claims=mined if isinstance(mined, list) else [],
+                allowed_event_ids=allowed_set,
+                min_confidence=min_conf,
+                max_claims=max_claims,
+            )
+
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            evw.append(
+                {
+                    "kind": "claim_mining",
+                    "batch_id": "cli.claim_mining",
+                    "ts": now_rfc3339(),
+                    "thread_id": "",
+                    "segment_id": str(seg.get("segment_id") or "") if isinstance(seg, dict) else "",
+                    "mind_transcript_ref": str(getattr(res, "transcript_path", "") or ""),
+                    "config": {"min_confidence": min_conf, "max_claims_per_checkpoint": max_claims},
+                    "output": out if isinstance(out, dict) else {},
+                    "applied": applied,
+                }
+            )
+
+            if getattr(args, "json", False):
+                print(json.dumps({"applied": applied, "output": out}, indent=2, sort_keys=True))
+                return 0
+            written = applied.get("written") if isinstance(applied, dict) else []
+            print(f"written={len(written) if isinstance(written, list) else 0}")
+            return 0
+
+        print("unknown claim subcommand", file=sys.stderr)
+        return 2
 
     if args.cmd == "workflow":
         project_root = _resolve_project_root_from_args(store, str(args.cd or ""))

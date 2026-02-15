@@ -187,6 +187,22 @@ mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 
 - 如果 `MindSpec.preference_mining.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `mine_preferences`，并在重复出现时输出 `kind=learn_suggested`（详见 `docs/mi-v1-spec.md`）。
 
+实验性：Thought DB（原子 Claim）
+
+MI 可以维护一个追加写（append-only）的“Thought DB”，把可复用的原子 `Claim`（fact/preference/assumption/goal）沉淀下来，并且 provenance 只引用 **EvidenceLog 的 `event_id`**（便于审计和追溯）。
+
+- 如果 `MindSpec.thought_db.auto_mine=true`（默认），MI 会在 `mi run` 的 checkpoint 边界调用 `mine_claims`，并记录 `kind=claim_mining`。
+- Claim/Edge 存储在项目级（以及可选的全局）目录中，可用 CLI 管理：
+
+```bash
+mi claim list --cd /path/to/your/project --scope effective
+mi claim show <claim_id> --cd /path/to/your/project
+mi claim mine --cd /path/to/your/project
+mi claim retract <claim_id> --cd /path/to/your/project
+mi claim supersede <claim_id> --cd /path/to/your/project --text "..."
+mi claim same-as <dup_id> <canonical_id> --cd /path/to/your/project
+```
+
 ## Workflows + Host Adapters（实验性）
 
 Workflow 是可复用流程，可以是**项目级（project-scoped）**或**全局（global）**。MI 会把项目的**有效（effective）**启用 workflow（project + global，且 project 优先）导出到宿主 workspace（派生物）。
@@ -229,6 +245,7 @@ mi host sync --cd /path/to/your/project
 - Hands 原始 transcript：`~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`
 - Mind transcripts（MI prompt-pack 调用）：`~/.mind-incarnation/projects/<id>/transcripts/mind/*.jsonl`
 - EvidenceLog（追加写入；包含 `snapshot` + `cross_project_recall` 等记录）：`~/.mind-incarnation/projects/<id>/evidence.jsonl`
+- Thought DB（追加写的 Claim + Edge）：`~/.mind-incarnation/projects/<id>/thoughtdb/{claims,edges}.jsonl` 以及 `~/.mind-incarnation/thoughtdb/global/{claims,edges}.jsonl`
 - 记忆文本索引（materialized view；可重建；默认 backend=`sqlite_fts`）：`~/.mind-incarnation/indexes/memory.sqlite`
 
 记忆索引维护：

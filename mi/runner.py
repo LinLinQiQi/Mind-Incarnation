@@ -20,7 +20,7 @@ from .paths import GlobalPaths, ProjectPaths, default_home_dir
 from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt, workflow_progress_prompt, checkpoint_decide_prompt
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
-from .prompts import suggest_workflow_prompt, mine_preferences_prompt
+from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from .storage import append_jsonl, now_rfc3339, ensure_dir, read_json, write_json
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
@@ -37,6 +37,7 @@ from .preferences import load_preference_candidates, write_preference_candidates
 from .hosts import sync_hosts_from_overlay
 from .memory_facade import MemoryFacade
 from .evidence import EvidenceWriter, new_run_id
+from .thoughtdb import ThoughtDbStore
 
 
 _DEFAULT = object()
@@ -460,6 +461,7 @@ def run_autopilot(
     wf_global_store = GlobalWorkflowStore(GlobalPaths(home_dir=home))
     wf_registry = WorkflowRegistry(project_store=wf_store, global_store=wf_global_store)
     mem = MemoryFacade(home_dir=home, project_paths=project_paths, mindspec_base=loaded.base)
+    tdb = ThoughtDbStore(home_dir=home, project_paths=project_paths)
     evw = EvidenceWriter(path=project_paths.evidence_log_path, run_id=new_run_id("run"))
 
     if llm is None:
@@ -605,7 +607,21 @@ def run_autopilot(
     wf_auto_mine = bool(wf_cfg.get("auto_mine", True))
     pref_cfg = loaded.base.get("preference_mining") if isinstance(loaded.base.get("preference_mining"), dict) else {}
     pref_auto_mine = bool(pref_cfg.get("auto_mine", True))
-    checkpoint_enabled = bool(wf_auto_mine or pref_auto_mine)
+    tdb_cfg = loaded.base.get("thought_db") if isinstance(loaded.base.get("thought_db"), dict) else {}
+    tdb_enabled = bool(tdb_cfg.get("enabled", True))
+    tdb_auto_mine = bool(tdb_cfg.get("auto_mine", True)) and bool(tdb_enabled)
+    try:
+        tdb_min_conf = float(tdb_cfg.get("min_confidence", 0.9) or 0.9)
+    except Exception:
+        tdb_min_conf = 0.9
+    tdb_min_conf = max(0.0, min(1.0, tdb_min_conf))
+    try:
+        tdb_max_claims = int(tdb_cfg.get("max_claims_per_checkpoint", 6) or 6)
+    except Exception:
+        tdb_max_claims = 6
+    tdb_max_claims = max(0, min(20, tdb_max_claims))
+
+    checkpoint_enabled = bool(wf_auto_mine or pref_auto_mine or tdb_auto_mine)
 
     segment_max_records = 40
     segment_state: dict[str, Any] = {}
@@ -1389,6 +1405,81 @@ def run_autopilot(
         candidates["by_signature"] = by_sig
         write_preference_candidates(project_paths, candidates)
 
+    def _mine_claims_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
+        """Mine high-signal atomic Claims into Thought DB (checkpoint-only; best-effort)."""
+
+        if not bool(tdb_auto_mine):
+            return
+        if executed_batches <= 0:
+            return
+        if tdb_max_claims <= 0:
+            return
+
+        # Allowed citations for source_refs: EvidenceLog event_id only.
+        allowed: list[str] = []
+        seen: set[str] = set()
+        for rec in seg_evidence or []:
+            if not isinstance(rec, dict):
+                continue
+            eid = rec.get("event_id")
+            if not isinstance(eid, str):
+                continue
+            e = eid.strip()
+            if not e or e in seen:
+                continue
+            seen.add(e)
+            allowed.append(e)
+        allowed_set = set(allowed)
+
+        mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
+        prompt = mine_claims_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=loaded.base,
+            learned_text=loaded.learned_text,
+            project_overlay=loaded.project_overlay,
+            segment_evidence=seg_evidence,
+            allowed_event_ids=allowed,
+            min_confidence=tdb_min_conf,
+            max_claims=tdb_max_claims,
+            notes=mine_notes,
+        )
+        out, mind_ref, state = _mind_call(
+            schema_filename="mine_claims.json",
+            prompt=prompt,
+            tag=f"mine_claims:{base_batch_id}",
+            batch_id=f"{base_batch_id}.claim_mining",
+        )
+
+        applied: dict[str, Any] = {"written": [], "skipped": []}
+        if isinstance(out, dict):
+            raw_claims = out.get("claims") if isinstance(out.get("claims"), list) else []
+            applied = tdb.apply_mined_claims(
+                mined_claims=raw_claims,
+                allowed_event_ids=allowed_set,
+                min_confidence=tdb_min_conf,
+                max_claims=tdb_max_claims,
+            )
+
+        evw.append(
+            {
+                "kind": "claim_mining",
+                "batch_id": f"{base_batch_id}.claim_mining",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id or "",
+                "segment_id": str(segment_state.get("segment_id") or "") if isinstance(segment_state, dict) else "",
+                "state": state,
+                "mind_transcript_ref": mind_ref,
+                "notes": mine_notes,
+                "config": {
+                    "min_confidence": tdb_min_conf,
+                    "max_claims_per_checkpoint": tdb_max_claims,
+                },
+                "output": out if isinstance(out, dict) else {},
+                "applied": applied,
+            }
+        )
+
     _last_checkpoint_key = ""
 
     def _maybe_checkpoint_and_mine(*, batch_id: str, planned_next_input: str, status_hint: str, note: str) -> None:
@@ -1465,6 +1556,7 @@ def run_autopilot(
             _mine_workflow_from_segment(seg_evidence=segment_records, base_batch_id=base_bid, source="checkpoint")
         if bool(out.get("should_mine_preferences", False)):
             _mine_preferences_from_segment(seg_evidence=segment_records, base_batch_id=base_bid, source="checkpoint")
+        _mine_claims_from_segment(seg_evidence=segment_records, base_batch_id=base_bid, source="checkpoint")
 
         # Materialize a compact snapshot for cross-project recall (append-only; traceable to segment records).
         snap = mem.materialize_snapshot(

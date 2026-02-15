@@ -353,6 +353,19 @@ class ProjectPaths:
         return self.project_dir / "workflows"
 
     @property
+    def thoughtdb_dir(self) -> Path:
+        # Thought DB (Claims + Edges) is a durable store that references EvidenceLog event_id.
+        return self.project_dir / "thoughtdb"
+
+    @property
+    def thoughtdb_claims_path(self) -> Path:
+        return self.thoughtdb_dir / "claims.jsonl"
+
+    @property
+    def thoughtdb_edges_path(self) -> Path:
+        return self.thoughtdb_dir / "edges.jsonl"
+
+    @property
     def workflow_candidates_path(self) -> Path:
         # Signature -> count mapping for "suggested workflow" mining.
         return self.project_dir / "workflow_candidates.json"
@@ -393,3 +406,20 @@ class GlobalPaths:
     def indexes_dir(self) -> Path:
         # Materialized views (e.g., text index) live here; ledger remains under projects/*.
         return self.home_dir / "indexes"
+
+    @property
+    def thoughtdb_dir(self) -> Path:
+        # Thought DB global store (project stores live under projects/<id>/thoughtdb).
+        return self.home_dir / "thoughtdb"
+
+    @property
+    def thoughtdb_global_dir(self) -> Path:
+        return self.thoughtdb_dir / "global"
+
+    @property
+    def thoughtdb_global_claims_path(self) -> Path:
+        return self.thoughtdb_global_dir / "claims.jsonl"
+
+    @property
+    def thoughtdb_global_edges_path(self) -> Path:
+        return self.thoughtdb_global_dir / "edges.jsonl"

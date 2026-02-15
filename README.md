@@ -187,6 +187,22 @@ Experimental: preference mining
 
 - If `MindSpec.preference_mining.auto_mine=true` (default), MI may call `mine_preferences` at LLM-judged checkpoints during `mi run` (including at run end) and may emit `kind=learn_suggested` after repeated occurrences (see `docs/mi-v1-spec.md`).
 
+Experimental: Thought DB (atomic Claims)
+
+MI can maintain an append-only "Thought DB" of atomic reusable `Claim`s (fact/preference/assumption/goal), with provenance that cites **EvidenceLog `event_id` only**.
+
+- If `MindSpec.thought_db.auto_mine=true` (default), MI may call `mine_claims` at checkpoints during `mi run` and records `kind=claim_mining`.
+- Claims are stored per project (and optionally global) and can be managed via CLI:
+
+```bash
+mi claim list --cd /path/to/your/project --scope effective
+mi claim show <claim_id> --cd /path/to/your/project
+mi claim mine --cd /path/to/your/project
+mi claim retract <claim_id> --cd /path/to/your/project
+mi claim supersede <claim_id> --cd /path/to/your/project --text "..."
+mi claim same-as <dup_id> <canonical_id> --cd /path/to/your/project
+```
+
 ## Workflows + Host Adapters (Experimental)
 
 Workflows are reusable procedures that can be **project-scoped** or **global**. MI exports the project's **effective** enabled workflows (project + global with project precedence) into host workspaces (derived artifacts).
@@ -229,6 +245,7 @@ Notes:
 - Raw Hands transcript: `~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`
 - Mind transcripts (MI prompt-pack calls): `~/.mind-incarnation/projects/<id>/transcripts/mind/*.jsonl`
 - EvidenceLog (append-only; includes `snapshot` + `cross_project_recall` kinds): `~/.mind-incarnation/projects/<id>/evidence.jsonl`
+- Thought DB (append-only Claims + Edges): `~/.mind-incarnation/projects/<id>/thoughtdb/{claims,edges}.jsonl` and `~/.mind-incarnation/thoughtdb/global/{claims,edges}.jsonl`
 - Memory text index (materialized view; rebuildable; default backend=`sqlite_fts`): `~/.mind-incarnation/indexes/memory.sqlite`
 
 Memory index maintenance:

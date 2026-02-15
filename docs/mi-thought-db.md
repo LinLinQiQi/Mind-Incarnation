@@ -1,6 +1,6 @@
 # MI Thought DB (Design Notes)
 
-Status: design (not implemented in V1)
+Status: implemented (partial, V1)
 Last updated: 2026-02-15
 
 This document captures the "Thought DB" direction for Mind Incarnation (MI):
@@ -11,6 +11,20 @@ This document captures the "Thought DB" direction for Mind Incarnation (MI):
 - Minimal privacy labeling (`visibility`) that still allows Mind model usage when configured
 
 It is intentionally written as a stable reference to prevent multi-iteration context loss.
+
+## V1 Implementation (What Exists Today)
+
+Implemented in V1 (incremental; safe foundation):
+
+- Append-only Claim + Edge stores (project + global) with `source_refs` that cite **EvidenceLog `event_id` only**
+- Checkpoint-only, high-threshold claim mining during `mi run` (no per-step protocol; no user prompts)
+- On-demand mining + basic management via CLI (`mi claim ...`)
+- Memory index ingestion of **active canonical** claims (`kind=claim`) for optional text recall/search
+
+Not implemented yet (future direction):
+
+- Decision/Action nodes and "minimal support set" root-cause tracing
+- Whole-graph LLM refactors via validated patch application (subgraph retrieval -> patch -> validate -> apply)
 
 ## Problem / Goal
 
@@ -173,14 +187,44 @@ MI already has:
 - Event-like evidence ledger (EvidenceLog with stable `event_id`)
 - A materialized text index for recall
 
-The Thought DB direction adds:
+The Thought DB adds:
 
 - A project/global Claim store (atomic claims)
 - A ClaimGraph store (edges + redirect mappings)
 - Retrieval that returns a small subgraph + provenance, not just text snippets
 
-V1 can remain text-only; the Thought DB is an extension that should be implemented as:
+### Storage Layout (V1)
+
+Project-scoped (per `project_id`):
+
+- `~/.mind-incarnation/projects/<project_id>/thoughtdb/claims.jsonl`
+- `~/.mind-incarnation/projects/<project_id>/thoughtdb/edges.jsonl`
+
+Global (shared across projects):
+
+- `~/.mind-incarnation/thoughtdb/global/claims.jsonl`
+- `~/.mind-incarnation/thoughtdb/global/edges.jsonl`
+
+### CLI (V1)
+
+- `mi claim list --cd <project>` (default: active + canonical)
+- `mi claim show <claim_id> --cd <project>`
+- `mi claim mine --cd <project>` (on-demand, best-effort; uses current segment buffer or EvidenceLog tail)
+- `mi claim retract <claim_id> --cd <project>`
+- `mi claim supersede <old_claim_id> --text "..." --cd <project>`
+- `mi claim same-as <dup_id> <canonical_id> --cd <project>`
+
+### Mining Trigger (V1)
+
+- Default: checkpoint-only (`checkpoint_decide` determines a boundary; MI then mines workflows/preferences and also mines claims).
+- No user prompts. Mining is internal and append-only.
+
+### Memory Index (V1)
+
+- Claims are indexed as `kind=claim` (active, canonical only).
+- Cross-project recall can include claims only when `MindSpec.cross_project_recall.include_kinds` contains `"claim"` (default is conservative and may omit it).
+
+V1 can still be "text-only recall" for most flows; the Thought DB is an extension implemented as:
 
 - A new memory backend (or backend+service) with the same `MemoryBackend` interface, or
 - A parallel "graph memory" service used by recall + root-cause queries
-

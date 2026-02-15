@@ -9,7 +9,7 @@ class MemoryItem:
     """A recallable memory unit (materialized view) with traceable sources."""
 
     item_id: str
-    kind: str  # snapshot|learned|workflow
+    kind: str  # snapshot|learned|workflow|claim
     scope: str  # global|project
     project_id: str  # empty for global scope
     ts: str
@@ -27,4 +27,3 @@ class MemoryGroup:
     scope: str
     project_id: str
     items: list[MemoryItem]
-

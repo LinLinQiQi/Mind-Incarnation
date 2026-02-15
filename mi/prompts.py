@@ -500,6 +500,77 @@ def mine_preferences_prompt(
     ).strip() + "\n"
 
 
+def mine_claims_prompt(
+    *,
+    task: str,
+    hands_provider: str,
+    mindspec_base: dict[str, Any],
+    learned_text: str,
+    project_overlay: dict[str, Any],
+    segment_evidence: list[dict[str, Any]],
+    allowed_event_ids: list[str],
+    min_confidence: float,
+    max_claims: int,
+    notes: str,
+) -> str:
+    allowed = [str(x) for x in allowed_event_ids if str(x).strip()]
+    allowed = allowed[:200]
+    return "\n".join(
+        [
+            "You are MI (Mind Incarnation).",
+            "Mine high-signal, reusable atomic Claims from MI-captured evidence.",
+            "",
+            "Claim definition:",
+            "- A Claim is an atomic, reusable argument used to justify decisions/actions.",
+            "- Claim types: fact / preference / assumption / goal.",
+            "- Temporal semantics are first-class: MI will set asserted_ts; you may set valid_from/valid_to when known (otherwise null).",
+            "",
+            "Hard constraints:",
+            "- Use ONLY the provided segment evidence (derived from MI-captured transcript/evidence).",
+            "- Do NOT invent facts or preferences. If unclear, output no claims.",
+            "- Each claim MUST cite 1-5 EvidenceLog event_id(s) from the allowed list.",
+            f"- Output at most the top {int(max_claims)} claims; output fewer when unsure.",
+            f"- Only output a claim when confidence >= {min_confidence:.2f}.",
+            "- Prefer project-scoped claims unless clearly reusable across projects (then scope=global).",
+            "- Avoid duplicating rules already present in learned preferences; only output a claim when it adds durable value.",
+            "",
+            "Output rules:",
+            "- Output MUST be a single JSON object matching the provided JSON Schema.",
+            "- No markdown, no extra keys, no extra commentary.",
+            "- If no high-confidence reusable claims exist, output claims=[] and edges=[].",
+            "",
+            "User task:",
+            task.strip(),
+            "",
+            f"Hands provider: {hands_provider.strip() or '(unknown)'}",
+            "",
+            "MindSpec base (structured):",
+            _to_json(mindspec_base),
+            "",
+            "Existing learned preferences (reversible text):",
+            learned_text.strip() or "(none)",
+            "",
+            "ProjectOverlay:",
+            _to_json(project_overlay),
+            "",
+            "Segment evidence (compact, most recent last):",
+            _to_json(segment_evidence),
+            "",
+            "Allowed EvidenceLog event_id list (MUST cite only from here):",
+            _to_json(allowed),
+            "",
+            "Thresholds:",
+            f"- min_confidence: {min_confidence:.2f}",
+            f"- max_claims: {int(max_claims)}",
+            "",
+            "Run notes:",
+            (notes or "").strip(),
+            "",
+            "Now output mined claims (or empty lists).",
+        ]
+    ).strip() + "\n"
+
+
 def edit_workflow_prompt(
     *,
     mindspec_base: dict[str, Any],

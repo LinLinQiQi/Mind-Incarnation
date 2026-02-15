@@ -102,6 +102,14 @@ def _default_base(values_text: str) -> dict[str, Any]:
             "min_confidence": 0.75,
             "max_suggestions": 3,
         },
+        "thought_db": {
+            # Thought DB: atomic reusable Claims + a derived ClaimGraph direction.
+            # V1: checkpoint-only mining + high threshold, append-only, source_refs cite EvidenceLog event_id.
+            "enabled": True,
+            "auto_mine": True,
+            "min_confidence": 0.9,
+            "max_claims_per_checkpoint": 6,
+        },
         "violation_response": {
             "auto_learn": True,
             "prompt_user_on_high_risk": True,

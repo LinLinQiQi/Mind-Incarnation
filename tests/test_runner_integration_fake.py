@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mi.codex_runner import CodexRunResult
+from mi.memory import MemoryIndex, MemoryItem
 from mi.mind_errors import MindCallError
 from mi.mindspec import MindSpecStore
 from mi.runner import run_autopilot
@@ -75,6 +76,336 @@ def _mk_result(*, thread_id: str, last_message: str, command: str = "") -> Codex
 
 
 class TestRunnerIntegrationFake(unittest.TestCase):
+    def test_cross_project_recall_run_start_writes_evidence_event(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            # Seed the cross-project memory index with an item that should match the run_start query (task text).
+            index = MemoryIndex(Path(home))
+            index.upsert_items(
+                [
+                    MemoryItem(
+                        item_id="snapshot:project:other:1",
+                        kind="snapshot",
+                        scope="project",
+                        project_id="other",
+                        ts="2020-01-01T00:00:00Z",
+                        title="hello world",
+                        body="hello world",
+                        tags=["snapshot"],
+                        source_refs=[],
+                    )
+                ]
+            )
+
+            fake_hands = _FakeHands([_mk_result(thread_id="t_recall_start", last_message="All done.", command="ls")])
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": ["ran ls"], "actions": [], "results": ["listed files"], "unknowns": [], "risk_signals": []},
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="hello world",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+
+            self.assertEqual(result.status, "done")
+
+            found = False
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if not isinstance(obj, dict):
+                        continue
+                    if obj.get("kind") != "cross_project_recall":
+                        continue
+                    if obj.get("reason") != "run_start":
+                        continue
+                    self.assertEqual(obj.get("batch_id"), "b0.recall")
+                    self.assertTrue(str(obj.get("event_id") or "").strip())
+                    self.assertTrue(isinstance(obj.get("items"), list) and obj.get("items"))
+                    found = True
+                    break
+            self.assertTrue(found)
+
+    def test_cross_project_recall_risk_signal_writes_evidence_event(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            # Avoid interactive prompting in this test.
+            store = MindSpecStore(home_dir=home)
+            base = store.load_base()
+            base.setdefault("violation_response", {})
+            base["violation_response"]["prompt_user_on_high_risk"] = False
+            store.write_base(base)
+
+            # Seed a snapshot that should match the risk_signal query ("push: git push origin main").
+            index = MemoryIndex(Path(home))
+            index.upsert_items(
+                [
+                    MemoryItem(
+                        item_id="snapshot:project:other:push1",
+                        kind="snapshot",
+                        scope="project",
+                        project_id="other",
+                        ts="2020-01-01T00:00:00Z",
+                        title="git push origin main",
+                        body="git push origin main",
+                        tags=["snapshot", "push"],
+                        source_refs=[],
+                    )
+                ]
+            )
+
+            fake_hands = _FakeHands([_mk_result(thread_id="t_recall_risk", last_message="All done.", command="git push origin main")])
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
+                    ],
+                    "risk_judge.json": [
+                        {"category": "push", "severity": "high", "should_ask_user": False, "mitigation": [], "learned_changes": []},
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="x",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+
+            self.assertEqual(result.status, "done")
+
+            found = False
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if not isinstance(obj, dict):
+                        continue
+                    if obj.get("kind") != "cross_project_recall":
+                        continue
+                    if obj.get("reason") != "risk_signal":
+                        continue
+                    self.assertEqual(obj.get("batch_id"), "b0.risk_recall")
+                    self.assertTrue(str(obj.get("event_id") or "").strip())
+                    self.assertTrue(isinstance(obj.get("items"), list) and obj.get("items"))
+                    found = True
+                    break
+            self.assertTrue(found)
+
+    def test_before_ask_user_recall_retries_auto_answer_and_avoids_user_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            # Seed a memory item that should match the "API key" question, so the retry can "answer".
+            index = MemoryIndex(Path(home))
+            index.upsert_items(
+                [
+                    MemoryItem(
+                        item_id="snapshot:project:other:apikey1",
+                        kind="snapshot",
+                        scope="project",
+                        project_id="other",
+                        ts="2020-01-01T00:00:00Z",
+                        title="api key",
+                        body="api key",
+                        tags=["snapshot"],
+                        source_refs=[],
+                    )
+                ]
+            )
+
+            fake_hands = _FakeHands(
+                [
+                    _mk_result(thread_id="t_autoanswer_retry", last_message="Need API key?"),
+                    _mk_result(thread_id="t_autoanswer_retry", last_message="All done."),
+                ]
+            )
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
+                        {"facts": [], "actions": [], "results": ["done"], "unknowns": [], "risk_signals": []},
+                    ],
+                    "plan_min_checks.json": [
+                        {
+                            "should_run_checks": False,
+                            "needs_testless_strategy": False,
+                            "testless_strategy_question": "",
+                            "check_goals": [],
+                            "commands_hints": [],
+                            "codex_check_input": "",
+                            "notes": "skip",
+                        }
+                    ],
+                    "auto_answer_to_codex.json": [
+                        {
+                            "should_answer": False,
+                            "confidence": 0.2,
+                            "codex_answer_input": "",
+                            "needs_user_input": True,
+                            "ask_user_question": "API key?",
+                            "unanswered_questions": ["API key?"],
+                            "notes": "need key",
+                        },
+                        {
+                            "should_answer": True,
+                            "confidence": 0.9,
+                            "codex_answer_input": "Set API_KEY=abc",
+                            "needs_user_input": False,
+                            "ask_user_question": "",
+                            "unanswered_questions": [],
+                            "notes": "answered after recall",
+                        },
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
+                    ],
+                }
+            )
+
+            old_stdin = sys.stdin
+            old_stderr = sys.stderr
+            sys.stdin = io.StringIO("")  # If MI prompts, it will receive an empty answer -> blocked.
+            sys.stderr = io.StringIO()
+            try:
+                result = run_autopilot(
+                    task="x",
+                    project_root=project_root,
+                    home_dir=home,
+                    max_batches=3,
+                    hands_exec=fake_hands.exec,
+                    hands_resume=fake_hands.resume,
+                    llm=fake_llm,
+                )
+            finally:
+                sys.stdin = old_stdin
+                sys.stderr = old_stderr
+
+            self.assertEqual(result.status, "done")
+            self.assertEqual(fake_hands.exec_calls, 1)
+            self.assertEqual(fake_hands.resume_calls, 1)
+            self.assertEqual(
+                fake_llm.calls,
+                [
+                    "extract_evidence.json",
+                    "plan_min_checks.json",
+                    "auto_answer_to_codex.json",
+                    "auto_answer_to_codex.json",
+                    "checkpoint_decide.json",
+                    "extract_evidence.json",
+                    "decide_next.json",
+                    "checkpoint_decide.json",
+                ],
+            )
+
+            # Verify MI performed a recall before asking the user, and that the retry auto-answer succeeded.
+            idx_recall = -1
+            idx_aa_first = -1
+            idx_aa_retry = -1
+            has_user_input = False
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for i, line in enumerate(f):
+                    obj = json.loads(line)
+                    if not isinstance(obj, dict):
+                        continue
+                    if obj.get("kind") == "user_input":
+                        has_user_input = True
+                    if obj.get("kind") == "cross_project_recall" and obj.get("reason") == "before_ask_user":
+                        idx_recall = i
+                        self.assertEqual(obj.get("batch_id"), "b0.before_user_recall")
+                    if obj.get("kind") == "auto_answer":
+                        if obj.get("batch_id") == "b0":
+                            idx_aa_first = i
+                            aa = obj.get("auto_answer") if isinstance(obj.get("auto_answer"), dict) else {}
+                            self.assertTrue(bool(aa.get("needs_user_input", False)))
+                        if obj.get("batch_id") == "b0.after_recall":
+                            idx_aa_retry = i
+                            aa2 = obj.get("auto_answer") if isinstance(obj.get("auto_answer"), dict) else {}
+                            self.assertTrue(bool(aa2.get("should_answer", False)))
+
+            self.assertFalse(has_user_input)
+            self.assertTrue(idx_aa_first >= 0 and idx_recall >= 0 and idx_aa_retry >= 0)
+            self.assertTrue(idx_aa_first < idx_recall < idx_aa_retry)
+
     def test_skip_plan_min_checks_when_evidence_is_sufficient(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             fake_hands = _FakeHands(

@@ -67,8 +67,10 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _tokenize_query(text: str) -> list[str]:
-    # Keep it conservative: portable across sqlite FTS versions and safe for user input.
-    toks = re.findall(r"[A-Za-z0-9_./:-]{2,}", (text or "").lower())
+    # Keep it conservative + FTS-safe:
+    # - Avoid FTS query operators like ':' and leading '-' (risk signals often contain "push:" / "-rf").
+    # - Prefer simple "word" tokens so it aligns better with sqlite's default tokenizers.
+    toks = re.findall(r"[A-Za-z0-9_]{2,}", (text or "").lower())
     out: list[str] = []
     seen: set[str] = set()
     for t in toks:

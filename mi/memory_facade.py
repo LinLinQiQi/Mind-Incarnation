@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .memory import build_snapshot_item, render_recall_context, MemoryItem
+from .memory_render import render_recall_context
+from .memory_snapshot import build_snapshot_item
+from .memory_types import MemoryItem
 from .storage import now_rfc3339
 from .paths import ProjectPaths
 from .memory_service import MemoryService

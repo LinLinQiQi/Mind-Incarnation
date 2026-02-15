@@ -229,7 +229,7 @@ Notes:
 - Raw Hands transcript: `~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`
 - Mind transcripts (MI prompt-pack calls): `~/.mind-incarnation/projects/<id>/transcripts/mind/*.jsonl`
 - EvidenceLog (append-only; includes `snapshot` + `cross_project_recall` kinds): `~/.mind-incarnation/projects/<id>/evidence.jsonl`
-- Memory text index (materialized view; rebuildable): `~/.mind-incarnation/indexes/memory.sqlite`
+- Memory text index (materialized view; rebuildable; default backend=`sqlite_fts`): `~/.mind-incarnation/indexes/memory.sqlite`
 
 Memory index maintenance:
 
@@ -237,6 +237,8 @@ Memory index maintenance:
 mi memory index status
 mi memory index rebuild
 ```
+
+Advanced: override memory backend via `$MI_MEMORY_BACKEND` (default `sqlite_fts`; `in_memory` is ephemeral).
 
 ## Non-Goals (V1)
 

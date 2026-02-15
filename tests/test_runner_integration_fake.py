@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mi.codex_runner import CodexRunResult
-from mi.memory import MemoryIndex, MemoryItem
+from mi.memory_service import MemoryService
+from mi.memory_types import MemoryItem
 from mi.mind_errors import MindCallError
 from mi.mindspec import MindSpecStore
 from mi.paths import ProjectPaths
@@ -94,8 +95,8 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             base["cross_project_recall"]["triggers"]["run_start"] = True
             store.write_base(base)
 
-            index = MemoryIndex(Path(home))
-            index.upsert_items(
+            mem = MemoryService(Path(home))
+            mem.upsert_items(
                 [
                     MemoryItem(
                         item_id=f"snapshot:project:{cur_pid}:s1",
@@ -182,8 +183,8 @@ class TestRunnerIntegrationFake(unittest.TestCase):
     def test_cross_project_recall_run_start_writes_evidence_event(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             # Seed the cross-project memory index with an item that should match the run_start query (task text).
-            index = MemoryIndex(Path(home))
-            index.upsert_items(
+            mem = MemoryService(Path(home))
+            mem.upsert_items(
                 [
                     MemoryItem(
                         item_id="snapshot:project:other:1",
@@ -269,8 +270,8 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             store.write_base(base)
 
             # Seed a snapshot that should match the risk_signal query ("push: git push origin main").
-            index = MemoryIndex(Path(home))
-            index.upsert_items(
+            mem = MemoryService(Path(home))
+            mem.upsert_items(
                 [
                     MemoryItem(
                         item_id="snapshot:project:other:push1",
@@ -357,15 +358,15 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                     break
             self.assertTrue(found)
 
-    def test_before_ask_user_recall_retries_auto_answer_and_avoids_user_prompt(self) -> None:
-        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            # Seed a memory item that should match the "API key" question, so the retry can "answer".
-            index = MemoryIndex(Path(home))
-            index.upsert_items(
-                [
-                    MemoryItem(
-                        item_id="snapshot:project:other:apikey1",
-                        kind="snapshot",
+        def test_before_ask_user_recall_retries_auto_answer_and_avoids_user_prompt(self) -> None:
+            with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+                # Seed a memory item that should match the "API key" question, so the retry can "answer".
+                mem = MemoryService(Path(home))
+                mem.upsert_items(
+                    [
+                        MemoryItem(
+                            item_id="snapshot:project:other:apikey1",
+                            kind="snapshot",
                         scope="project",
                         project_id="other",
                         ts="2020-01-01T00:00:00Z",

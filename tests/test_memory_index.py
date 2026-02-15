@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.memory import MemoryIndex, ingest_learned_and_workflows, rebuild_memory_index
+from mi.memory_service import MemoryService
 from mi.mindspec import MindSpecStore
 from mi.paths import GlobalPaths, ProjectPaths
 from mi.storage import append_jsonl, now_rfc3339
@@ -18,16 +18,16 @@ class TestMemoryIndex(unittest.TestCase):
             store = MindSpecStore(home_dir=str(home))
 
             learned_id = store.append_learned(project_root=project_root, scope="global", text="PREFER_X", rationale="r")
-            index = MemoryIndex(home)
-            ingest_learned_and_workflows(home_dir=home, index=index)
+            mem = MemoryService(home)
+            mem.ingest_structured()
 
-            hits = index.search(query="PREFER_X", top_k=10, kinds={"learned"}, include_global=True, exclude_project_id="")
+            hits = mem.search(query="PREFER_X", top_k=10, kinds={"learned"}, include_global=True, exclude_project_id="")
             self.assertTrue(any(h.kind == "learned" for h in hits))
 
             store.disable_learned(project_root=project_root, scope="global", target_id=learned_id, rationale="nope")
-            ingest_learned_and_workflows(home_dir=home, index=index)
+            mem.ingest_structured()
 
-            hits2 = index.search(query="PREFER_X", top_k=10, kinds={"learned"}, include_global=True, exclude_project_id="")
+            hits2 = mem.search(query="PREFER_X", top_k=10, kinds={"learned"}, include_global=True, exclude_project_id="")
             self.assertEqual(hits2, [])
 
     def test_ingest_prunes_disabled_global_workflow(self) -> None:
@@ -39,14 +39,14 @@ class TestMemoryIndex(unittest.TestCase):
             wf_id = "wf_test"
             gw.write({"id": wf_id, "name": "Global Foo Workflow", "enabled": True})
 
-            index = MemoryIndex(home)
-            ingest_learned_and_workflows(home_dir=home, index=index)
-            hits = index.search(query="Global Foo", top_k=10, kinds={"workflow"}, include_global=True, exclude_project_id="")
+            mem = MemoryService(home)
+            mem.ingest_structured()
+            hits = mem.search(query="Global Foo", top_k=10, kinds={"workflow"}, include_global=True, exclude_project_id="")
             self.assertTrue(any(h.kind == "workflow" and h.item_id.endswith(":" + wf_id) for h in hits))
 
             gw.write({"id": wf_id, "name": "Global Foo Workflow", "enabled": False})
-            ingest_learned_and_workflows(home_dir=home, index=index)
-            hits2 = index.search(query="Global Foo", top_k=10, kinds={"workflow"}, include_global=True, exclude_project_id="")
+            mem.ingest_structured()
+            hits2 = mem.search(query="Global Foo", top_k=10, kinds={"workflow"}, include_global=True, exclude_project_id="")
             self.assertEqual(hits2, [])
 
     def test_rebuild_indexes_snapshots(self) -> None:
@@ -74,11 +74,11 @@ class TestMemoryIndex(unittest.TestCase):
             }
             append_jsonl(pp.evidence_log_path, snap_ev)
 
-            res = rebuild_memory_index(home_dir=home, include_snapshots=True)
+            mem = MemoryService(home)
+            res = mem.rebuild(include_snapshots=True)
             self.assertTrue(bool(res.get("rebuilt", False)))
 
-            index = MemoryIndex(home)
-            hits = index.search(query="hello world", top_k=5, kinds={"snapshot"}, include_global=True, exclude_project_id="")
+            hits = mem.search(query="hello world", top_k=5, kinds={"snapshot"}, include_global=True, exclude_project_id="")
             self.assertTrue(any(h.kind == "snapshot" and h.project_id == pp.project_id for h in hits))
 
 

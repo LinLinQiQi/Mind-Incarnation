@@ -962,6 +962,7 @@ Notes:
 
 - Rebuild deletes and recreates `<home>/indexes/memory.sqlite` from MI stores and EvidenceLog `snapshot` records (safe; derived).
 - Recall is text-only in V1: it searches indexed `snapshot` / `learned` / `workflow` items. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
+- Memory backend is pluggable (internal): default is `sqlite_fts` (persisted at `<home>/indexes/memory.sqlite`). You can override via `$MI_MEMORY_BACKEND` (e.g., `in_memory` for ephemeral/test runs). `mi memory index status` prints the active backend.
 
 Show raw transcript (defaults to latest Hands transcript; Mind transcripts optional):
 

@@ -229,7 +229,7 @@ mi host sync --cd /path/to/your/project
 - Hands 原始 transcript：`~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`
 - Mind transcripts（MI prompt-pack 调用）：`~/.mind-incarnation/projects/<id>/transcripts/mind/*.jsonl`
 - EvidenceLog（追加写入；包含 `snapshot` + `cross_project_recall` 等记录）：`~/.mind-incarnation/projects/<id>/evidence.jsonl`
-- 记忆文本索引（materialized view；可重建）：`~/.mind-incarnation/indexes/memory.sqlite`
+- 记忆文本索引（materialized view；可重建；默认 backend=`sqlite_fts`）：`~/.mind-incarnation/indexes/memory.sqlite`
 
 记忆索引维护：
 
@@ -237,6 +237,8 @@ mi host sync --cd /path/to/your/project
 mi memory index status
 mi memory index rebuild
 ```
+
+进阶：可通过 `$MI_MEMORY_BACKEND` 覆盖记忆 backend（默认 `sqlite_fts`；`in_memory` 为临时/不落盘）。
 
 ## V1 的非目标
 

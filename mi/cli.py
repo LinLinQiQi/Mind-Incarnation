@@ -758,11 +758,19 @@ def main(argv: list[str] | None = None) -> int:
                 if args.json:
                     print(json.dumps(st, indent=2, sort_keys=True))
                     return 0
-                if not bool(st.get("exists", False)):
-                    print(f"memory index: (missing) {st.get('db_path')}")
+                backend = str(st.get("backend") or "?").strip() or "?"
+                exists = bool(st.get("exists", True))
+                if not exists:
+                    db_path = str(st.get("db_path") or "").strip()
+                    extra = f" {db_path}" if db_path else ""
+                    print(f"memory backend: {backend} (missing){extra}")
                     return 0
-                print(f"memory index: {st.get('db_path')}")
-                print(f"fts_version: {st.get('fts_version')}")
+
+                print(f"memory backend: {backend}")
+                if str(st.get("db_path") or "").strip():
+                    print(f"db_path: {st.get('db_path')}")
+                if str(st.get("fts_version") or "").strip():
+                    print(f"fts_version: {st.get('fts_version')}")
                 print(f"total_items: {st.get('total_items')}")
                 groups = st.get("groups") if isinstance(st.get("groups"), list) else []
                 if groups:
@@ -786,8 +794,12 @@ def main(argv: list[str] | None = None) -> int:
                     print(json.dumps(res, indent=2, sort_keys=True))
                     return 0
                 print(f"rebuilt: {bool(res.get('rebuilt', False))}")
-                print(f"db_path: {res.get('db_path')}")
-                print(f"fts_version: {res.get('fts_version')}")
+                backend = str(res.get("backend") or "?").strip() or "?"
+                print(f"backend: {backend}")
+                if str(res.get("db_path") or "").strip():
+                    print(f"db_path: {res.get('db_path')}")
+                if str(res.get("fts_version") or "").strip():
+                    print(f"fts_version: {res.get('fts_version')}")
                 print(f"total_items: {res.get('total_items')}")
                 if "indexed_snapshots" in res:
                     print(f"indexed_snapshots: {res.get('indexed_snapshots')}")

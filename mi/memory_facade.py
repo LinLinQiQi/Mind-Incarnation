@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .memory import MemoryIndex, ingest_learned_and_workflows, build_snapshot_item, render_recall_context, MemoryItem
+from .memory import build_snapshot_item, render_recall_context, MemoryItem
 from .storage import now_rfc3339
 from .paths import ProjectPaths
+from .memory_service import MemoryService
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -23,6 +24,7 @@ class CrossProjectRecallConfig:
     max_chars: int
     include_kinds: set[str]
     exclude_current_project: bool
+    prefer_current_project: bool
     triggers: dict[str, bool]
 
     @classmethod
@@ -55,6 +57,7 @@ class CrossProjectRecallConfig:
             include_kinds = {"snapshot", "learned", "workflow"}
 
         exclude_current_project = bool(cfg.get("exclude_current_project", True))
+        prefer_current_project = bool(cfg.get("prefer_current_project", True))
 
         return cls(
             enabled=enabled,
@@ -62,6 +65,7 @@ class CrossProjectRecallConfig:
             max_chars=max_chars,
             include_kinds=include_kinds,
             exclude_current_project=exclude_current_project,
+            prefer_current_project=prefer_current_project,
             triggers=tri,
         )
 
@@ -98,7 +102,7 @@ class MemoryFacade:
         self._home_dir = Path(home_dir).expanduser().resolve()
         self._project_paths = project_paths
         self._recall_cfg = CrossProjectRecallConfig.from_mindspec_base(mindspec_base if isinstance(mindspec_base, dict) else {})
-        self._index = MemoryIndex(self._home_dir)
+        self._mem = MemoryService(self._home_dir)
         self._last_recall_key = ""
 
     def maybe_cross_project_recall(self, *, batch_id: str, reason: str, query: str, thread_id: str) -> RecallOutcome | None:
@@ -116,18 +120,36 @@ class MemoryFacade:
         self._last_recall_key = key
 
         # Ingest small structured stores (workflows/learned) before querying.
-        ingest_learned_and_workflows(home_dir=self._home_dir, index=self._index)
+        self._mem.ingest_structured()
 
         exclude_pid = self._project_paths.project_id if self._recall_cfg.exclude_current_project else ""
-        items = self._index.search(
+        # Fetch more candidates and re-rank to prefer current project/global items.
+        candidate_k = min(50, max(self._recall_cfg.top_k, self._recall_cfg.top_k * 5))
+        items = self._mem.search(
             query=q,
-            top_k=self._recall_cfg.top_k,
+            top_k=candidate_k,
             kinds=set(self._recall_cfg.include_kinds),
             include_global=True,
             exclude_project_id=exclude_pid,
         )
         if not items:
             return None
+
+        # Prefer current project (when allowed) -> global -> other projects.
+        cur_pid = str(self._project_paths.project_id or "").strip()
+        if self._recall_cfg.prefer_current_project and cur_pid and not exclude_pid:
+            def tier(it: MemoryItem) -> int:
+                if it.scope == "project" and it.project_id == cur_pid:
+                    return 0
+                if it.scope == "global":
+                    return 1
+                return 2
+        else:
+            def tier(it: MemoryItem) -> int:
+                return 0 if it.scope == "global" else 1
+
+        items2 = sorted(items, key=tier)  # stable sort preserves within-tier rank
+        items = items2[: self._recall_cfg.top_k]
 
         rendered_items, context_text = render_recall_context(items=items, max_chars=self._recall_cfg.max_chars)
         ev = {
@@ -140,6 +162,7 @@ class MemoryFacade:
             "top_k": self._recall_cfg.top_k,
             "include_kinds": sorted(self._recall_cfg.include_kinds),
             "exclude_current_project": bool(self._recall_cfg.exclude_current_project),
+            "prefer_current_project": bool(self._recall_cfg.prefer_current_project),
             "items": rendered_items,
             "context_text": context_text,
         }
@@ -182,7 +205,7 @@ class MemoryFacade:
                 checkpoint_notes=str(checkpoint_notes or ""),
                 segment_records=segment_records,
             )
-            self._index.upsert_items([snap_item])
+            self._mem.upsert_items([snap_item])
         except Exception:
             return None
 
@@ -195,4 +218,3 @@ class MemoryFacade:
             "text": _truncate(str(snap_ev.get("text") or ""), 600),
         }
         return SnapshotOutcome(evidence_event=snap_ev, window_entry=win, indexed_item=snap_item)
-

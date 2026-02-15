@@ -82,7 +82,10 @@ def _default_base(values_text: str) -> dict[str, Any]:
             "top_k": 3,
             "max_chars": 1800,
             "include_kinds": ["snapshot", "learned", "workflow"],
-            "exclude_current_project": True,
+            # Prefer recalling within the current project first (then global, then other projects).
+            # Set to true if you want "pure" cross-project-only recall.
+            "exclude_current_project": False,
+            "prefer_current_project": True,
             "triggers": {
                 "run_start": True,
                 "before_ask_user": True,

@@ -10,6 +10,7 @@ from mi.codex_runner import CodexRunResult
 from mi.memory import MemoryIndex, MemoryItem
 from mi.mind_errors import MindCallError
 from mi.mindspec import MindSpecStore
+from mi.paths import ProjectPaths
 from mi.runner import run_autopilot
 
 
@@ -76,6 +77,108 @@ def _mk_result(*, thread_id: str, last_message: str, command: str = "") -> Codex
 
 
 class TestRunnerIntegrationFake(unittest.TestCase):
+    def test_recall_prefers_current_project_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            cur_pid = pp.project_id
+
+            # Force a single-item recall so ordering is observable.
+            store = MindSpecStore(home_dir=home)
+            base = store.load_base()
+            base.setdefault("cross_project_recall", {})
+            base["cross_project_recall"]["enabled"] = True
+            base["cross_project_recall"]["top_k"] = 1
+            base["cross_project_recall"]["exclude_current_project"] = False
+            base["cross_project_recall"]["prefer_current_project"] = True
+            base["cross_project_recall"].setdefault("triggers", {})
+            base["cross_project_recall"]["triggers"]["run_start"] = True
+            store.write_base(base)
+
+            index = MemoryIndex(Path(home))
+            index.upsert_items(
+                [
+                    MemoryItem(
+                        item_id=f"snapshot:project:{cur_pid}:s1",
+                        kind="snapshot",
+                        scope="project",
+                        project_id=cur_pid,
+                        ts="2020-01-01T00:00:00Z",
+                        title="alpha",
+                        body="alpha",
+                        tags=["snapshot"],
+                        source_refs=[],
+                    ),
+                    MemoryItem(
+                        item_id="snapshot:project:other:s2",
+                        kind="snapshot",
+                        scope="project",
+                        project_id="other",
+                        ts="2020-01-01T00:00:00Z",
+                        title="alpha",
+                        body="alpha",
+                        tags=["snapshot"],
+                        source_refs=[],
+                    ),
+                ]
+            )
+
+            fake_hands = _FakeHands([_mk_result(thread_id="t_pref_order", last_message="All done.", command="ls")])
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": [], "actions": [], "results": ["done"], "unknowns": [], "risk_signals": []},
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="alpha",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+            self.assertEqual(result.status, "done")
+
+            found = False
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if not isinstance(obj, dict):
+                        continue
+                    if obj.get("kind") != "cross_project_recall" or obj.get("reason") != "run_start":
+                        continue
+                    items = obj.get("items") if isinstance(obj.get("items"), list) else []
+                    self.assertEqual(len(items), 1)
+                    self.assertEqual(str(items[0].get("project_id") or ""), cur_pid)
+                    found = True
+                    break
+            self.assertTrue(found)
+
     def test_cross_project_recall_run_start_writes_evidence_event(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             # Seed the cross-project memory index with an item that should match the run_start query (task text).

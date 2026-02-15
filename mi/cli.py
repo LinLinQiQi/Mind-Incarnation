@@ -37,7 +37,7 @@ from .workflows import (
     apply_global_overrides,
 )
 from .hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
-from .memory import MemoryIndex, rebuild_memory_index
+from .memory_service import MemoryService
 from .evidence import EvidenceWriter, new_run_id
 
 
@@ -752,9 +752,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "memory":
         if args.mem_cmd == "index":
-            index = MemoryIndex(store.home_dir)
+            mem = MemoryService(store.home_dir)
             if args.mi_cmd == "status":
-                st = index.status()
+                st = mem.status()
                 if args.json:
                     print(json.dumps(st, indent=2, sort_keys=True))
                     return 0
@@ -781,7 +781,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.mi_cmd == "rebuild":
-                res = rebuild_memory_index(home_dir=store.home_dir, include_snapshots=not bool(args.no_snapshots))
+                res = mem.rebuild(include_snapshots=not bool(args.no_snapshots))
                 if args.json:
                     print(json.dumps(res, indent=2, sort_keys=True))
                     return 0

@@ -305,7 +305,8 @@ Minimal shape:
     "top_k": 3,
     "max_chars": 1800,
     "include_kinds": ["snapshot", "learned", "workflow"],
-    "exclude_current_project": true,
+    "exclude_current_project": false,
+    "prefer_current_project": true,
     "triggers": {
       "run_start": true,
       "before_ask_user": true,
@@ -960,6 +961,7 @@ mi --home ~/.mind-incarnation memory index rebuild --no-snapshots
 Notes:
 
 - Rebuild deletes and recreates `<home>/indexes/memory.sqlite` from MI stores and EvidenceLog `snapshot` records (safe; derived).
+- Recall is text-only in V1: it searches indexed `snapshot` / `learned` / `workflow` items. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
 
 Show raw transcript (defaults to latest Hands transcript; Mind transcripts optional):
 

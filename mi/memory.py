@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import secrets
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -587,6 +589,8 @@ def build_snapshot_item(
 
     batch_ids: list[str] = []
     seen_batch: set[str] = set()
+    event_ids: list[str] = []
+    seen_event: set[str] = set()
     for rec in segment_records or []:
         if not isinstance(rec, dict):
             continue
@@ -594,6 +598,10 @@ def build_snapshot_item(
         if bid and bid not in seen_batch:
             seen_batch.add(bid)
             batch_ids.append(bid)
+        eid = str(rec.get("event_id") or "").strip()
+        if eid and eid not in seen_event:
+            seen_event.add(eid)
+            event_ids.append(eid)
 
         k = str(rec.get("kind") or "").strip()
         if k == "evidence":
@@ -669,9 +677,12 @@ def build_snapshot_item(
     if not body:
         body = "- (no salient events captured)"
 
+    snapshot_id = f"snap_{time.time_ns()}_{secrets.token_hex(4)}"
+
     snap_event: dict[str, Any] = {
         "kind": "snapshot",
         "ts": now_rfc3339(),
+        "snapshot_id": snapshot_id,
         "thread_id": thread_id,
         "project_id": project_id,
         "segment_id": segment_id,
@@ -686,12 +697,13 @@ def build_snapshot_item(
                 "kind": "segment_records",
                 "segment_id": segment_id,
                 "batch_ids": batch_ids[:40],
+                "event_ids": event_ids[:80],
             }
         ],
     }
 
     item = MemoryItem(
-        item_id=f"snapshot:project:{project_id}:{segment_id}:{batch_id}",
+        item_id=f"snapshot:project:{project_id}:{snapshot_id}",
         kind="snapshot",
         scope="project",
         project_id=project_id,
@@ -712,6 +724,7 @@ def snapshot_item_from_event(ev: dict[str, Any]) -> MemoryItem | None:
     project_id = str(ev.get("project_id") or "").strip()
     if not project_id:
         return None
+    snapshot_id = str(ev.get("snapshot_id") or "").strip()
     segment_id = str(ev.get("segment_id") or "").strip() or "unknown_segment"
     batch_id = str(ev.get("batch_id") or "").strip() or "unknown_batch"
     ts = str(ev.get("ts") or "").strip() or now_rfc3339()
@@ -721,8 +734,9 @@ def snapshot_item_from_event(ev: dict[str, Any]) -> MemoryItem | None:
     refs = ev.get("source_refs") if isinstance(ev.get("source_refs"), list) else []
     title = _truncate(task_hint or text or "snapshot", 140)
     body = _truncate(text or "(empty snapshot)", 8000)
+    item_id = f"snapshot:project:{project_id}:{snapshot_id}" if snapshot_id else f"snapshot:project:{project_id}:{segment_id}:{batch_id}"
     return MemoryItem(
-        item_id=f"snapshot:project:{project_id}:{segment_id}:{batch_id}",
+        item_id=item_id,
         kind="snapshot",
         scope="project",
         project_id=project_id,

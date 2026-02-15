@@ -445,7 +445,7 @@ Minimal shape:
 - `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
 - `workflow_progress` (best-effort workflow cursor update from `workflow_progress`; helps MI infer completed/next steps without forcing step-by-step reporting)
 - `checkpoint` (segment boundary judgement from `checkpoint_decide`; may trigger workflow/preference mining and segment reset)
-- `snapshot` (a compact segment snapshot written at checkpoint boundaries; used for cross-project recall; traceable to the segment via `source_refs`)
+- `snapshot` (a compact segment snapshot written at checkpoint boundaries; used for cross-project recall; includes `snapshot_id`; traceable via `source_refs` which may include `event_ids`)
 - `cross_project_recall` (on-demand recall results for this run; includes a compact list of recalled items + traceable `source_refs`)
 - `workflow_trigger` (an enabled workflow matched the user task and was injected into the first batch input)
 - `workflow_suggestion` (output from `suggest_workflow` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
@@ -459,8 +459,17 @@ Minimal shape:
 
 Note: EvidenceLog is append-only and may include additional record kinds in newer versions.
 
+Stable identifiers (V1+):
+
+- `run_id`: unique per `mi run` invocation (or per CLI write session)
+- `seq`: monotonically increasing within the `run_id`
+- `event_id`: derived from `run_id` + `seq` (used for traceability; older logs may not include it)
+
 ```json
 {
+  "event_id": "ev_<run_id>_<seq>",
+  "run_id": "run_<...> | cli_<...>",
+  "seq": 1,
   "batch_id": "string",
   "ts": "RFC3339 timestamp",
   "thread_id": "string",

@@ -30,6 +30,7 @@ from .storage import append_jsonl, iter_jsonl, now_rfc3339
 from .workflows import WorkflowStore, GlobalWorkflowStore, WorkflowRegistry, new_workflow_id, render_workflow_markdown
 from .hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
 from .memory import MemoryIndex, rebuild_memory_index
+from .evidence import EvidenceWriter, new_run_id
 
 
 def _read_stdin_text() -> str:
@@ -1348,8 +1349,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
 
-            append_jsonl(
-                pp.evidence_log_path,
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            evw.append(
                 {
                     "kind": "learn_applied",
                     "ts": now_rfc3339(),
@@ -1357,7 +1358,7 @@ def main(argv: list[str] | None = None) -> int:
                     "batch_id": str(suggestion.get("batch_id") or ""),
                     "thread_id": str(suggestion.get("thread_id") or ""),
                     "applied_entry_ids": applied_entry_ids,
-                },
+                }
             )
             print(f"Applied suggestion {sug_id}: {len(applied_entry_ids)} learned entries")
             for entry_id in applied_entry_ids:

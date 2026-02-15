@@ -36,6 +36,7 @@ from .workflows import (
 from .preferences import load_preference_candidates, write_preference_candidates, preference_signature
 from .hosts import sync_hosts_from_overlay
 from .memory_facade import MemoryFacade
+from .evidence import EvidenceWriter, new_run_id
 
 
 _DEFAULT = object()
@@ -459,6 +460,7 @@ def run_autopilot(
     wf_global_store = GlobalWorkflowStore(GlobalPaths(home_dir=home))
     wf_registry = WorkflowRegistry(project_store=wf_store, global_store=wf_global_store)
     mem = MemoryFacade(home_dir=home, project_paths=project_paths, mindspec_base=loaded.base)
+    evw = EvidenceWriter(path=project_paths.evidence_log_path, run_id=new_run_id("run"))
 
     if llm is None:
         llm = MiLlm(project_root=project_path, transcripts_dir=project_paths.transcripts_dir)
@@ -572,8 +574,7 @@ def run_autopilot(
             ]
         ).strip()
         next_input = injected
-        append_jsonl(
-            project_paths.evidence_log_path,
+        wf_trig = evw.append(
             {
                 "kind": "workflow_trigger",
                 "batch_id": "b0.workflow_trigger",
@@ -583,11 +584,13 @@ def run_autopilot(
                 "workflow_name": name,
                 "trigger_mode": str(trig.get("mode") or ""),
                 "trigger_pattern": pat,
-            },
+            }
         )
         evidence_window.append(
             {
                 "kind": "workflow_trigger",
+                "batch_id": "b0.workflow_trigger",
+                "event_id": wf_trig.get("event_id"),
                 "workflow_id": wid,
                 "workflow_name": name,
                 "trigger_mode": str(trig.get("mode") or ""),
@@ -708,11 +711,10 @@ def run_autopilot(
         batch_id: str,
         phase: str,
         mind_transcript_ref: str,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         if not isinstance(decision_obj, dict):
-            return
-        append_jsonl(
-            project_paths.evidence_log_path,
+            return None
+        return evw.append(
             {
                 "kind": "decide_next",
                 "batch_id": batch_id,
@@ -727,7 +729,7 @@ def run_autopilot(
                 "next_codex_input": str(decision_obj.get("next_codex_input") or ""),
                 "mind_transcript_ref": str(mind_transcript_ref or ""),
                 "decision": decision_obj,
-            },
+            }
         )
 
     def _handle_learned_changes(
@@ -784,8 +786,7 @@ def run_autopilot(
                     r = f"{base_r} (source={source} suggestion={suggestion_id})"
                     applied_entry_ids.append(store.append_learned(project_root=project_path, scope=scope, text=text, rationale=r))
 
-        append_jsonl(
-            project_paths.evidence_log_path,
+        evw.append(
             {
                 "kind": "learn_suggested",
                 "id": suggestion_id,
@@ -797,7 +798,7 @@ def run_autopilot(
                 "mind_transcript_ref": str(mind_transcript_ref or ""),
                 "learned_changes": norm,
                 "applied_entry_ids": applied_entry_ids,
-            },
+            }
         )
 
         return applied_entry_ids
@@ -810,8 +811,7 @@ def run_autopilot(
         error: str,
         mind_transcript_ref: str,
     ) -> None:
-        append_jsonl(
-            project_paths.evidence_log_path,
+        evw.append(
             {
                 "kind": "mind_error",
                 "batch_id": batch_id,
@@ -821,7 +821,7 @@ def run_autopilot(
                 "tag": str(tag),
                 "mind_transcript_ref": str(mind_transcript_ref or ""),
                 "error": _truncate(str(error or ""), 2000),
-            },
+            }
         )
 
     def _log_mind_circuit_open(
@@ -831,8 +831,7 @@ def run_autopilot(
         tag: str,
         error: str,
     ) -> None:
-        append_jsonl(
-            project_paths.evidence_log_path,
+        evw.append(
             {
                 "kind": "mind_circuit",
                 "batch_id": batch_id,
@@ -845,7 +844,7 @@ def run_autopilot(
                 "schema_filename": str(schema_filename),
                 "tag": str(tag),
                 "error": _truncate(str(error or ""), 2000),
-            },
+            }
         )
 
     def _mind_call(
@@ -936,6 +935,12 @@ def run_autopilot(
         bid = obj.get("batch_id")
         if isinstance(bid, str) and bid.strip():
             seg["batch_id"] = bid.strip()
+        eid = obj.get("event_id")
+        if isinstance(eid, str) and eid.strip():
+            seg["event_id"] = eid.strip()
+        seq = obj.get("seq")
+        if isinstance(seq, int):
+            seg["seq"] = int(seq)
 
         # Common compact fields.
         for k in ("workflow_id", "workflow_name", "trigger_mode", "trigger_pattern"):
@@ -1044,10 +1049,13 @@ def run_autopilot(
         out = mem.maybe_cross_project_recall(batch_id=batch_id, reason=reason, query=query, thread_id=str(thread_id or ""))
         if not out:
             return
-        append_jsonl(project_paths.evidence_log_path, out.evidence_event)
-        evidence_window.append(out.window_entry)
+        rec = evw.append(out.evidence_event)
+        win = dict(out.window_entry)
+        if isinstance(rec.get("event_id"), str) and rec.get("event_id"):
+            win["event_id"] = rec["event_id"]
+        evidence_window.append(win)
         evidence_window[:] = evidence_window[-8:]
-        _segment_add(out.evidence_event)
+        _segment_add(rec)
         _persist_segment_state()
 
     # Seed one conservative recall at run start so later Mind calls can use it without bothering the user.
@@ -1087,8 +1095,7 @@ def run_autopilot(
             batch_id=f"{base_batch_id}.workflow_suggestion",
         )
 
-        append_jsonl(
-            project_paths.evidence_log_path,
+        evw.append(
             {
                 "kind": "workflow_suggestion",
                 "batch_id": f"{base_batch_id}.workflow_suggestion",
@@ -1098,7 +1105,7 @@ def run_autopilot(
                 "mind_transcript_ref": mind_ref,
                 "notes": mine_notes,
                 "output": out if isinstance(out, dict) else {},
-            },
+            }
         )
 
         if not isinstance(out, dict):
@@ -1187,8 +1194,7 @@ def run_autopilot(
         candidates["by_signature"] = by_sig
         write_workflow_candidates(project_paths, candidates)
 
-        append_jsonl(
-            project_paths.evidence_log_path,
+        evw.append(
             {
                 "kind": "workflow_solidified",
                 "batch_id": f"{base_batch_id}.workflow_solidified",
@@ -1202,15 +1208,14 @@ def run_autopilot(
                 "workflow_id": wid,
                 "workflow_name": str(wf_final.get("name") or ""),
                 "enabled": bool(wf_final.get("enabled", False)),
-            },
+            }
         )
 
         if auto_sync:
             effective = wf_registry.enabled_workflows_effective(overlay=overlay)
             effective = [{k: v for k, v in w.items() if k != "_mi_scope"} for w in effective if isinstance(w, dict)]
             sync_obj = sync_hosts_from_overlay(overlay=overlay, project_id=project_paths.project_id, workflows=effective)
-            append_jsonl(
-                project_paths.evidence_log_path,
+            evw.append(
                 {
                     "kind": "host_sync",
                     "batch_id": f"{base_batch_id}.host_sync",
@@ -1218,7 +1223,7 @@ def run_autopilot(
                     "thread_id": thread_id or "",
                     "source": "workflow_solidified",
                     "sync": sync_obj,
-                },
+                }
             )
 
     def _mine_preferences_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
@@ -1268,8 +1273,7 @@ def run_autopilot(
             batch_id=f"{base_batch_id}.preference_mining",
         )
 
-        append_jsonl(
-            project_paths.evidence_log_path,
+        evw.append(
             {
                 "kind": "preference_mining",
                 "batch_id": f"{base_batch_id}.preference_mining",
@@ -1279,7 +1283,7 @@ def run_autopilot(
                 "mind_transcript_ref": mind_ref,
                 "notes": mine_notes,
                 "output": out if isinstance(out, dict) else {},
-            },
+            }
         )
 
         if not isinstance(out, dict):
@@ -1364,8 +1368,7 @@ def run_autopilot(
                 loaded = store.load(project_path)
                 _refresh_overlay_refs()
 
-            append_jsonl(
-                project_paths.evidence_log_path,
+            evw.append(
                 {
                     "kind": "preference_solidified",
                     "batch_id": f"{base_batch_id}.preference_solidified",
@@ -1379,7 +1382,7 @@ def run_autopilot(
                     "scope": scope,
                     "text": text,
                     "applied_entry_ids": list(applied_ids),
-                },
+                }
             )
             by_sig[sig] = entry
 
@@ -1432,8 +1435,7 @@ def run_autopilot(
             batch_id=f"{base_bid}.checkpoint",
         )
 
-        append_jsonl(
-            project_paths.evidence_log_path,
+        evw.append(
             {
                 "kind": "checkpoint",
                 "batch_id": f"{base_bid}.checkpoint",
@@ -1446,7 +1448,7 @@ def run_autopilot(
                 "status_hint": str(status_hint or ""),
                 "note": (note or "").strip(),
                 "output": out if isinstance(out, dict) else {},
-            },
+            }
         )
 
         if not isinstance(out, dict):
@@ -1476,8 +1478,11 @@ def run_autopilot(
             checkpoint_notes=str(out.get("notes") or ""),
         )
         if snap:
-            append_jsonl(project_paths.evidence_log_path, snap.evidence_event)
-            evidence_window.append(snap.window_entry)
+            rec = evw.append(snap.evidence_event)
+            win = dict(snap.window_entry)
+            if isinstance(rec.get("event_id"), str) and rec.get("event_id"):
+                win["event_id"] = rec["event_id"]
+            evidence_window.append(win)
             evidence_window[:] = evidence_window[-8:]
 
         # Reset segment buffer for the next phase.
@@ -1502,8 +1507,7 @@ def run_autopilot(
 
         pattern = _loop_pattern(sent_sigs)
         if pattern:
-            append_jsonl(
-                project_paths.evidence_log_path,
+            evw.append(
                 {
                     "kind": "loop_guard",
                     "batch_id": batch_id,
@@ -1513,7 +1517,7 @@ def run_autopilot(
                     "codex_last_message": _truncate(codex_last_message, 800),
                     "next_input": _truncate(candidate, 800),
                     "reason": reason,
-                },
+                }
             )
             evidence_window.append({"kind": "loop_guard", "batch_id": batch_id, "pattern": pattern, "reason": reason})
             evidence_window[:] = evidence_window[-8:]
@@ -1526,8 +1530,7 @@ def run_autopilot(
                     + "). Provide a new instruction to send to Hands, or type 'stop' to end:"
                 )
                 override = _read_user_answer(q)
-                append_jsonl(
-                    project_paths.evidence_log_path,
+                ui = evw.append(
                     {
                         "kind": "user_input",
                         "batch_id": batch_id,
@@ -1535,11 +1538,19 @@ def run_autopilot(
                         "thread_id": thread_id,
                         "question": q,
                         "answer": override,
-                    },
+                    }
                 )
-                evidence_window.append({"kind": "user_input", "batch_id": batch_id, "question": q, "answer": override})
+                evidence_window.append(
+                    {
+                        "kind": "user_input",
+                        "batch_id": batch_id,
+                        "event_id": ui.get("event_id"),
+                        "question": q,
+                        "answer": override,
+                    }
+                )
                 evidence_window[:] = evidence_window[-8:]
-                _segment_add({"kind": "user_input", "batch_id": batch_id, "question": q, "answer": override})
+                _segment_add(ui)
                 _persist_segment_state()
 
                 ov = override.strip()
@@ -1609,8 +1620,7 @@ def run_autopilot(
 
             # If we resumed using a persisted thread id and it failed, fall back to a fresh exec.
             if attempted_overlay_resume and int(getattr(result, "exit_code", 0) or 0) != 0:
-                append_jsonl(
-                    project_paths.evidence_log_path,
+                evw.append(
                     {
                         "kind": "hands_resume_failed",
                         "batch_id": batch_id,
@@ -1620,7 +1630,7 @@ def run_autopilot(
                         "exit_code": getattr(result, "exit_code", None),
                         "notes": "resume failed; falling back to exec",
                         "transcript_path": str(hands_transcript),
-                    },
+                    }
                 )
                 hands_transcript = project_paths.transcripts_dir / "hands" / f"{batch_ts}_b{batch_idx}_exec_after_resume_fail.jsonl"
                 result = hands_exec(
@@ -1656,8 +1666,7 @@ def run_autopilot(
                 store.write_project_overlay(project_path, overlay)
 
         # Persist exactly what MI sent to Hands (transparency + later audit).
-        append_jsonl(
-            project_paths.evidence_log_path,
+        evw.append(
             {
                 "kind": "hands_input",
                 "batch_id": batch_id,
@@ -1667,7 +1676,7 @@ def run_autopilot(
                 "input": batch_input,
                 "light_injection": light,
                 "prompt_sha256": prompt_sha256,
-            },
+            }
         )
 
         repo_obs = _observe_repo(project_path)
@@ -1705,10 +1714,10 @@ def run_autopilot(
             "repo_observation": repo_obs,
             **evidence_obj,
         }
-        append_jsonl(project_paths.evidence_log_path, evidence_item)
-        evidence_window.append(evidence_item)
+        evidence_rec = evw.append(evidence_item)
+        evidence_window.append(evidence_rec)
         evidence_window = evidence_window[-8:]
-        _segment_add(evidence_item)
+        _segment_add(evidence_rec)
         _persist_segment_state()
 
         # Best-effort workflow progress: infer which workflow steps are completed and what the next step is.
@@ -1742,8 +1751,7 @@ def run_autopilot(
                 tag=f"wf_progress_b{batch_idx}",
                 batch_id=f"{batch_id}.workflow_progress",
             )
-            append_jsonl(
-                project_paths.evidence_log_path,
+            evw.append(
                 {
                     "kind": "workflow_progress",
                     "batch_id": f"{batch_id}.workflow_progress",
@@ -1754,7 +1762,7 @@ def run_autopilot(
                     "state": wf_prog_state,
                     "mind_transcript_ref": wf_prog_ref,
                     "output": wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
-                },
+                }
             )
 
             if isinstance(wf_prog_obj, dict) and bool(wf_prog_obj.get("should_update", False)):
@@ -1848,8 +1856,7 @@ def run_autopilot(
                     ],
                     "learned_changes": [],
                 }
-            append_jsonl(
-                project_paths.evidence_log_path,
+            risk_rec = evw.append(
                 {
                     "kind": "risk_event",
                     "batch_id": f"b{batch_idx}",
@@ -1858,14 +1865,15 @@ def run_autopilot(
                     "risk_signals": risk_signals,
                     "mind_transcript_ref": risk_mind_ref,
                     "risk": risk_obj,
-                },
+                }
             )
-            evidence_window.append({"kind": "risk_event", "batch_id": f"b{batch_idx}", **risk_obj})
+            evidence_window.append({"kind": "risk_event", "batch_id": f"b{batch_idx}", "event_id": risk_rec.get("event_id"), **risk_obj})
             evidence_window = evidence_window[-8:]
             _segment_add(
                 {
                     "kind": "risk_event",
                     "batch_id": f"b{batch_idx}",
+                    "event_id": risk_rec.get("event_id"),
                     "risk_signals": risk_signals,
                     "category": risk_obj.get("category"),
                     "severity": risk_obj.get("severity"),
@@ -1957,8 +1965,7 @@ def run_autopilot(
             checks_obj = _empty_check_plan()
             checks_obj["notes"] = "skipped: no uncertainty/risk/question detected"
             checks_mind_ref = ""
-        append_jsonl(
-            project_paths.evidence_log_path,
+        checks_rec = evw.append(
             {
                 "kind": "check_plan",
                 "batch_id": f"b{batch_idx}",
@@ -1966,11 +1973,18 @@ def run_autopilot(
                 "thread_id": thread_id,
                 "mind_transcript_ref": checks_mind_ref,
                 "checks": checks_obj,
-            },
+            }
         )
-        evidence_window.append({"kind": "check_plan", "batch_id": f"b{batch_idx}", **checks_obj})
+        evidence_window.append({"kind": "check_plan", "batch_id": f"b{batch_idx}", "event_id": checks_rec.get("event_id"), **checks_obj})
         evidence_window = evidence_window[-8:]
-        _segment_add({"kind": "check_plan", "batch_id": f"b{batch_idx}", **(checks_obj if isinstance(checks_obj, dict) else {})})
+        _segment_add(
+            {
+                "kind": "check_plan",
+                "batch_id": f"b{batch_idx}",
+                "event_id": checks_rec.get("event_id"),
+                **(checks_obj if isinstance(checks_obj, dict) else {}),
+            }
+        )
         _persist_segment_state()
 
         # Auto-answer Hands when it is asking the user questions; only ask the user if MI cannot answer.
@@ -2002,8 +2016,7 @@ def run_autopilot(
                     auto_answer_obj["notes"] = "mind_error: auto_answer_to_codex failed; see EvidenceLog kind=mind_error"
             else:
                 auto_answer_obj = aa_obj
-            append_jsonl(
-                project_paths.evidence_log_path,
+            aa_rec = evw.append(
                 {
                     "kind": "auto_answer",
                     "batch_id": f"b{batch_idx}",
@@ -2011,11 +2024,18 @@ def run_autopilot(
                     "thread_id": thread_id,
                     "mind_transcript_ref": auto_answer_mind_ref,
                     "auto_answer": auto_answer_obj,
-                },
+                }
             )
-            evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}", **auto_answer_obj})
+            evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}", "event_id": aa_rec.get("event_id"), **auto_answer_obj})
             evidence_window = evidence_window[-8:]
-            _segment_add({"kind": "auto_answer", "batch_id": f"b{batch_idx}", **(auto_answer_obj if isinstance(auto_answer_obj, dict) else {})})
+            _segment_add(
+                {
+                    "kind": "auto_answer",
+                    "batch_id": f"b{batch_idx}",
+                    "event_id": aa_rec.get("event_id"),
+                    **(auto_answer_obj if isinstance(auto_answer_obj, dict) else {}),
+                }
+            )
             _persist_segment_state()
 
         # Deterministic pre-action arbitration to minimize user burden:
@@ -2056,8 +2076,7 @@ def run_autopilot(
                     aa_retry["notes"] = "mind_error: auto_answer_to_codex retry failed; see EvidenceLog kind=mind_error"
             else:
                 aa_retry = aa_obj_r
-            append_jsonl(
-                project_paths.evidence_log_path,
+            aa2_rec = evw.append(
                 {
                     "kind": "auto_answer",
                     "batch_id": f"b{batch_idx}.after_recall",
@@ -2065,11 +2084,18 @@ def run_autopilot(
                     "thread_id": thread_id,
                     "mind_transcript_ref": aa_r_ref,
                     "auto_answer": aa_retry,
-                },
+                }
             )
-            evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}.after_recall", **aa_retry})
+            evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}.after_recall", "event_id": aa2_rec.get("event_id"), **aa_retry})
             evidence_window[:] = evidence_window[-8:]
-            _segment_add({"kind": "auto_answer", "batch_id": f"b{batch_idx}.after_recall", **(aa_retry if isinstance(aa_retry, dict) else {})})
+            _segment_add(
+                {
+                    "kind": "auto_answer",
+                    "batch_id": f"b{batch_idx}.after_recall",
+                    "event_id": aa2_rec.get("event_id"),
+                    **(aa_retry if isinstance(aa_retry, dict) else {}),
+                }
+            )
             _persist_segment_state()
 
             aa_text2 = ""
@@ -2100,8 +2126,7 @@ def run_autopilot(
                 status = "blocked"
                 notes = "user did not provide required input"
                 break
-            append_jsonl(
-                project_paths.evidence_log_path,
+            ui2 = evw.append(
                 {
                     "kind": "user_input",
                     "batch_id": f"b{batch_idx}",
@@ -2109,11 +2134,11 @@ def run_autopilot(
                     "thread_id": thread_id,
                     "question": q,
                     "answer": answer,
-                },
+                }
             )
-            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
+            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "event_id": ui2.get("event_id"), "question": q, "answer": answer})
             evidence_window = evidence_window[-8:]
-            _segment_add({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
+            _segment_add(ui2)
             _persist_segment_state()
 
             check_text = ""
@@ -2141,8 +2166,7 @@ def run_autopilot(
                 status = "blocked"
                 notes = "user did not provide required input"
                 break
-            append_jsonl(
-                project_paths.evidence_log_path,
+            ui3 = evw.append(
                 {
                     "kind": "user_input",
                     "batch_id": f"b{batch_idx}",
@@ -2150,11 +2174,11 @@ def run_autopilot(
                     "thread_id": thread_id,
                     "question": q,
                     "answer": answer,
-                },
+                }
             )
-            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
+            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "event_id": ui3.get("event_id"), "question": q, "answer": answer})
             evidence_window = evidence_window[-8:]
-            _segment_add({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
+            _segment_add(ui3)
             _persist_segment_state()
 
             loaded.project_overlay.setdefault("testless_verification_strategy", {})
@@ -2190,8 +2214,7 @@ def run_autopilot(
                 else:
                     checks_obj2["notes"] = "mind_error: plan_min_checks(after_testless) failed; see EvidenceLog kind=mind_error"
             checks_obj = checks_obj2
-            append_jsonl(
-                project_paths.evidence_log_path,
+            checks2_rec = evw.append(
                 {
                     "kind": "check_plan",
                     "batch_id": f"b{batch_idx}.after_testless",
@@ -2199,11 +2222,20 @@ def run_autopilot(
                     "thread_id": thread_id,
                     "mind_transcript_ref": checks_mind_ref2,
                     "checks": checks_obj,
-                },
+                }
             )
-            evidence_window.append({"kind": "check_plan", "batch_id": f"b{batch_idx}.after_testless", **checks_obj})
+            evidence_window.append(
+                {"kind": "check_plan", "batch_id": f"b{batch_idx}.after_testless", "event_id": checks2_rec.get("event_id"), **checks_obj}
+            )
             evidence_window = evidence_window[-8:]
-            _segment_add({"kind": "check_plan", "batch_id": f"b{batch_idx}.after_testless", **(checks_obj if isinstance(checks_obj, dict) else {})})
+            _segment_add(
+                {
+                    "kind": "check_plan",
+                    "batch_id": f"b{batch_idx}.after_testless",
+                    "event_id": checks2_rec.get("event_id"),
+                    **(checks_obj if isinstance(checks_obj, dict) else {}),
+                }
+            )
             _persist_segment_state()
 
         answer_text = ""
@@ -2258,8 +2290,7 @@ def run_autopilot(
                 else:
                     q = "MI Mind failed to decide next action. Provide next instruction to send to Hands, or type 'stop' to end:"
                 override = _read_user_answer(q)
-                append_jsonl(
-                    project_paths.evidence_log_path,
+                ui4 = evw.append(
                     {
                         "kind": "user_input",
                         "batch_id": f"b{batch_idx}",
@@ -2267,11 +2298,13 @@ def run_autopilot(
                         "thread_id": thread_id,
                         "question": q,
                         "answer": override,
-                    },
+                    }
                 )
-                evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": override})
+                evidence_window.append(
+                    {"kind": "user_input", "batch_id": f"b{batch_idx}", "event_id": ui4.get("event_id"), "question": q, "answer": override}
+                )
                 evidence_window = evidence_window[-8:]
-                _segment_add({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": override})
+                _segment_add(ui4)
                 _persist_segment_state()
 
                 ov = (override or "").strip()
@@ -2296,21 +2329,24 @@ def run_autopilot(
             )
             break
 
-        _log_decide_next(
+        decide_rec = _log_decide_next(
             decision_obj=decision_obj,
             batch_id=f"b{batch_idx}",
             phase="initial",
             mind_transcript_ref=decision_mind_ref,
         )
-        _segment_add(
-            {
-                "kind": "decide_next",
-                "batch_id": f"b{batch_idx}",
-                "next_action": decision_obj.get("next_action"),
-                "status": decision_obj.get("status"),
-                "notes": decision_obj.get("notes"),
-            }
-        )
+        if decide_rec:
+            _segment_add(decide_rec)
+        else:
+            _segment_add(
+                {
+                    "kind": "decide_next",
+                    "batch_id": f"b{batch_idx}",
+                    "next_action": decision_obj.get("next_action"),
+                    "status": decision_obj.get("status"),
+                    "notes": decision_obj.get("notes"),
+                }
+            )
         _persist_segment_state()
 
         # Apply project overlay updates (e.g., testless verification strategy).
@@ -2381,8 +2417,7 @@ def run_autopilot(
                 else:
                     aa_from_decide = aa_obj2
 
-                append_jsonl(
-                    project_paths.evidence_log_path,
+                aa3_rec = evw.append(
                     {
                         "kind": "auto_answer",
                         "batch_id": f"b{batch_idx}.from_decide",
@@ -2390,11 +2425,20 @@ def run_autopilot(
                         "thread_id": thread_id,
                         "mind_transcript_ref": aa2_mind_ref,
                         "auto_answer": aa_from_decide,
-                    },
+                    }
                 )
-                evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}.from_decide", **aa_from_decide})
+                evidence_window.append(
+                    {"kind": "auto_answer", "batch_id": f"b{batch_idx}.from_decide", "event_id": aa3_rec.get("event_id"), **aa_from_decide}
+                )
                 evidence_window = evidence_window[-8:]
-                _segment_add({"kind": "auto_answer", "batch_id": f"b{batch_idx}.from_decide", **(aa_from_decide if isinstance(aa_from_decide, dict) else {})})
+                _segment_add(
+                    {
+                        "kind": "auto_answer",
+                        "batch_id": f"b{batch_idx}.from_decide",
+                        "event_id": aa3_rec.get("event_id"),
+                        **(aa_from_decide if isinstance(aa_from_decide, dict) else {}),
+                    }
+                )
                 _persist_segment_state()
 
                 aa_text = ""
@@ -2453,8 +2497,7 @@ def run_autopilot(
                 else:
                     aa_retry2 = aa_obj3
 
-                append_jsonl(
-                    project_paths.evidence_log_path,
+                aa4_rec = evw.append(
                     {
                         "kind": "auto_answer",
                         "batch_id": f"b{batch_idx}.from_decide.after_recall",
@@ -2462,11 +2505,25 @@ def run_autopilot(
                         "thread_id": thread_id,
                         "mind_transcript_ref": aa3_ref,
                         "auto_answer": aa_retry2,
-                    },
+                    }
                 )
-                evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}.from_decide.after_recall", **aa_retry2})
+                evidence_window.append(
+                    {
+                        "kind": "auto_answer",
+                        "batch_id": f"b{batch_idx}.from_decide.after_recall",
+                        "event_id": aa4_rec.get("event_id"),
+                        **aa_retry2,
+                    }
+                )
                 evidence_window[:] = evidence_window[-8:]
-                _segment_add({"kind": "auto_answer", "batch_id": f"b{batch_idx}.from_decide.after_recall", **(aa_retry2 if isinstance(aa_retry2, dict) else {})})
+                _segment_add(
+                    {
+                        "kind": "auto_answer",
+                        "batch_id": f"b{batch_idx}.from_decide.after_recall",
+                        "event_id": aa4_rec.get("event_id"),
+                        **(aa_retry2 if isinstance(aa_retry2, dict) else {}),
+                    }
+                )
                 _persist_segment_state()
 
                 aa_text3 = ""
@@ -2496,8 +2553,7 @@ def run_autopilot(
                 status = "blocked"
                 notes = "user did not provide required input"
                 break
-            append_jsonl(
-                project_paths.evidence_log_path,
+            ui5 = evw.append(
                 {
                     "kind": "user_input",
                     "batch_id": f"b{batch_idx}",
@@ -2505,11 +2561,11 @@ def run_autopilot(
                     "thread_id": thread_id,
                     "question": q,
                     "answer": answer,
-                },
+                }
             )
-            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
+            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "event_id": ui5.get("event_id"), "question": q, "answer": answer})
             evidence_window = evidence_window[-8:]
-            _segment_add({"kind": "user_input", "batch_id": f"b{batch_idx}", "question": q, "answer": answer})
+            _segment_add(ui5)
             _persist_segment_state()
 
             # Re-decide with the user input included (no extra Hands run yet).
@@ -2554,12 +2610,15 @@ def run_autopilot(
                 continue
 
             decision_obj = decision_obj2
-            _log_decide_next(
+            decide_rec2 = _log_decide_next(
                 decision_obj=decision_obj,
                 batch_id=f"b{batch_idx}",
                 phase="after_user",
                 mind_transcript_ref=decision2_mind_ref,
             )
+            if decide_rec2:
+                _segment_add(decide_rec2)
+                _persist_segment_state()
 
             # Apply overlay + learned from the post-user decision.
             overlay_update = decision_obj.get("update_project_overlay") or {}

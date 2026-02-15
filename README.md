@@ -203,6 +203,14 @@ mi claim supersede <claim_id> --cd /path/to/your/project --text "..."
 mi claim same-as <dup_id> <canonical_id> --cd /path/to/your/project
 ```
 
+Root-cause tracing (WhyTrace):
+
+```bash
+mi why last --cd /path/to/your/project
+mi why event <event_id> --cd /path/to/your/project
+mi why claim <claim_id> --cd /path/to/your/project
+```
+
 ## Workflows + Host Adapters (Experimental)
 
 Workflows are reusable procedures that can be **project-scoped** or **global**. MI exports the project's **effective** enabled workflows (project + global with project precedence) into host workspaces (derived artifacts).

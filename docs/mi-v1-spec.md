@@ -246,6 +246,14 @@ MI uses the following internal prompts (all should return strict JSON):
    - Input: task + MindSpec/Overlay/Learned + recent evidence (typically the current segment) + run notes
    - Output: a small list of suggested reversible learned rules (scope=`project|global`) with confidence/benefit. MI uses occurrence counts to avoid noisy one-off learning.
 
+12) `mine_claims` (implemented; optional; Thought DB)
+   - Input: task + MindSpec/Overlay/Learned + recent evidence (typically the current segment) + run notes
+   - Output: a small list of atomic `Claim`s (fact/preference/assumption/goal) and optional edges. MI applies them into the append-only Thought DB (project/global) with provenance that cites **EvidenceLog `event_id` only** (high-threshold, best-effort).
+
+13) `why_trace` (implemented; on-demand; Thought DB)
+   - Input: a target (EvidenceLog `event_id` or a `claim_id`), an `as_of_ts`, and a bounded list of candidate claims (from recall/search).
+   - Output: a minimal support set of `claim_id`s + short explanation + confidence. MI may materialize `depends_on(event_id -> claim_id)` edges when the target is an EvidenceLog `event_id`.
+
 Planned (not required for V1 loop to function; can be added incrementally):
 
 - `closure_eval` (legacy/optional; not used in the default loop because `decide_next` includes closure)
@@ -458,6 +466,7 @@ Minimal shape:
 - `preference_mining` (output from `mine_preferences` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
 - `preference_solidified` (MI emitted a learned suggestion (and may auto-apply) when a mined preference reaches its occurrence threshold)
 - `claim_mining` (output from `mine_claims` at a checkpoint/segment boundary; includes applied Thought DB claim ids; best-effort, high-threshold)
+- `why_trace` (root-cause tracing output: minimal support set of claim ids + explanation; may materialize `depends_on(event_id -> claim_id)` edges; best-effort, on-demand)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
 - `hands_resume_failed` (best-effort: resume by stored thread/session id failed; MI fell back to a fresh exec)
@@ -1040,6 +1049,14 @@ mi --home ~/.mind-incarnation claim mine --cd <project_root>
 mi --home ~/.mind-incarnation claim retract <claim_id> --cd <project_root> --scope project
 mi --home ~/.mind-incarnation claim supersede <claim_id> --cd <project_root> --text "..."
 mi --home ~/.mind-incarnation claim same-as <dup_id> <canonical_id> --cd <project_root>
+```
+
+Root-cause tracing (WhyTrace):
+
+```bash
+mi --home ~/.mind-incarnation why last --cd <project_root>
+mi --home ~/.mind-incarnation why event <event_id> --cd <project_root>
+mi --home ~/.mind-incarnation why claim <claim_id> --cd <project_root>
 ```
 
 Manage workflows (project/global/effective):

@@ -203,6 +203,14 @@ mi claim supersede <claim_id> --cd /path/to/your/project --text "..."
 mi claim same-as <dup_id> <canonical_id> --cd /path/to/your/project
 ```
 
+根因追踪（WhyTrace）：
+
+```bash
+mi why last --cd /path/to/your/project
+mi why event <event_id> --cd /path/to/your/project
+mi why claim <claim_id> --cd /path/to/your/project
+```
+
 ## Workflows + Host Adapters（实验性）
 
 Workflow 是可复用流程，可以是**项目级（project-scoped）**或**全局（global）**。MI 会把项目的**有效（effective）**启用 workflow（project + global，且 project 优先）导出到宿主 workspace（派生物）。

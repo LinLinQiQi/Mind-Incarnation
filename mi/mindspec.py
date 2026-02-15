@@ -293,6 +293,7 @@ class MindSpecStore:
             },
         )
         ensure_key("host_bindings", [])
+        ensure_key("global_workflow_overrides", {})
         ensure_key(
             "hands_state",
             {
@@ -356,6 +357,11 @@ class MindSpecStore:
                 if k not in hs:
                     hs[k] = default_v
                     changed = True
+
+        gwo = overlay.get("global_workflow_overrides")
+        if not isinstance(gwo, dict):
+            overlay["global_workflow_overrides"] = {}
+            changed = True
 
         wr = overlay.get("workflow_run")
         if not isinstance(wr, dict):

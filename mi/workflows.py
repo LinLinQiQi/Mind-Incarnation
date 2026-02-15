@@ -68,6 +68,18 @@ def _normalize_workflow(obj: dict[str, Any]) -> dict[str, Any]:
     return w
 
 
+def normalize_workflow(obj: dict[str, Any]) -> dict[str, Any]:
+    """Public wrapper for workflow normalization (fills defaults; does not write)."""
+
+    return _normalize_workflow(obj if isinstance(obj, dict) else {})
+
+
+def apply_global_overrides(workflow: dict[str, Any], *, overlay: dict[str, Any]) -> dict[str, Any]:
+    """Public wrapper: apply per-project overrides to a global workflow (non-destructive)."""
+
+    return _apply_global_overrides(workflow, overlay=overlay if isinstance(overlay, dict) else {})
+
+
 @dataclass(frozen=True)
 class WorkflowStore:
     project_paths: ProjectPaths
@@ -234,7 +246,50 @@ def _apply_global_overrides(
     w2 = dict(workflow)
     if "enabled" in entry:
         w2["enabled"] = bool(entry.get("enabled"))
-    return w2
+
+    # Optional top-level patches (project-scoped) for global workflows.
+    name = entry.get("name")
+    if isinstance(name, str) and name.strip():
+        w2["name"] = name.strip()
+    mermaid = entry.get("mermaid")
+    if isinstance(mermaid, str):
+        w2["mermaid"] = mermaid
+    trig = entry.get("trigger")
+    if isinstance(trig, dict):
+        # Replace trigger as a unit (normalize will fill defaults).
+        w2["trigger"] = dict(trig)
+
+    # Steps patching:
+    # - If steps_replace is present, it replaces the entire steps list.
+    # - Else, step_patches may patch or disable individual steps by id.
+    steps_replace = entry.get("steps_replace")
+    if isinstance(steps_replace, list):
+        w2["steps"] = [x for x in steps_replace if isinstance(x, dict)]
+        return _normalize_workflow(w2)
+
+    step_patches = entry.get("step_patches") if isinstance(entry.get("step_patches"), dict) else {}
+    if isinstance(step_patches, dict) and step_patches:
+        steps = w2.get("steps") if isinstance(w2.get("steps"), list) else []
+        out_steps: list[dict[str, Any]] = []
+        for s in steps:
+            if not isinstance(s, dict):
+                continue
+            sid = str(s.get("id") or "").strip()
+            patch = step_patches.get(sid) if sid and isinstance(step_patches.get(sid), dict) else {}
+            if not isinstance(patch, dict) or not patch:
+                out_steps.append(s)
+                continue
+            if bool(patch.get("disabled", False)):
+                continue
+            s2 = dict(s)
+            # Allow patching a conservative subset of fields (keep id stable).
+            for k in ("kind", "title", "hands_input", "check_input", "risk_category", "policy", "notes"):
+                if k in patch:
+                    s2[k] = patch.get(k)
+            out_steps.append(s2)
+        w2["steps"] = out_steps
+
+    return _normalize_workflow(w2)
 
 
 @dataclass(frozen=True)

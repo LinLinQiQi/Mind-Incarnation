@@ -208,6 +208,8 @@ mi workflow edit <workflow_id> --cd /path/to/your/project --scope effective --re
 
 # 对某个 global workflow 做项目级覆盖（不修改 global 源文件）：
 mi workflow disable <workflow_id> --cd /path/to/your/project --scope global --project-override
+mi workflow edit <workflow_id> --cd /path/to/your/project --scope global --project-override --request "只修改某个小步骤：把 s2 改为先跑测试"
+mi workflow delete <workflow_id> --cd /path/to/your/project --scope global --project-override
 ```
 
 绑定并同步 OpenClaw workspace（Skills-only 目标）：

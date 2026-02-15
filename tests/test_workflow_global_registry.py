@@ -65,7 +65,28 @@ class TestWorkflowGlobalRegistry(unittest.TestCase):
                 "enabled": True,
                 "trigger": {"mode": "task_contains", "pattern": "deploy"},
                 "mermaid": "",
-                "steps": [],
+                "steps": [
+                    {
+                        "id": "s1",
+                        "kind": "hands",
+                        "title": "Step 1",
+                        "hands_input": "do thing 1",
+                        "check_input": "",
+                        "risk_category": "other",
+                        "policy": "values_judged",
+                        "notes": "",
+                    },
+                    {
+                        "id": "s2",
+                        "kind": "hands",
+                        "title": "Step 2",
+                        "hands_input": "do thing 2",
+                        "check_input": "",
+                        "risk_category": "other",
+                        "policy": "values_judged",
+                        "notes": "",
+                    },
+                ],
                 "source": {"kind": "manual", "reason": "", "evidence_refs": []},
                 "created_ts": "2026-01-01T00:00:00Z",
                 "updated_ts": "2026-01-01T00:00:00Z",
@@ -80,6 +101,51 @@ class TestWorkflowGlobalRegistry(unittest.TestCase):
             # Project overlay can disable the global workflow for this project.
             eff2 = reg.enabled_workflows_effective(overlay={"global_workflow_overrides": {"wf_shared": {"enabled": False}}})
             self.assertEqual(eff2, [])
+
+            # Project overlay can patch a global workflow step by id.
+            eff2b = reg.workflows_effective(
+                overlay={"global_workflow_overrides": {"wf_shared": {"step_patches": {"s2": {"title": "Step 2 (patched)"}}}}},
+                enabled_only=False,
+            )
+            self.assertEqual([w.get("id") for w in eff2b], ["wf_shared"])
+            steps = eff2b[0].get("steps") if isinstance(eff2b[0].get("steps"), list) else []
+            titles = [str(s.get("title") or "") for s in steps if isinstance(s, dict)]
+            self.assertIn("Step 2 (patched)", titles)
+
+            # Project overlay can disable a single global step.
+            eff2c = reg.workflows_effective(
+                overlay={"global_workflow_overrides": {"wf_shared": {"step_patches": {"s1": {"disabled": True}}}}},
+                enabled_only=False,
+            )
+            steps2 = eff2c[0].get("steps") if isinstance(eff2c[0].get("steps"), list) else []
+            ids2 = [str(s.get("id") or "") for s in steps2 if isinstance(s, dict)]
+            self.assertEqual(ids2, ["s2"])
+
+            # Or replace the entire steps list.
+            eff2d = reg.workflows_effective(
+                overlay={
+                    "global_workflow_overrides": {
+                        "wf_shared": {
+                            "steps_replace": [
+                                {
+                                    "id": "x1",
+                                    "kind": "hands",
+                                    "title": "X",
+                                    "hands_input": "do x",
+                                    "check_input": "",
+                                    "risk_category": "other",
+                                    "policy": "values_judged",
+                                    "notes": "",
+                                }
+                            ]
+                        }
+                    }
+                },
+                enabled_only=False,
+            )
+            steps3 = eff2d[0].get("steps") if isinstance(eff2d[0].get("steps"), list) else []
+            ids3 = [str(s.get("id") or "") for s in steps3 if isinstance(s, dict)]
+            self.assertEqual(ids3, ["x1"])
 
             # Project workflow shadows global even when disabled (project precedence).
             proj.write(dict(w_global, name="Project Shadow", enabled=False))
@@ -163,4 +229,3 @@ class TestWorkflowGlobalRegistry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

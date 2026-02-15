@@ -392,7 +392,10 @@ Storage + precedence (V1):
 - Project workflows: `<home>/projects/<project_id>/workflows/wf_*.json`
 - Global workflows: `<home>/workflows/global/wf_*.json`
 - Effective workflows for a project are a merge of (global + project), with **project always winning** when ids collide.
-- A project may override a global workflow's enabled flag via `ProjectOverlay.global_workflow_overrides[workflow_id].enabled`.
+- A project may override a global workflow via `ProjectOverlay.global_workflow_overrides[workflow_id]`:
+  - `enabled` (boolean): enable/disable the global workflow for this project
+  - `step_patches` (dict): patch/disable individual steps by `step_id` (e.g., change `hands_input` for one step)
+  - `steps_replace` (list): replace the entire `steps` list when structure/order changes are needed
 
 Minimal shape:
 
@@ -1007,6 +1010,8 @@ mi --home ~/.mind-incarnation workflow disable <workflow_id> --cd <project_root>
 
 # Per-project override for a global workflow (does not edit the global file):
 mi --home ~/.mind-incarnation workflow disable <workflow_id> --cd <project_root> --scope global --project-override
+mi --home ~/.mind-incarnation workflow edit <workflow_id> --cd <project_root> --scope global --project-override --request "Patch step s2"
+mi --home ~/.mind-incarnation workflow delete <workflow_id> --cd <project_root> --scope global --project-override  # clear override
 
 mi --home ~/.mind-incarnation workflow delete <workflow_id> --cd <project_root> --scope project
 mi --home ~/.mind-incarnation workflow delete <workflow_id> --cd <project_root> --scope global

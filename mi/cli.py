@@ -27,7 +27,15 @@ from .redact import redact_text
 from .provider_factory import make_hands_functions, make_mind_provider
 from .gc import archive_project_transcripts
 from .storage import append_jsonl, iter_jsonl, now_rfc3339
-from .workflows import WorkflowStore, GlobalWorkflowStore, WorkflowRegistry, new_workflow_id, render_workflow_markdown
+from .workflows import (
+    WorkflowStore,
+    GlobalWorkflowStore,
+    WorkflowRegistry,
+    new_workflow_id,
+    render_workflow_markdown,
+    normalize_workflow,
+    apply_global_overrides,
+)
 from .hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
 from .memory import MemoryIndex, rebuild_memory_index
 from .evidence import EvidenceWriter, new_run_id
@@ -245,11 +253,21 @@ def main(argv: list[str] | None = None) -> int:
     p_wfx.add_argument("id", help="Workflow id (wf_...).")
     p_wfx.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_wfx.add_argument("--scope", choices=["project", "global"], default="project", help="Which store to delete from.")
+    p_wfx.add_argument(
+        "--project-override",
+        action="store_true",
+        help="When scope=global, remove this project's override entry instead of deleting the global workflow file.",
+    )
 
     p_wfedit = wf_sub.add_parser("edit", help="Edit a workflow via natural language (uses Mind provider).")
     p_wfedit.add_argument("id", help="Workflow id (wf_...).")
     p_wfedit.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_wfedit.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to edit.")
+    p_wfedit.add_argument(
+        "--project-override",
+        action="store_true",
+        help="When scope=global, write a per-project override patch instead of editing the global workflow file.",
+    )
     p_wfedit.add_argument(
         "--request",
         default="-",
@@ -1028,6 +1046,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.wf_cmd == "delete":
             wid = str(args.id)
             scope = str(getattr(args, "scope", "project") or "project").strip()
+            if scope == "global" and bool(getattr(args, "project_override", False)):
+                ov = overlay2.get("global_workflow_overrides")
+                if not isinstance(ov, dict):
+                    ov = {}
+                    overlay2["global_workflow_overrides"] = ov
+                if wid in ov:
+                    del ov[wid]
+                    store.write_project_overlay(project_root, overlay2)
+                _auto_sync_hosts()
+                print(f"cleared override for {wid}")
+                return 0
             if scope == "global":
                 wf_global.delete(wid)
             else:
@@ -1039,6 +1068,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.wf_cmd == "edit":
             wid = str(args.id)
             scope = str(getattr(args, "scope", "project") or "project").strip()
+            project_override = bool(getattr(args, "project_override", False))
             if scope == "effective":
                 # Resolve once for the edit loop.
                 try:
@@ -1051,7 +1081,12 @@ def main(argv: list[str] | None = None) -> int:
                 req = (req or "").strip()
                 if not req:
                     return 0
-                w0 = wf_global.load(wid) if scope == "global" else wf_store.load(wid)
+                w_global0 = wf_global.load(wid) if scope == "global" else {}
+                if scope == "global" and project_override:
+                    # Edit the effective global workflow (global + current project override), then persist a patch to overlay.
+                    w0 = apply_global_overrides(w_global0, overlay=overlay2)
+                else:
+                    w0 = wf_global.load(wid) if scope == "global" else wf_store.load(wid)
                 llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
                 prompt = edit_workflow_prompt(
                     mindspec_base=loaded2.base,
@@ -1072,12 +1107,16 @@ def main(argv: list[str] | None = None) -> int:
 
                 w1 = dict(out["workflow"])
                 # Enforce invariants regardless of model output.
-                w1["id"] = w0.get("id")
-                w1["version"] = w0.get("version")
-                w1["created_ts"] = w0.get("created_ts")
+                base_for_invariants = w_global0 if (scope == "global") else w0
+                w1["id"] = base_for_invariants.get("id")
+                w1["version"] = base_for_invariants.get("version")
+                w1["created_ts"] = base_for_invariants.get("created_ts")
 
-                before = json.dumps(w0, indent=2, sort_keys=True) + "\n"
-                after = json.dumps(w1, indent=2, sort_keys=True) + "\n"
+                w1n = normalize_workflow(w1)
+                w0n = normalize_workflow(w0)
+
+                before = json.dumps(w0n, indent=2, sort_keys=True) + "\n"
+                after = json.dumps(w1n, indent=2, sort_keys=True) + "\n"
                 diff = _unified_diff(before, after, fromfile="before", tofile="after")
                 if diff:
                     print(diff, end="")
@@ -1102,10 +1141,70 @@ def main(argv: list[str] | None = None) -> int:
 
                 if bool(args.dry_run):
                     return 0
+
+                if scope == "global" and project_override:
+                    base = normalize_workflow(w_global0)
+                    desired = w1n
+
+                    # Compute an override patch relative to the global source of truth.
+                    patch: dict[str, Any] = {}
+                    if bool(desired.get("enabled", False)) != bool(base.get("enabled", False)):
+                        patch["enabled"] = bool(desired.get("enabled", False))
+                    name1 = str(desired.get("name") or "").strip()
+                    name0 = str(base.get("name") or "").strip()
+                    if name1 and name1 != name0:
+                        patch["name"] = name1
+                    if str(desired.get("mermaid") or "") != str(base.get("mermaid") or ""):
+                        patch["mermaid"] = str(desired.get("mermaid") or "")
+
+                    trig0 = base.get("trigger") if isinstance(base.get("trigger"), dict) else {}
+                    trig1 = desired.get("trigger") if isinstance(desired.get("trigger"), dict) else {}
+                    if trig1 != trig0:
+                        patch["trigger"] = trig1
+
+                    steps0 = base.get("steps") if isinstance(base.get("steps"), list) else []
+                    steps1 = desired.get("steps") if isinstance(desired.get("steps"), list) else []
+                    ids0 = [str(s.get("id") or "") for s in steps0 if isinstance(s, dict) and str(s.get("id") or "").strip()]
+                    ids1 = [str(s.get("id") or "") for s in steps1 if isinstance(s, dict) and str(s.get("id") or "").strip()]
+                    if ids0 != ids1:
+                        patch["steps_replace"] = [s for s in steps1 if isinstance(s, dict)]
+                    else:
+                        allowed = ("kind", "title", "hands_input", "check_input", "risk_category", "policy", "notes")
+                        patches: dict[str, Any] = {}
+                        for s0, s1 in zip(steps0, steps1):
+                            if not (isinstance(s0, dict) and isinstance(s1, dict)):
+                                continue
+                            sid = str(s0.get("id") or "").strip()
+                            if not sid:
+                                continue
+                            one: dict[str, Any] = {}
+                            for k in allowed:
+                                if s1.get(k) != s0.get(k):
+                                    one[k] = s1.get(k)
+                            if one:
+                                patches[sid] = one
+                        if patches:
+                            patch["step_patches"] = patches
+
+                    overlay2.setdefault("global_workflow_overrides", {})
+                    ov = overlay2.get("global_workflow_overrides")
+                    if not isinstance(ov, dict):
+                        ov = {}
+                        overlay2["global_workflow_overrides"] = ov
+                    if patch:
+                        ov[wid] = patch
+                    else:
+                        # If there is no diff against global, clear any prior override.
+                        if wid in ov:
+                            del ov[wid]
+                    store.write_project_overlay(project_root, overlay2)
+                    _auto_sync_hosts()
+                    return 0
+
                 if scope == "global":
-                    wf_global.write(w1)
+                    wf_global.write(w1n)
                 else:
-                    wf_store.write(w1)
+                    wf_store.write(w1n)
                 _auto_sync_hosts()
                 return 0
 

@@ -208,6 +208,8 @@ mi workflow edit <workflow_id> --cd /path/to/your/project --scope effective --re
 
 # Per-project override for a global workflow:
 mi workflow disable <workflow_id> --cd /path/to/your/project --scope global --project-override
+mi workflow edit <workflow_id> --cd /path/to/your/project --scope global --project-override --request "Patch step s2 to run tests first"
+mi workflow delete <workflow_id> --cd /path/to/your/project --scope global --project-override
 ```
 
 Bind and sync an OpenClaw workspace (Skills-only target):

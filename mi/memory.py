@@ -3,9 +3,10 @@ from __future__ import annotations
 """Memory public surface (V1).
 
 MI's memory system is a *materialized view* for recall. Sources of truth live in:
-- learned.jsonl (global + per-project)
+- Thought DB claims/nodes (global + per-project)
 - workflows/*.json (global + per-project)
 - EvidenceLog snapshot records (per-project)
+- legacy learned.jsonl (global + per-project; non-canonical in strict Thought DB mode)
 
 The implementation is intentionally layered so we can swap backends later without
 rewiring runner/CLI code.
@@ -32,4 +33,3 @@ __all__ = [
     # Back-compat index name (sqlite backend)
     "MemoryIndex",
 ]
-

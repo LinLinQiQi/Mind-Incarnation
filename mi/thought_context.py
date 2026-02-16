@@ -97,6 +97,7 @@ class ThoughtDbContext:
     as_of_ts: str
     query: str
     values_claims: list[dict[str, Any]]
+    pref_goal_claims: list[dict[str, Any]]
     query_claims: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     notes: str
@@ -106,6 +107,7 @@ class ThoughtDbContext:
             "as_of_ts": self.as_of_ts,
             "query": truncate(self.query, 1200),
             "values_claims": self.values_claims,
+            "pref_goal_claims": self.pref_goal_claims,
             "query_claims": self.query_claims,
             "edges": self.edges,
             "notes": self.notes,
@@ -120,6 +122,7 @@ def build_decide_next_thoughtdb_context(
     hands_last_message: str,
     recent_evidence: list[dict[str, Any]],
     max_values_claims: int = 8,
+    max_pref_goal_claims: int = 8,
     max_query_claims: int = 10,
     max_edges: int = 20,
 ) -> ThoughtDbContext:
@@ -153,6 +156,34 @@ def build_decide_next_thoughtdb_context(
 
     values_ids = {str(c.get("claim_id") or "").strip() for c in values if isinstance(c, dict)}
 
+    # Canonical preference/goal claims beyond values:base: always include a small set so decisions
+    # do not depend on free-form learned text or query token luck.
+    pref_goal_raw: list[tuple[int, str, dict[str, Any], ThoughtDbView]] = []
+    for view, scope_rank in ((v_proj, 0), (v_glob, 1)):
+        for c in view.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
+            if not isinstance(c, dict):
+                continue
+            ct = str(c.get("claim_type") or "").strip()
+            if ct not in ("preference", "goal"):
+                continue
+            cid = str(c.get("claim_id") or "").strip()
+            if not cid or cid in values_ids:
+                continue
+            tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+            tagset = {str(x).strip() for x in tags if str(x).strip()}
+            if VALUES_BASE_TAG in tagset:
+                continue
+            pref_goal_raw.append((scope_rank, str(c.get("asserted_ts") or ""), c, view))
+
+    # Sort newest-first within scope; prefer project scope over global.
+    pref_goal_raw.sort(key=lambda x: str(x[1] or ""), reverse=True)
+    pref_goal_raw.sort(key=lambda x: int(x[0]), reverse=False)
+    pref_goal_claims: list[dict[str, Any]] = []
+    for _rank, _ts, c, view in pref_goal_raw[: max(0, int(max_pref_goal_claims))]:
+        pref_goal_claims.append(_compact_claim(c, view=view))
+
+    pref_goal_ids = {str(c.get("claim_id") or "").strip() for c in pref_goal_claims if isinstance(c, dict)}
+
     # Query-ranked claims from project+global (excluding values already included).
     scored: list[tuple[int, str, dict[str, Any], ThoughtDbView]] = []
     for view, scope in ((v_proj, "project"), (v_glob, "global")):
@@ -160,7 +191,7 @@ def build_decide_next_thoughtdb_context(
             if not isinstance(c, dict):
                 continue
             cid = str(c.get("claim_id") or "").strip()
-            if not cid or cid in values_ids:
+            if not cid or cid in values_ids or cid in pref_goal_ids:
                 continue
             text = str(c.get("text") or "").strip()
             if not text:
@@ -185,7 +216,7 @@ def build_decide_next_thoughtdb_context(
     )
 
     query_claims: list[dict[str, Any]] = []
-    included_ids: set[str] = set(values_ids)
+    included_ids: set[str] = set(values_ids) | set(pref_goal_ids)
     for score, _scope, c, view in scored[: max(0, int(max_query_claims)) * 3]:
         cid = str(c.get("claim_id") or "").strip()
         if not cid or cid in included_ids:
@@ -230,8 +261,16 @@ def build_decide_next_thoughtdb_context(
     add_edges_from_view(v_glob, scope="global")
 
     notes = (
-        f"tokens={len(tokens)} values_claims={len(values)} query_claims={len(query_claims)} edges={len(edges)} "
-        f"budgets(values={max_values_claims} query={max_query_claims} edges={max_edges})"
+        f"tokens={len(tokens)} values_claims={len(values)} pref_goal_claims={len(pref_goal_claims)} "
+        f"query_claims={len(query_claims)} edges={len(edges)} budgets(values={max_values_claims} pref_goal={max_pref_goal_claims} "
+        f"query={max_query_claims} edges={max_edges})"
     )
-    return ThoughtDbContext(as_of_ts=as_of_ts, query=q, values_claims=values, query_claims=query_claims, edges=edges, notes=notes)
-
+    return ThoughtDbContext(
+        as_of_ts=as_of_ts,
+        query=q,
+        values_claims=values,
+        pref_goal_claims=pref_goal_claims,
+        query_claims=query_claims,
+        edges=edges,
+        notes=notes,
+    )

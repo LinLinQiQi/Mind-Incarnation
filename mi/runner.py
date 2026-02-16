@@ -21,6 +21,7 @@ from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_check
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
+from .prompts import values_claim_patch_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from .storage import append_jsonl, now_rfc3339, ensure_dir, read_json, write_json
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
@@ -38,8 +39,11 @@ from .hosts import sync_hosts_from_overlay
 from .memory_facade import MemoryFacade
 from .memory_ingest import thoughtdb_node_item
 from .evidence import EvidenceWriter, new_run_id
+from .global_ledger import iter_global_events
 from .thought_context import build_decide_next_thoughtdb_context
-from .thoughtdb import ThoughtDbStore
+from .injection import build_light_injection
+from .thoughtdb import ThoughtDbStore, claim_signature
+from .values import apply_values_claim_patch, existing_values_claims, write_values_set_event
 
 
 _DEFAULT = object()
@@ -760,13 +764,18 @@ def run_autopilot(
         batch_id: str,
         source: str,
         mind_transcript_ref: str,
+        source_event_ids: list[str],
     ) -> list[str]:
-        """Apply or record suggested learned changes.
+        """Apply or record suggested preference/goal changes (strict Thought DB mode).
 
-        - When MindSpec.violation_response.auto_learn is true (default), MI will append learned entries.
-        - When false, MI will NOT write learned.jsonl; it only records suggestions into EvidenceLog.
+        MI no longer treats free-form learned text as canonical. Instead, any auto-learning is
+        materialized as Thought DB Claims (append-only) so later decisions can use canonical
+        preference/goal claims.
 
-        Returns: list of applied learned entry ids (empty if none applied).
+        - When MindSpec.violation_response.auto_learn is true (default), MI will append preference Claims.
+        - When false, MI will NOT write claims; it only records suggestions into EvidenceLog.
+
+        Returns: list of applied claim_ids (empty if none applied).
         """
 
         vr = loaded.base.get("violation_response") if isinstance(loaded.base.get("violation_response"), dict) else {}
@@ -796,17 +805,60 @@ def run_autopilot(
             return []
 
         suggestion_id = f"ls_{time.time_ns()}_{secrets.token_hex(4)}"
-        applied_entry_ids: list[str] = []
+        applied_claim_ids: list[str] = []
 
-        if auto_learn:
-            for item in norm:
-                scope = str(item.get("scope") or "").strip()
-                text = str(item.get("text") or "").strip()
-                rationale = str(item.get("rationale") or "").strip()
-                if scope in ("global", "project") and text:
-                    base_r = rationale or source
-                    r = f"{base_r} (source={source} suggestion={suggestion_id})"
-                    applied_entry_ids.append(store.append_learned(project_root=project_path, scope=scope, text=text, rationale=r))
+        ev_ids = [str(x).strip() for x in (source_event_ids or []) if str(x).strip()][:8]
+
+        # Dedup against existing active canonical preference claims (best-effort).
+        # Signature is stable across runs for identical text.
+        sig_to_id = {
+            "project": tdb.existing_signature_map(scope="project"),
+            "global": tdb.existing_signature_map(scope="global"),
+        }
+
+        for item in norm:
+            scope0 = str(item.get("scope") or "").strip()
+            text = str(item.get("text") or "").strip()
+            rationale = str(item.get("rationale") or "").strip()
+            sev = str(item.get("severity") or "").strip()
+            if scope0 not in ("global", "project") or not text:
+                continue
+
+            sc = "global" if scope0 == "global" else "project"
+            pid = project_paths.project_id if sc == "project" else ""
+            sig = claim_signature(claim_type="preference", scope=sc, project_id=pid, text=text)
+            existing = sig_to_id.get(sc, {}).get(sig)
+            if existing:
+                applied_claim_ids.append(str(existing))
+                continue
+
+            if not auto_learn:
+                continue
+
+            tags: list[str] = ["mi:learned", "mi:pref", f"mi:source:{source}"]
+            if sev:
+                tags.append(f"severity:{sev}")
+
+            base_r = rationale or source
+            notes = f"{base_r} (source={source} suggestion={suggestion_id})"
+            try:
+                cid = tdb.append_claim_create(
+                    claim_type="preference",
+                    text=text,
+                    scope=sc,
+                    visibility=("global" if sc == "global" else "project"),
+                    valid_from=None,
+                    valid_to=None,
+                    tags=tags,
+                    source_event_ids=ev_ids,
+                    confidence=1.0,
+                    notes=notes,
+                )
+            except Exception:
+                continue
+
+            sig_to_id.setdefault(sc, {})[sig] = cid
+            applied_claim_ids.append(cid)
 
         evw.append(
             {
@@ -819,11 +871,15 @@ def run_autopilot(
                 "auto_learn": auto_learn,
                 "mind_transcript_ref": str(mind_transcript_ref or ""),
                 "learned_changes": norm,
-                "applied_entry_ids": applied_entry_ids,
+                # Legacy field name (V1): entries were previously learned.jsonl ids.
+                "applied_entry_ids": [],
+                # Strict Thought DB mode: canonical preference claims.
+                "applied_claim_ids": applied_claim_ids,
+                "source_event_ids": ev_ids,
             }
         )
 
-        return applied_entry_ids
+        return applied_claim_ids
 
     def _log_mind_error(
         *,
@@ -1080,6 +1136,114 @@ def run_autopilot(
         _segment_add(rec)
         _persist_segment_state()
 
+    def _ensure_values_claims_current() -> None:
+        """Ensure canonical values exist as global Thought DB preference/goal Claims.
+
+        Strict Thought DB mode treats values/preferences claims as canonical. To reduce user burden,
+        MI will auto-migrate `mindspec/base.json.values_text` into global values claims when:
+        - no values claims exist yet, or
+        - the last recorded global values_set text differs from current values_text.
+        """
+
+        values_text = str((loaded.base.get("values_text") or "") if isinstance(loaded.base, dict) else "").strip()
+        if not values_text:
+            return
+
+        # Detect whether values claims already exist.
+        existing0 = existing_values_claims(tdb=tdb, limit=2)
+
+        # Compare to last global values_set event payload (best-effort).
+        last_text = ""
+        for ev in iter_global_events(home_dir=home):
+            if not isinstance(ev, dict):
+                continue
+            if str(ev.get("kind") or "").strip() != "values_set":
+                continue
+            payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+            last_text = str(payload.get("values_text") or "")
+
+        if existing0 and last_text.strip() == values_text:
+            return
+
+        values_ev = write_values_set_event(
+            home_dir=home,
+            values_text=values_text,
+            compiled_mindspec=loaded.base if isinstance(loaded.base, dict) else {},
+            notes="auto_migrate_on_run",
+        )
+        values_event_id = str(values_ev.get("event_id") or "").strip()
+        if not values_event_id:
+            return
+
+        existing = existing_values_claims(tdb=tdb, limit=120)
+        retractable_ids = [str(c.get("claim_id") or "").strip() for c in existing if isinstance(c, dict) and str(c.get("claim_id") or "").strip()]
+
+        prompt = values_claim_patch_prompt(
+            values_text=values_text,
+            compiled_mindspec=loaded.base if isinstance(loaded.base, dict) else {},
+            existing_values_claims=existing,
+            allowed_event_ids=[values_event_id],
+            allowed_retract_claim_ids=retractable_ids,
+            notes="auto migrate values -> Thought DB claims during mi run",
+        )
+        patch_obj, mind_ref, state = _mind_call(
+            schema_filename="values_claim_patch.json",
+            prompt=prompt,
+            tag="values_claim_patch:auto",
+            batch_id="b0.values_claim_patch",
+        )
+
+        ok = False
+        applied: dict[str, Any] = {"written": [], "linked_existing": [], "written_edges": [], "skipped": []}
+        retracted: list[str] = []
+        err = ""
+        if patch_obj is None:
+            err = "mind_error" if state == "error" else "mind_circuit_open"
+        else:
+            tcfg = loaded.base.get("thought_db") if isinstance(loaded.base.get("thought_db"), dict) else {}
+            try:
+                min_conf = float(tcfg.get("min_confidence", 0.9) or 0.9)
+            except Exception:
+                min_conf = 0.9
+            try:
+                base_max = int(tcfg.get("max_claims_per_checkpoint", 6) or 6)
+            except Exception:
+                base_max = 6
+            max_claims = max(8, min(20, base_max * 2))
+
+            try:
+                res = apply_values_claim_patch(
+                    tdb=tdb,
+                    patch_obj=patch_obj if isinstance(patch_obj, dict) else {},
+                    values_event_id=values_event_id,
+                    min_confidence=min_conf,
+                    max_claims=max_claims,
+                )
+                ok = bool(res.ok)
+                applied = res.applied if isinstance(res.applied, dict) else applied
+                retracted = list(res.retracted or [])
+            except Exception as e:
+                err = f"{type(e).__name__}: {e}"
+
+        # Record for audit in the project EvidenceLog.
+        evw.append(
+            {
+                "kind": "values_claim_patch",
+                "batch_id": "b0.values_claim_patch",
+                "ts": now_rfc3339(),
+                "thread_id": "",
+                "state": state,
+                "mind_transcript_ref": mind_ref,
+                "values_event_id": values_event_id,
+                "ok": ok,
+                "error": _truncate(err, 600),
+                "applied": applied,
+                "retracted": retracted,
+            }
+        )
+
+    _ensure_values_claims_current()
+
     # Seed one conservative recall at run start so later Mind calls can use it without bothering the user.
     if str(task or "").strip():
         _maybe_cross_project_recall(batch_id="b0.recall", reason="run_start", query=task)
@@ -1101,12 +1265,20 @@ def run_autopilot(
             min_occ = 1
 
         mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
+        tdb_ctx = build_decide_next_thoughtdb_context(
+            tdb=tdb,
+            as_of_ts=now_rfc3339(),
+            task=task,
+            hands_last_message="",
+            recent_evidence=seg_evidence[-8:],
+        )
+        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = suggest_workflow_prompt(
             task=task,
             hands_provider=cur_provider,
             mindspec_base=loaded.base,
-            learned_text=loaded.learned_text,
             project_overlay=loaded.project_overlay,
+            thought_db_context=tdb_ctx_obj,
             recent_evidence=seg_evidence,
             notes=mine_notes,
         )
@@ -1279,12 +1451,20 @@ def run_autopilot(
             return
 
         mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
+        tdb_ctx = build_decide_next_thoughtdb_context(
+            tdb=tdb,
+            as_of_ts=now_rfc3339(),
+            task=task,
+            hands_last_message="",
+            recent_evidence=seg_evidence[-8:],
+        )
+        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = mine_preferences_prompt(
             task=task,
             hands_provider=cur_provider,
             mindspec_base=loaded.base,
-            learned_text=loaded.learned_text,
             project_overlay=loaded.project_overlay,
+            thought_db_context=tdb_ctx_obj,
             recent_evidence=seg_evidence,
             notes=mine_notes,
         )
@@ -1317,6 +1497,27 @@ def run_autopilot(
         candidates = load_preference_candidates(project_paths)
         by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
 
+        # Evidence provenance for preference claims (best-effort): cite recent segment events.
+        src_eids_pref: list[str] = []
+        seen_eids: set[str] = set()
+        for r in (seg_evidence or [])[-16:]:
+            if not isinstance(r, dict):
+                continue
+            eid = r.get("event_id")
+            if not isinstance(eid, str):
+                continue
+            e = eid.strip()
+            if not e or e in seen_eids:
+                continue
+            seen_eids.add(e)
+            src_eids_pref.append(e)
+
+        # Skip obvious duplicates against existing canonical preference claims (best-effort).
+        existing_sig_to_id = {
+            "project": tdb.existing_signature_map(scope="project"),
+            "global": tdb.existing_signature_map(scope="global"),
+        }
+
         for raw in sugs[:pref_max]:
             if not isinstance(raw, dict):
                 continue
@@ -1326,7 +1527,10 @@ def run_autopilot(
             text = str(raw.get("text") or "").strip()
             if not text:
                 continue
-            if loaded.learned_text and text in loaded.learned_text:
+
+            pid = project_paths.project_id if scope == "project" else ""
+            sig2 = claim_signature(claim_type="preference", scope=scope, project_id=pid, text=text)
+            if sig2 in existing_sig_to_id.get(scope, {}):
                 continue
 
             benefit = str(raw.get("benefit") or "medium").strip()
@@ -1365,7 +1569,7 @@ def run_autopilot(
             if rationale:
                 entry["rationale"] = rationale
 
-            if bool(entry.get("suggestion_emitted", False)) or bool(entry.get("learned_entry_ids")):
+            if bool(entry.get("suggestion_emitted", False)) or bool(entry.get("applied_claim_ids")) or bool(entry.get("learned_entry_ids")):
                 by_sig[sig] = entry
                 continue
 
@@ -1381,14 +1585,13 @@ def run_autopilot(
                 batch_id=f"{base_batch_id}.preference_solidified",
                 source="mine_preferences",
                 mind_transcript_ref=mind_ref,
+                source_event_ids=src_eids_pref,
             )
             entry["suggestion_emitted"] = True
             entry["suggestion_ts"] = now_rfc3339()
             if applied_ids:
-                entry["learned_entry_ids"] = list(applied_ids)
+                entry["applied_claim_ids"] = list(applied_ids)
                 entry["solidified_ts"] = now_rfc3339()
-                loaded = store.load(project_path)
-                _refresh_overlay_refs()
 
             evw.append(
                 {
@@ -1403,7 +1606,8 @@ def run_autopilot(
                     "confidence": conf_f,
                     "scope": scope,
                     "text": text,
-                    "applied_entry_ids": list(applied_ids),
+                    "applied_entry_ids": [],
+                    "applied_claim_ids": list(applied_ids),
                 }
             )
             by_sig[sig] = entry
@@ -1438,12 +1642,20 @@ def run_autopilot(
         allowed_set = set(allowed)
 
         mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
+        tdb_ctx = build_decide_next_thoughtdb_context(
+            tdb=tdb,
+            as_of_ts=now_rfc3339(),
+            task=task,
+            hands_last_message="",
+            recent_evidence=seg_evidence[-8:],
+        )
+        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = mine_claims_prompt(
             task=task,
             hands_provider=cur_provider,
             mindspec_base=loaded.base,
-            learned_text=loaded.learned_text,
             project_overlay=loaded.project_overlay,
+            thought_db_context=tdb_ctx_obj,
             segment_evidence=seg_evidence,
             allowed_event_ids=allowed,
             min_confidence=tdb_min_conf,
@@ -1839,12 +2051,20 @@ def run_autopilot(
                 segment_state["thread_id"] = cur_tid
             segment_state["task_hint"] = _truncate(task.strip(), 200)
 
+        tdb_ctx = build_decide_next_thoughtdb_context(
+            tdb=tdb,
+            as_of_ts=now_rfc3339(),
+            task=task,
+            hands_last_message="",
+            recent_evidence=segment_records[-8:],
+        )
+        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = checkpoint_decide_prompt(
             task=task,
             hands_provider=cur_provider,
             mindspec_base=loaded.base,
-            learned_text=loaded.learned_text,
             project_overlay=loaded.project_overlay,
+            thought_db_context=tdb_ctx_obj,
             segment_evidence=segment_records,
             current_batch_id=base_bid,
             planned_next_input=_truncate(planned_next_input or "", 2000),
@@ -2024,7 +2244,7 @@ def run_autopilot(
         batch_ts = now_rfc3339().replace(":", "").replace("-", "")
         hands_transcript = project_paths.transcripts_dir / "hands" / f"{batch_ts}_b{batch_idx}.jsonl"
 
-        light = loaded.light_injection()
+        light = build_light_injection(mindspec_base=loaded.base, tdb=tdb, as_of_ts=now_rfc3339())
         batch_input = next_input.strip()
         codex_prompt = light + "\n" + batch_input + "\n"
         sent_ts = now_rfc3339()
@@ -2157,6 +2377,18 @@ def run_autopilot(
         _segment_add(evidence_rec)
         _persist_segment_state()
 
+        # Canonical values/preferences context: Thought DB subgraph (deterministic, small budget).
+        # Used for Mind prompt-pack calls in this batch; Hands light injection is handled separately.
+        codex_last = result.last_agent_message()
+        tdb_ctx_batch = build_decide_next_thoughtdb_context(
+            tdb=tdb,
+            as_of_ts=now_rfc3339(),
+            task=task,
+            hands_last_message=codex_last,
+            recent_evidence=evidence_window,
+        )
+        tdb_ctx_batch_obj = tdb_ctx_batch.to_prompt_obj()
+
         # Best-effort workflow progress: infer which workflow steps are completed and what the next step is.
         active_wf = _active_workflow()
         if isinstance(active_wf, dict) and active_wf:
@@ -2174,13 +2406,13 @@ def run_autopilot(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=loaded.base,
-                learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
+                thought_db_context=tdb_ctx_batch_obj,
                 workflow=active_wf,
                 workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
                 latest_evidence=latest_evidence,
                 last_batch_input=batch_input,
-                codex_last_message=result.last_agent_message(),
+                codex_last_message=codex_last,
             )
             wf_prog_obj, wf_prog_ref, wf_prog_state = _mind_call(
                 schema_filename="workflow_progress.json",
@@ -2262,10 +2494,10 @@ def run_autopilot(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=loaded.base,
-                learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
+                thought_db_context=tdb_ctx_batch_obj,
                 risk_signals=risk_signals,
-                codex_last_message=result.last_agent_message(),
+                codex_last_message=codex_last,
             )
             risk_obj, risk_mind_ref, risk_state = _mind_call(
                 schema_filename="risk_judge.json",
@@ -2324,10 +2556,8 @@ def run_autopilot(
                 batch_id=f"b{batch_idx}",
                 source="risk_judge",
                 mind_transcript_ref=risk_mind_ref,
+                source_event_ids=[str(risk_rec.get("event_id") or "").strip()],
             )
-            if applied:
-                loaded = store.load(project_path)
-                _refresh_overlay_refs()
 
             # Optional immediate user escalation on high risk.
             vr = loaded.base.get("violation_response") or {}
@@ -2367,7 +2597,6 @@ def run_autopilot(
                     break
 
         repo_obs = evidence_item.get("repo_observation") or {}
-        codex_last = result.last_agent_message()
 
         # Plan minimal checks (LLM) only when uncertainty/risk/change suggests it.
         checks_obj = _empty_check_plan()
@@ -2381,8 +2610,8 @@ def run_autopilot(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=loaded.base,
-                learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
+                thought_db_context=tdb_ctx_batch_obj,
                 recent_evidence=evidence_window,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             )
@@ -2431,8 +2660,8 @@ def run_autopilot(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=loaded.base,
-                learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
+                thought_db_context=tdb_ctx_batch_obj,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 recent_evidence=evidence_window,
@@ -2492,8 +2721,8 @@ def run_autopilot(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=loaded.base,
-                learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
+                thought_db_context=tdb_ctx_batch_obj,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 recent_evidence=evidence_window,
@@ -2629,12 +2858,20 @@ def run_autopilot(
             _refresh_overlay_refs()
 
             # Re-plan checks now that the project has a strategy to follow.
+            tdb_ctx2 = build_decide_next_thoughtdb_context(
+                tdb=tdb,
+                as_of_ts=now_rfc3339(),
+                task=task,
+                hands_last_message=codex_last,
+                recent_evidence=evidence_window,
+            )
+            tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
             checks_prompt2 = plan_min_checks_prompt(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=loaded.base,
-                learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
+                thought_db_context=tdb_ctx2_obj,
                 recent_evidence=evidence_window,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             )
@@ -2712,7 +2949,6 @@ def run_autopilot(
             task=task,
             hands_provider=cur_provider,
             mindspec_base=loaded.base,
-            learned_text=loaded.learned_text,
             project_overlay=loaded.project_overlay,
             thought_db_context=tdb_ctx_obj,
             active_workflow=_active_workflow(),
@@ -2825,12 +3061,8 @@ def run_autopilot(
             batch_id=f"b{batch_idx}",
             source="decide_next",
             mind_transcript_ref=decision_mind_ref,
+            source_event_ids=[str((decide_rec or {}).get("event_id") or "").strip()],
         )
-
-        # Refresh loaded learned text after any new writes.
-        if applied:
-            loaded = store.load(project_path)
-            _refresh_overlay_refs()
 
         next_action = str(decision_obj.get("next_action") or "stop")
         status = str(decision_obj.get("status") or "not_done")
@@ -2845,12 +3077,20 @@ def run_autopilot(
             # Before bothering the user, attempt to auto-answer using values/evidence.
             aa_from_decide = _empty_auto_answer()
             if q:
+                tdb_ctx_aa = build_decide_next_thoughtdb_context(
+                    tdb=tdb,
+                    as_of_ts=now_rfc3339(),
+                    task=task,
+                    hands_last_message=q,
+                    recent_evidence=evidence_window,
+                )
+                tdb_ctx_aa_obj = tdb_ctx_aa.to_prompt_obj()
                 aa_prompt2 = auto_answer_to_codex_prompt(
                     task=task,
                     hands_provider=cur_provider,
                     mindspec_base=loaded.base,
-                    learned_text=loaded.learned_text,
                     project_overlay=loaded.project_overlay,
+                    thought_db_context=tdb_ctx_aa_obj,
                     repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                     check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                     recent_evidence=evidence_window,
@@ -2925,12 +3165,20 @@ def run_autopilot(
             )
             aa_retry2 = _empty_auto_answer()
             if q:
+                tdb_ctx_aa2 = build_decide_next_thoughtdb_context(
+                    tdb=tdb,
+                    as_of_ts=now_rfc3339(),
+                    task=task,
+                    hands_last_message=q,
+                    recent_evidence=evidence_window,
+                )
+                tdb_ctx_aa2_obj = tdb_ctx_aa2.to_prompt_obj()
                 aa_prompt3 = auto_answer_to_codex_prompt(
                     task=task,
                     hands_provider=cur_provider,
                     mindspec_base=loaded.base,
-                    learned_text=loaded.learned_text,
                     project_overlay=loaded.project_overlay,
+                    thought_db_context=tdb_ctx_aa2_obj,
                     repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                     check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                     recent_evidence=evidence_window,
@@ -3042,7 +3290,6 @@ def run_autopilot(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=loaded.base,
-                learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
                 thought_db_context=tdb_ctx2_obj,
                 active_workflow=_active_workflow(),
@@ -3112,11 +3359,8 @@ def run_autopilot(
                 batch_id=f"b{batch_idx}.after_user",
                 source="decide_next.after_user",
                 mind_transcript_ref=decision2_mind_ref,
+                source_event_ids=[str((decide_rec2 or {}).get("event_id") or "").strip()],
             )
-
-            if applied2:
-                loaded = store.load(project_path)
-                _refresh_overlay_refs()
 
             next_action = str(decision_obj.get("next_action") or "stop")
             status = str(decision_obj.get("status") or "not_done")

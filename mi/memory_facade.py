@@ -53,10 +53,12 @@ class CrossProjectRecallConfig:
             max_chars = 1800
         max_chars = max(200, min(6000, max_chars))
 
-        kinds_raw = cfg.get("include_kinds") if isinstance(cfg.get("include_kinds"), list) else ["snapshot", "learned", "workflow"]
+        kinds_raw = cfg.get("include_kinds") if isinstance(cfg.get("include_kinds"), list) else ["snapshot", "workflow", "claim", "node"]
         include_kinds = {str(x).strip() for x in kinds_raw if str(x).strip()}
+        # Strict Thought DB mode: learned text is non-canonical; never recall it by default.
+        include_kinds.discard("learned")
         if not include_kinds:
-            include_kinds = {"snapshot", "learned", "workflow"}
+            include_kinds = {"snapshot", "workflow", "claim"}
 
         exclude_current_project = bool(cfg.get("exclude_current_project", True))
         prefer_current_project = bool(cfg.get("prefer_current_project", True))

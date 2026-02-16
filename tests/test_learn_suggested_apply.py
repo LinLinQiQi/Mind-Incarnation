@@ -9,7 +9,9 @@ from pathlib import Path
 from mi.cli import main as mi_main
 from mi.codex_runner import CodexRunResult
 from mi.mindspec import MindSpecStore
+from mi.paths import ProjectPaths
 from mi.runner import run_autopilot
+from mi.thoughtdb import ThoughtDbStore
 
 
 @dataclass(frozen=True)
@@ -118,8 +120,9 @@ class TestLearnSuggestedApply(unittest.TestCase):
                 llm=fake_llm,
             )
 
+            # Strict Thought DB mode: MI no longer writes learned.jsonl automatically.
             learned_path = result.project_dir / "learned.jsonl"
-            self.assertFalse(learned_path.exists(), "auto_learn=false must not write learned.jsonl")
+            self.assertFalse(learned_path.exists(), "auto_learn=false must not write learned.jsonl (strict Thought DB mode)")
 
             suggestion_id = ""
             with open(result.evidence_log_path, "r", encoding="utf-8") as f:
@@ -128,8 +131,10 @@ class TestLearnSuggestedApply(unittest.TestCase):
                     if isinstance(obj, dict) and obj.get("kind") == "learn_suggested":
                         self.assertFalse(bool(obj.get("auto_learn")))
                         suggestion_id = str(obj.get("id") or "")
-                        applied = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
-                        self.assertEqual(len(applied), 0)
+                        applied_entries = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
+                        self.assertEqual(len(applied_entries), 0)
+                        applied_claims = obj.get("applied_claim_ids") if isinstance(obj.get("applied_claim_ids"), list) else []
+                        self.assertEqual(len(applied_claims), 0)
             self.assertTrue(suggestion_id.startswith("ls_"))
 
             # Apply it manually via CLI.
@@ -141,9 +146,16 @@ class TestLearnSuggestedApply(unittest.TestCase):
                 sys.stdout = old_stdout
             self.assertEqual(code, 0)
 
-            self.assertTrue(learned_path.exists(), "apply-suggested must write learned.jsonl")
-            content = learned_path.read_text(encoding="utf-8")
-            self.assertIn("Do not auto-install dependencies", content)
+            # CLI apply-suggested materializes preference claims (not learned.jsonl).
+            self.assertFalse(learned_path.exists(), "apply-suggested should not write learned.jsonl in strict Thought DB mode")
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            view = tdb.load_view(scope="project")
+            texts = [str(c.get("text") or "") for c in view.iter_claims(include_inactive=True, include_aliases=True)]
+            self.assertTrue(
+                any("Do not auto-install dependencies" in t for t in texts),
+                "apply-suggested should create a preference claim with the suggested text",
+            )
 
             found_applied = False
             with open(result.evidence_log_path, "r", encoding="utf-8") as f:
@@ -151,6 +163,8 @@ class TestLearnSuggestedApply(unittest.TestCase):
                     obj = json.loads(line)
                     if isinstance(obj, dict) and obj.get("kind") == "learn_applied":
                         if obj.get("suggestion_id") == suggestion_id:
+                            applied_claims = obj.get("applied_claim_ids") if isinstance(obj.get("applied_claim_ids"), list) else []
+                            self.assertTrue(len(applied_claims) >= 1)
                             found_applied = True
                             break
             self.assertTrue(found_applied, "apply-suggested should append a learn_applied record")
@@ -207,9 +221,18 @@ class TestLearnSuggestedApply(unittest.TestCase):
                 llm=fake_llm,
             )
 
+            # Strict Thought DB mode: auto learning materializes preference Claims.
             learned_path = result.project_dir / "learned.jsonl"
-            self.assertTrue(learned_path.exists(), "auto_learn=true should write learned.jsonl")
-            self.assertIn("Assume behavior-preserving changes", learned_path.read_text(encoding="utf-8"))
+            self.assertFalse(learned_path.exists(), "auto_learn=true should not write learned.jsonl in strict Thought DB mode")
+
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            view = tdb.load_view(scope="project")
+            texts = [str(c.get("text") or "") for c in view.iter_claims(include_inactive=True, include_aliases=True)]
+            self.assertTrue(
+                any("Assume behavior-preserving changes" in t for t in texts),
+                "auto_learn=true should create a preference claim",
+            )
 
             found = False
             with open(result.evidence_log_path, "r", encoding="utf-8") as f:
@@ -219,11 +242,11 @@ class TestLearnSuggestedApply(unittest.TestCase):
                         continue
                     if not bool(obj.get("auto_learn")):
                         continue
-                    applied = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
+                    applied = obj.get("applied_claim_ids") if isinstance(obj.get("applied_claim_ids"), list) else []
                     if len(applied) == 1:
                         found = True
                         break
-            self.assertTrue(found, "auto_learn=true should log learn_suggested with applied_entry_ids")
+            self.assertTrue(found, "auto_learn=true should log learn_suggested with applied_claim_ids")
 
 
 if __name__ == "__main__":

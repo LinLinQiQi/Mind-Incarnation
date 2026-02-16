@@ -43,6 +43,7 @@ from .memory_ingest import thoughtdb_node_item
 from .memory_service import MemoryService
 from .evidence import EvidenceWriter, new_run_id
 from .values import write_values_set_event, existing_values_claims, apply_values_claim_patch
+from .thought_context import build_decide_next_thoughtdb_context
 from .why import (
     find_evidence_event,
     query_from_evidence_event,
@@ -887,7 +888,9 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 sid = str(rec.get("id") or "").strip()
                 auto = bool(rec.get("auto_learn", True))
-                applied_ids = rec.get("applied_entry_ids") if isinstance(rec.get("applied_entry_ids"), list) else []
+                applied_ids = rec.get("applied_claim_ids") if isinstance(rec.get("applied_claim_ids"), list) else []
+                if not applied_ids:
+                    applied_ids = rec.get("applied_entry_ids") if isinstance(rec.get("applied_entry_ids"), list) else []
                 summary = summarize_evidence_record(rec)
                 if sid and (not auto) and (not applied_ids):
                     summary = summary + f" (apply: mi learned apply-suggested {sid} --cd {project_root})"
@@ -1488,12 +1491,20 @@ def main(argv: list[str] | None = None) -> int:
 
             pp.transcripts_dir.mkdir(parents=True, exist_ok=True)
             mind = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
+            tdb_ctx = build_decide_next_thoughtdb_context(
+                tdb=tdb,
+                as_of_ts=now_rfc3339(),
+                task=str("(manual claim mine) " + (seg.get("task_hint") if isinstance(seg, dict) else "")).strip(),
+                hands_last_message="",
+                recent_evidence=seg_records[-8:],
+            )
+            tdb_ctx_obj = tdb_ctx.to_prompt_obj()
             prompt = mine_claims_prompt(
                 task=str("(manual claim mine) " + (seg.get("task_hint") if isinstance(seg, dict) else "")).strip(),
                 hands_provider=str(cfg.get("hands", {}).get("provider") or ""),
                 mindspec_base=loaded2.base,
-                learned_text=loaded2.learned_text,
                 project_overlay=overlay2,
+                thought_db_context=tdb_ctx_obj,
                 segment_evidence=seg_records,
                 allowed_event_ids=allowed,
                 min_confidence=min_conf,
@@ -2186,6 +2197,7 @@ def main(argv: list[str] | None = None) -> int:
         wf_store = WorkflowStore(pp)
         wf_global = GlobalWorkflowStore(GlobalPaths(home_dir=store.home_dir))
         wf_reg = WorkflowRegistry(project_store=wf_store, global_store=wf_global)
+        tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
 
         def _effective_enabled_workflows() -> list[dict[str, Any]]:
             eff = wf_reg.enabled_workflows_effective(overlay=overlay2)
@@ -2381,10 +2393,18 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     w0 = wf_global.load(wid) if scope == "global" else wf_store.load(wid)
                 llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
+                tdb_ctx = build_decide_next_thoughtdb_context(
+                    tdb=tdb,
+                    as_of_ts=now_rfc3339(),
+                    task=req,
+                    hands_last_message="",
+                    recent_evidence=[],
+                )
+                tdb_ctx_obj = tdb_ctx.to_prompt_obj()
                 prompt = edit_workflow_prompt(
                     mindspec_base=loaded2.base,
-                    learned_text=loaded2.learned_text,
                     project_overlay=overlay2,
+                    thought_db_context=tdb_ctx_obj,
                     workflow=w0,
                     user_request=req,
                 )
@@ -2682,8 +2702,11 @@ def main(argv: list[str] | None = None) -> int:
 
             # Avoid duplicate application unless forced.
             already_applied = False
-            applied_ids0 = suggestion.get("applied_entry_ids")
+            applied_ids0 = suggestion.get("applied_claim_ids")
             if isinstance(applied_ids0, list) and any(str(x).strip() for x in applied_ids0):
+                already_applied = True
+            applied_ids1 = suggestion.get("applied_entry_ids")
+            if isinstance(applied_ids1, list) and any(str(x).strip() for x in applied_ids1):
                 already_applied = True
 
             if not already_applied:
@@ -2714,6 +2737,7 @@ def main(argv: list[str] | None = None) -> int:
                         "scope": scope,
                         "text": text,
                         "rationale": str(ch.get("rationale") or "").strip(),
+                        "severity": str(ch.get("severity") or "").strip(),
                     }
                 )
 
@@ -2726,20 +2750,52 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             extra = str(args.extra_rationale or "").strip()
-            applied_entry_ids: list[str] = []
+            tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+            sig_to_id = {
+                "project": tdb.existing_signature_map(scope="project"),
+                "global": tdb.existing_signature_map(scope="global"),
+            }
+            ev_id = str(suggestion.get("event_id") or "").strip()
+            src_eids = [ev_id] if ev_id else []
+
+            applied_claim_ids: list[str] = []
             for item in normalized:
+                scope0 = str(item.get("scope") or "").strip()
+                sc = "global" if scope0 == "global" else "project"
+                pid = pp.project_id if sc == "project" else ""
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+
+                sig = claim_signature(claim_type="preference", scope=sc, project_id=pid, text=text)
+                existing = sig_to_id.get(sc, {}).get(sig)
+                if existing:
+                    applied_claim_ids.append(str(existing))
+                    continue
+
                 base_r = (item.get("rationale") or "").strip() or "manual_apply"
-                r = f"{base_r} (apply_suggestion={sug_id})"
+                notes = f"{base_r} (apply_suggestion={sug_id})"
                 if extra:
-                    r = f"{r}; {extra}"
-                applied_entry_ids.append(
-                    store.append_learned(
-                        project_root=project_root,
-                        scope=item["scope"],
-                        text=item["text"],
-                        rationale=r,
-                    )
+                    notes = f"{notes}; {extra}"
+                sev = str(item.get("severity") or "").strip()
+                tags = ["mi:learned_apply", f"learn_suggested:{sug_id}"]
+                if sev:
+                    tags.append(f"severity:{sev}")
+
+                cid = tdb.append_claim_create(
+                    claim_type="preference",
+                    text=text,
+                    scope=sc,
+                    visibility=("global" if sc == "global" else "project"),
+                    valid_from=None,
+                    valid_to=None,
+                    tags=tags,
+                    source_event_ids=src_eids,
+                    confidence=1.0,
+                    notes=notes,
                 )
+                sig_to_id.setdefault(sc, {})[sig] = cid
+                applied_claim_ids.append(cid)
 
             evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
             evw.append(
@@ -2749,12 +2805,13 @@ def main(argv: list[str] | None = None) -> int:
                     "suggestion_id": sug_id,
                     "batch_id": str(suggestion.get("batch_id") or ""),
                     "thread_id": str(suggestion.get("thread_id") or ""),
-                    "applied_entry_ids": applied_entry_ids,
+                    "applied_entry_ids": [],
+                    "applied_claim_ids": applied_claim_ids,
                 }
             )
-            print(f"Applied suggestion {sug_id}: {len(applied_entry_ids)} learned entries")
-            for entry_id in applied_entry_ids:
-                print(entry_id)
+            print(f"Applied suggestion {sug_id}: {len(applied_claim_ids)} preference claims")
+            for cid in applied_claim_ids:
+                print(cid)
             return 0
 
     return 2

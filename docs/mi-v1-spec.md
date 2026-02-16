@@ -52,7 +52,7 @@ Non-goals for V1:
 
 ```mermaid
 flowchart TD
-  U[User task + values prompt] --> S[Load MindSpec + ProjectOverlay + Learned]
+  U[User task + values prompt] --> S[Load MindSpec + ProjectOverlay + Thought DB]
   S --> I[Build light injection + task input]
   I --> C[Run Hands (free execution)]
   C --> T[Capture raw transcript + optional repo observation]
@@ -89,19 +89,20 @@ Workflow cursor (best-effort, V1):
 
 Cross-project recall (on-demand, V1):
 
-- Default: **enabled but conservative** (no embeddings required). Uses only MI-owned stores: `snapshot` + `learned` + `workflow` items, searched by text.
+- Default: **enabled but conservative** (no embeddings required). Uses only MI-owned stores: `snapshot` + `workflow` + canonical Thought DB items (`claim` / `node`), searched by text. (Legacy `learned` text is non-canonical and excluded by default.)
 - Trigger points (default): once at run start, before MI asks the user, and when risk signals are detected.
 - Output is recorded as `kind="cross_project_recall"` in EvidenceLog and is included in `recent_evidence` for later Mind prompts.
 - MI maintains a best-effort materialized text index under `<home>/indexes/memory.sqlite` (materialized view; source of truth remains MI logs/stores). Rebuild via `mi memory index rebuild`.
-- Index sync prunes disabled/deleted `learned`/`workflow` items so rolled-back preferences don't reappear in recall.
+- Index sync prunes disabled/deleted legacy `learned` entries and deleted workflows so rolled-back artifacts don't reappear in recall.
 
 Thought DB context (always-on, deterministic, V1):
 
 - Before each `decide_next` (and the post-user re-decide), MI builds a small Thought DB context (no extra model calls):
   - `values_claims`: active global preference/goal claims tagged `values:base` (canonical values)
-  - `query_claims`: token-ranked active claims from project + global
+  - `pref_goal_claims`: other recent preference/goal claims (project first, then global)
+  - `query_claims`: token-ranked active claims from project + global (excluding the above)
   - `edges`: a small set of reasoning/evolution edges among included claim ids
-- This context is passed to the `decide_next` prompt as `thought_db_context` and should be treated as canonical over free-form learned text when conflicts arise.
+- This context is passed to the `decide_next` prompt as `thought_db_context` and should be treated as canonical when deciding (including over `MindSpec.values_text` and any legacy learned text when conflicts arise).
 
 Loop/stuck guard (deterministic, V1):
 
@@ -184,7 +185,7 @@ Because MI does not intercept tools, "external actions" are a **soft policy** en
 
 - Light injection guidance ("if not covered by values, pause and ask")
 - Post-hoc detection from transcript/repo changes
-- Automatic "learned" tightening (reversible), plus optional immediate user escalation
+- Automatic preference tightening (reversible; materialized as Thought DB preference Claims), plus optional immediate user escalation
 
 Optional interrupt mode:
 
@@ -225,7 +226,7 @@ MI uses the following internal prompts (all should return strict JSON):
 
 4) `risk_judge` (implemented; post-hoc)
    - Input: Hands provider hint + recent transcript snippets + `MindSpec` + `EvidenceLog`
-   - Output: risk judgement with `category`, `severity`, `should_ask_user`, `mitigation`, and optional learned tightening
+   - Output: risk judgement with `category`, `severity`, `should_ask_user`, `mitigation`, and optional preference tightening (`learned_changes`, legacy field name)
 
 5) `plan_min_checks` (implemented)
    - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, repo observation, recent `EvidenceLog`
@@ -236,27 +237,27 @@ MI uses the following internal prompts (all should return strict JSON):
    - Output: an optional Hands reply (`codex_answer_input`, legacy name) that answers Hands' question(s) using values + evidence; only asks the user when MI cannot answer
 
 7) `decide_next` (implemented)
-   - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, and a deterministic Thought DB context subgraph (`values_claims` + `query_claims` + `edges`)
+   - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, and a deterministic Thought DB context subgraph (`values_claims` + `pref_goal_claims` + `query_claims` + `edges`)
    - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). `send_to_codex` is legacy naming and means "send the next batch input to Hands". This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
 
 8) `checkpoint_decide` (implemented; internal)
-   - Input: MindSpec/Overlay/Learned + compact "segment evidence" buffer + planned next Hands input (if any) + a status hint
+   - Input: `MindSpec`, `ProjectOverlay`, a compact Thought DB context, and a compact "segment evidence" buffer + planned next Hands input (if any) + a status hint
    - Output: whether MI should cut a checkpoint boundary (segment) now, and whether it should mine workflows/preferences at this boundary.
 
 9) `suggest_workflow` (implemented; optional)
-   - Input: task + MindSpec/Overlay/Learned + recent evidence (typically the current segment) + run notes
+   - Input: task + `MindSpec`, `ProjectOverlay`, a compact Thought DB context, recent evidence (typically the current segment), and run notes
    - Output: either `should_suggest=false` or a suggested workflow IR + a stable `signature` (used to count occurrences across runs). MI may solidify it into stored workflows depending on `MindSpec.workflows` knobs.
 
 10) `edit_workflow` (implemented; CLI)
-   - Input: MindSpec/Overlay/Learned + existing workflow + natural-language edit request
+   - Input: `MindSpec`, `ProjectOverlay`, a compact Thought DB context, an existing workflow, and a natural-language edit request
    - Output: edited workflow IR + change_summary/conflicts/notes (used by `mi workflow edit`)
 
 11) `mine_preferences` (implemented; optional)
-   - Input: task + MindSpec/Overlay/Learned + recent evidence (typically the current segment) + run notes
-   - Output: a small list of suggested reversible learned rules (scope=`project|global`) with confidence/benefit. MI uses occurrence counts to avoid noisy one-off learning.
+   - Input: task + `MindSpec`, `ProjectOverlay`, a compact Thought DB context, recent evidence (typically the current segment), and run notes
+   - Output: a small list of suggested preference/goal guidance texts (scope=`project|global`) with confidence/benefit, suitable to store as Thought DB preference/goal Claims. MI uses occurrence counts to avoid noisy one-off learning.
 
 12) `mine_claims` (implemented; optional; Thought DB)
-   - Input: task + MindSpec/Overlay/Learned + recent evidence (typically the current segment) + run notes
+   - Input: task + `MindSpec`, `ProjectOverlay`, a compact Thought DB context, recent evidence (typically the current segment), and run notes
    - Output: a small list of atomic `Claim`s (fact/preference/assumption/goal) and optional edges. MI applies them into the append-only Thought DB (project/global) with provenance that cites **EvidenceLog `event_id` only** (high-threshold, best-effort).
 
 13) `why_trace` (implemented; on-demand; Thought DB)
@@ -270,7 +271,7 @@ MI uses the following internal prompts (all should return strict JSON):
 Planned (not required for V1 loop to function; can be added incrementally):
 
 - `closure_eval` (legacy/optional; not used in the default loop because `decide_next` includes closure)
-- `learn_update` (beyond the simple learned text entries)
+- `learn_update` (beyond the simple claim-based preference tightening)
 
 ## Data Models (Minimal Schemas)
 
@@ -278,9 +279,10 @@ Planned (not required for V1 loop to function; can be added incrementally):
 
 MindSpec is the merge of:
 
-- `base` (user-authored values/preferences)
-- `learned` (auto-written, reversible)
-- `project_overlay` (project-specific defaults; e.g., testless verification strategy)
+- `base` (user-authored values prompt + configuration knobs; not canonical at runtime for values)
+- `project_overlay` (project-specific defaults/state; e.g., testless verification strategy)
+
+Canonical values/preferences are stored in Thought DB as preference/goal Claims (see "Thought DB context" and "Thought DB (Claims + Nodes)").
 
 Minimal shape:
 
@@ -325,7 +327,7 @@ Minimal shape:
     "enabled": true,
     "top_k": 3,
     "max_chars": 1800,
-    "include_kinds": ["snapshot", "learned", "workflow"],
+    "include_kinds": ["snapshot", "workflow", "claim", "node"],
     "exclude_current_project": false,
     "prefer_current_project": true,
     "triggers": {
@@ -463,7 +465,7 @@ Minimal shape:
 - `mind_error` (a Mind prompt-pack call failed; includes schema/tag + error + best-effort transcript pointer)
 - `mind_circuit` (Mind circuit breaker state change; V1 emits `state="open"` when it stops attempting further Mind calls)
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
-- `learn_suggested` (a suggested "learned" tightening produced by Mind; may be auto-applied depending on `violation_response.auto_learn`)
+- `learn_suggested` (a suggested preference tightening produced by Mind (`learned_changes`, legacy field name); may be auto-applied as Thought DB preference Claims depending on `violation_response.auto_learn`)
 - `learn_applied` (a manual application of a prior `learn_suggested` record; written by `mi learned apply-suggested ...`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
@@ -478,7 +480,7 @@ Minimal shape:
 - `workflow_solidified` (MI created a stored workflow IR from a repeated signature)
 - `host_sync` (MI synced derived artifacts into bound host workspaces; includes sync results)
 - `preference_mining` (output from `mine_preferences` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
-- `preference_solidified` (MI emitted a learned suggestion (and may auto-apply) when a mined preference reaches its occurrence threshold)
+- `preference_solidified` (MI emitted a preference tightening suggestion (and may auto-apply as a Thought DB Claim) when a mined preference reaches its occurrence threshold)
 - `claim_mining` (output from `mine_claims` at a checkpoint/segment boundary; includes applied Thought DB claim ids; best-effort, high-threshold)
 - `claim_retract` (user-driven append-only claim retraction via CLI)
 - `claim_supersede` (user-driven append-only claim update via CLI; implemented as new claim + supersedes edge)
@@ -749,30 +751,28 @@ If a `risk_event` is detected, MI may immediately prompt the user to continue de
 - `prompt_user_risk_categories` (optional allow-list; empty means any)
 - `prompt_user_respect_should_ask_user` (when true, prompt only if `risk_judge.should_ask_user=true`)
 
-### Learned (append-only, reversible)
+### Preference Tightening ("learned_changes") (append-only, reversible)
 
-V1 stores learned preferences as JSONL records:
+Mind prompts may output `learned_changes` suggestions (legacy field name) from:
 
-- Add: `{id, ts, scope, enabled=true, text, rationale}`
-- Disable (rollback): `{id, ts, action="disable", target_id, rationale}`
+- `risk_judge.learned_changes`
+- `decide_next.learned_changes`
 
-```json
-{
-  "id": "string",
-  "ts": "RFC3339 timestamp",
-  "scope": "global|project",
-  "enabled": true,
-  "text": "string",
-  "rationale": "string"
-}
-```
+V1 strict Thought DB mode treats these as **preference tightening suggestions** and stores them canonically as Thought DB preference Claims (append-only, reversible).
 
-Learned changes are suggested by Mind outputs (`risk_judge.learned_changes` and `decide_next.learned_changes`).
+`MindSpec.violation_response.auto_learn` controls what MI does:
 
-`MindSpec.violation_response.auto_learn` controls what MI does with those suggestions:
+- If `auto_learn=true` (default): MI materializes each suggestion as a Thought DB `Claim` (`claim_type=preference`, scope=`project|global`) and records a `learn_suggested` EvidenceLog record with `applied_claim_ids`.
+- If `auto_learn=false`: MI does **not** write claims automatically; it records `learn_suggested` into EvidenceLog for audit and you can apply it later via CLI (`mi learned apply-suggested ...`), which appends the preference Claims and records `learn_applied`.
 
-- If `auto_learn=true` (default): MI appends learned entries automatically (append-only) and also records a `learn_suggested` EvidenceLog record with `applied_entry_ids`.
-- If `auto_learn=false`: MI will **not** write `learned.jsonl` automatically; it records `learn_suggested` into EvidenceLog for audit and you can apply it later via CLI.
+Rollback:
+
+- Retract an auto-learned preference Claim via `mi claim retract <claim_id> ...` (append-only).
+
+Legacy note:
+
+- Older MI versions wrote free-form learned rules into `mindspec/learned.jsonl` and `projects/<project_id>/learned.jsonl`.
+- Those legacy learned entries are **non-canonical** in strict Thought DB mode: they are excluded from Hands light injection and excluded from cross-project recall by default (but can still be indexed/inspected for migration or debugging).
 
 ## Workflows + Host Adapters (V1, Experimental)
 
@@ -811,12 +811,12 @@ OpenClaw adapter (Skills-only):
 
 ## Preference Mining (V1, Experimental)
 
-MI may mine likely-stable user preferences/habits from MI-captured transcript/evidence and emit reversible learned rules.
+MI may mine likely-stable user preferences/habits from MI-captured transcript/evidence and emit preference tightening suggestions (canonicalized as Thought DB preference Claims when applied).
 
 Knobs in `MindSpec.preference_mining`:
 
 - `auto_mine`: allow MI to call `mine_preferences` at LLM-judged checkpoints during `mi run` (including at run end).
-- `min_occurrences`: usually require >=2 similar occurrences before emitting a learned suggestion.
+- `min_occurrences`: usually require >=2 similar occurrences before emitting a suggestion.
 - `allow_single_if_high_benefit`: allow 1-shot emission when benefit is extremely high.
 - `min_confidence`: skip suggestions below this confidence to reduce noisy learning.
 - `max_suggestions`: cap the number of suggestions considered per `mi run`.
@@ -824,9 +824,9 @@ Knobs in `MindSpec.preference_mining`:
 Behavior in `mi run` (V1):
 
 - MI may call `mine_preferences` at checkpoints (segment boundaries) during `mi run` and records `kind=preference_mining`.
-- MI computes a stable signature from `(scope + normalized learned text)` and increments the occurrence count in `projects/<project_id>/preference_candidates.json` (at most once per `mi run` invocation per signature).
+- MI computes a stable signature from `(scope + normalized suggestion text)` and increments the occurrence count in `projects/<project_id>/preference_candidates.json` (at most once per `mi run` invocation per signature).
 - When the occurrence threshold is met, MI emits a `kind=learn_suggested` record (source=`mine_preferences`) and records `kind=preference_solidified`.
-  - If `violation_response.auto_learn=true`, MI also appends the learned rule into `learned.jsonl` and includes `applied_entry_ids` in the `learn_suggested` record.
+  - If `violation_response.auto_learn=true`, MI also appends the preference tightening as a Thought DB preference Claim and includes `applied_claim_ids` in the `learn_suggested` record.
 
 ## Thought DB (Claims + Nodes) (V1, Experimental)
 
@@ -866,7 +866,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
 
 - Global:
   - `mindspec/base.json`
-  - `mindspec/learned.jsonl`
+  - `mindspec/learned.jsonl` (legacy; non-canonical in strict Thought DB mode)
   - `global/evidence.jsonl` (global EvidenceLog for values/preferences lifecycle; provides stable `event_id` provenance)
   - `thoughtdb/global/claims.jsonl` (global Claims)
   - `thoughtdb/global/edges.jsonl` (global Edges)
@@ -875,7 +875,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/index.json`
 - Per project (keyed by a resolved `project_id`):
   - `projects/<project_id>/overlay.json`
-  - `projects/<project_id>/learned.jsonl`
+  - `projects/<project_id>/learned.jsonl` (legacy; non-canonical in strict Thought DB mode)
   - `projects/<project_id>/evidence.jsonl`
   - `projects/<project_id>/segment_state.json` (best-effort segment buffer for checkpoint-based mining; internal)
   - `projects/<project_id>/thoughtdb/claims.jsonl` (project Claims)
@@ -1036,7 +1036,7 @@ mi --home ~/.mind-incarnation memory index rebuild --no-snapshots
 Notes:
 
 - Rebuild deletes and recreates `<home>/indexes/memory.sqlite` from MI stores and EvidenceLog `snapshot` records (safe; derived).
-- Recall is text-only in V1: it searches indexed items (default: `snapshot` / `learned` / `workflow`; `claim` and Thought DB `node` (Decision/Action/Summary) are available when `cross_project_recall.include_kinds` contains `"claim"` / `"node"`). Node items are indexed incrementally when MI creates them (checkpoint materialization) and are backfilled on `mi memory index rebuild`. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
+- Recall is text-only in V1: it searches indexed items by kind. Default `cross_project_recall.include_kinds` is conservative and Thought-DB-first: `snapshot` / `workflow` / `claim` / `node`. Legacy `learned` items may still exist and can be included by adding `"learned"` to `include_kinds` (not recommended as canonical). Node items are indexed incrementally when MI creates them (checkpoint materialization) and are backfilled on `mi memory index rebuild`. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
 - Memory backend is pluggable (internal): default is `sqlite_fts` (persisted at `<home>/indexes/memory.sqlite`). You can override via `$MI_MEMORY_BACKEND` (e.g., `in_memory` for ephemeral/test runs). `mi memory index status` prints the active backend.
 - Thought DB direction: V1 includes append-only Claim/Edge stores + checkpoint-only claim mining; full root-cause tracing and whole-graph refactors remain future extensions. See `docs/mi-thought-db.md`.
 
@@ -1055,18 +1055,24 @@ mi --home ~/.mind-incarnation gc transcripts --cd <project_root>
 mi --home ~/.mind-incarnation gc transcripts --cd <project_root> --apply
 ```
 
-Inspect/rollback learned preferences:
+Inspect/rollback legacy learned entries (non-canonical; `learned.jsonl`):
 
 ```bash
 mi --home ~/.mind-incarnation learned list --cd <project_root>
 mi --home ~/.mind-incarnation learned disable <id> --scope project --cd <project_root>
 ```
 
-Apply a recorded suggestion (when `violation_response.auto_learn=false` or if you want manual control):
+Apply a recorded suggestion as Thought DB preference Claims (when `violation_response.auto_learn=false` or if you want manual control):
 
 ```bash
 mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root>
 mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root> --dry-run
+```
+
+Rollback claim-based preference tightening (append-only):
+
+```bash
+mi --home ~/.mind-incarnation claim retract <claim_id> --cd <project_root> --scope project
 ```
 
 Manage Thought DB claims (project/global/effective):

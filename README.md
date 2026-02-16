@@ -178,15 +178,22 @@ mi gc transcripts --cd /path/to/your/project
 mi gc transcripts --cd /path/to/your/project --apply
 ```
 
-Learned preferences (reversible):
+Preference tightening (reversible; strict Thought DB mode):
 
 ```bash
+# Apply a recorded suggestion (when auto-learn is off, or for manual control):
+mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
+
+# Inspect + rollback canonical preference claims:
+mi claim list --cd /path/to/your/project --scope effective
+mi claim retract <claim_id> --cd /path/to/your/project --scope project
+
+# Legacy learned.jsonl entries (non-canonical; older MI versions):
 mi learned list --cd /path/to/your/project
 mi learned disable <id> --scope project --cd /path/to/your/project
-mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 ```
 
-Note: if `violation_response.auto_learn=false` in MindSpec base, MI records suggestions in EvidenceLog (`kind=learn_suggested`) instead of writing `learned.jsonl` automatically.
+Note: `learned_changes` suggestions are always recorded in EvidenceLog (`kind=learn_suggested`). If `violation_response.auto_learn=true` (default), MI also materializes them as Thought DB preference Claims (`applied_claim_ids`). If false, use `mi learned apply-suggested ...` to apply them later.
 
 Experimental: preference mining
 
@@ -198,7 +205,7 @@ MI can maintain an append-only "Thought DB" of atomic reusable `Claim`s (fact/pr
 
 - If `MindSpec.thought_db.auto_mine=true` (default), MI may call `mine_claims` at checkpoints during `mi run` and records `kind=claim_mining`.
 - If `MindSpec.thought_db.auto_materialize_nodes=true` (default), MI may also materialize `Decision` / `Action` / `Summary` nodes at checkpoints (deterministic; no extra model calls) and records `kind=node_materialized`.
-- Memory index: Thought DB `node` items are also indexable for text recall; include `"node"` in `cross_project_recall.include_kinds` if you want recall to surface them (default include_kinds is conservative).
+- Memory index: Thought DB `claim` / `node` items are also indexable for text recall. Default `cross_project_recall.include_kinds` is Thought-DB-first (`snapshot` / `workflow` / `claim` / `node`); legacy `"learned"` is excluded by default.
 - Claims are stored per project (and optionally global) and can be managed via CLI:
 
 ```bash

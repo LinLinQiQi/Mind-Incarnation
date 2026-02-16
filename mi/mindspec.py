@@ -81,7 +81,8 @@ def _default_base(values_text: str) -> dict[str, Any]:
             "enabled": True,
             "top_k": 3,
             "max_chars": 1800,
-            "include_kinds": ["snapshot", "learned", "workflow"],
+            # Strict Thought DB mode: prefer canonical claims/nodes over free-form learned text.
+            "include_kinds": ["snapshot", "workflow", "claim", "node"],
             # Prefer recalling within the current project first (then global, then other projects).
             # Set to true if you want "pure" cross-project-only recall.
             "exclude_current_project": False,

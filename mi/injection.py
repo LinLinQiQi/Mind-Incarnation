@@ -5,6 +5,7 @@ from typing import Any
 from .thoughtdb import ThoughtDbStore, ThoughtDbView
 from .values import VALUES_BASE_TAG
 from .pins import PINNED_PREF_GOAL_TAGS
+from .operational_defaults import resolve_operational_defaults
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -122,9 +123,9 @@ def build_light_injection(
 ) -> str:
     """Build MI "light injection" for Hands from canonical Thought DB claims."""
 
-    defaults = mindspec_base.get("defaults") if isinstance(mindspec_base.get("defaults"), dict) else {}
-    refactor_intent = str(defaults.get("refactor_intent", "behavior_preserving"))
-    ask_when_uncertain = bool(defaults.get("ask_when_uncertain", True))
+    op = resolve_operational_defaults(tdb=tdb, mindspec_base=mindspec_base, as_of_ts=as_of_ts)
+    refactor_intent = str(op.refactor_intent or "behavior_preserving").strip() or "behavior_preserving"
+    ask_when_uncertain = bool(op.ask_when_uncertain)
 
     claims = collect_canonical_pref_goal_claims(tdb=tdb, as_of_ts=as_of_ts)
 

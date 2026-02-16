@@ -99,7 +99,7 @@ Thought DB context (always-on, deterministic, V1):
 
 - Before each `decide_next` (and the post-user re-decide), MI builds a small Thought DB context (no extra model calls):
   - `values_claims`: active global preference/goal claims tagged `values:base` (canonical values)
-  - `pref_goal_claims`: other recent preference/goal claims (project first, then global)
+  - `pref_goal_claims`: other preference/goal claims (project first, then global), including pinned operational default claims (e.g., tags `mi:setting:ask_when_uncertain`, `mi:setting:refactor_intent`, `mi:testless_verification_strategy`)
   - `query_claims`: token-ranked active claims from project + global (excluding the above)
   - `edges`: a small set of reasoning/evolution edges among included claim ids
 - This context is passed to the `decide_next` prompt as `thought_db_context` and should be treated as canonical when deciding (including over `MindSpec.values_text` and any legacy learned text when conflicts arise).
@@ -108,8 +108,8 @@ Loop/stuck guard (deterministic, V1):
 
 - Whenever MI is about to send a next input to Hands, it computes a bounded signature of `(codex_last_message, next_input)` (field name is legacy, but it is "Hands last message").
 - If a loop-like repetition pattern is detected (AAA or ABAB), MI records `kind="loop_guard"` and either:
-  - asks the user for an override instruction (if `defaults.ask_when_uncertain=true`), or
-  - stops with `status=blocked` (if `defaults.ask_when_uncertain=false`).
+  - asks the user for an override instruction (if the effective `ask_when_uncertain=true`, canonically stored as a Thought DB preference Claim tagged `mi:setting:ask_when_uncertain`), or
+  - stops with `status=blocked` (if the effective `ask_when_uncertain=false`).
 
 Checkpointing (segments; internal, V1):
 
@@ -125,8 +125,8 @@ Mind failure handling (deterministic, V1):
   - records `kind="mind_circuit"` (`state="open"`) once, and
   - skips further Mind calls for the remainder of the current `mi run` invocation (to reduce repeated `mind_error` noise).
 - MI continues when possible (e.g., skip optional steps like `risk_judge` / `plan_min_checks` / `auto_answer_to_codex`), but if it cannot safely determine the next action (notably `decide_next`), MI will either:
-  - ask the user for an override instruction (when `defaults.ask_when_uncertain=true`), or
-  - stop with `status=blocked` (when `defaults.ask_when_uncertain=false`).
+  - ask the user for an override instruction (when the effective `ask_when_uncertain=true`, canonically stored as a Thought DB preference Claim tagged `mi:setting:ask_when_uncertain`), or
+  - stop with `status=blocked` (when the effective `ask_when_uncertain=false`).
 
 ## Hands + Mind Provider Integration (V1)
 
@@ -279,14 +279,14 @@ Planned (not required for V1 loop to function; can be added incrementally):
 
 MindSpec is the merge of:
 
-- `base` (user-authored values prompt + configuration knobs; not canonical at runtime for values)
+- `base` (user-authored values prompt + configuration knobs; not canonical at runtime for values or operational defaults)
 - `project_overlay` (project-specific defaults/state; may include derived mirrors of canonical preferences, e.g., a testless verification strategy)
 
 Canonical values/preferences are stored in Thought DB as preference/goal Claims (see "Thought DB context" and "Thought DB (Claims + Nodes)").
 
 Runtime prompt hygiene (V1):
 
-- For runtime Mind prompt-pack calls, MI **sanitizes** `MindSpec.base` by redacting `values_text` / `values_summary` so the model relies on the canonical Thought DB context for values/preferences.
+- For runtime Mind prompt-pack calls, MI **sanitizes** `MindSpec.base` by redacting `values_text` / `values_summary` and clearing `defaults`, so the model relies on the canonical Thought DB context (Claims) for values/preferences and operational defaults.
 
 Minimal shape:
 
@@ -467,6 +467,7 @@ Minimal shape:
 `evidence.jsonl` is append-only and may contain multiple record kinds:
 
 - `hands_input` (exact MI input + light injection sent to Hands for the batch; older logs may use `codex_input`)
+- `defaults_claim_sync` (internal: ensured operational defaults are canonical global Thought DB preference Claims tagged `mi:setting:*`; records the sync outcome for audit)
 - `EvidenceItem` (extracted summary per batch; includes a Mind transcript pointer for `extract_evidence`)
 - `mind_error` (a Mind prompt-pack call failed; includes schema/tag + error + best-effort transcript pointer)
 - `mind_circuit` (Mind circuit breaker state change; V1 emits `state="open"` when it stops attempting further Mind calls)
@@ -875,7 +876,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
 - Global:
   - `mindspec/base.json`
   - `mindspec/learned.jsonl` (legacy; non-canonical in strict Thought DB mode)
-  - `global/evidence.jsonl` (global EvidenceLog for values/preferences lifecycle; provides stable `event_id` provenance)
+  - `global/evidence.jsonl` (global EvidenceLog for values + operational defaults lifecycle; provides stable `event_id` provenance for global preference/goal Claims)
   - `thoughtdb/global/claims.jsonl` (global Claims)
   - `thoughtdb/global/edges.jsonl` (global Edges)
   - `thoughtdb/global/nodes.jsonl` (global Nodes)
@@ -985,6 +986,7 @@ Notes:
 
 - `mi init` appends a global EvidenceLog `values_set` event under `global/evidence.jsonl` (so global value claims can cite stable `event_id` provenance).
 - Unless `--no-compile` or `--no-values-claims` is set, `mi init` also calls `values_claim_patch` and applies it into `thoughtdb/global/*` as preference/goal Claims tagged `values:base`.
+- `mi run` may append a global EvidenceLog `mi_defaults_set` event under `global/evidence.jsonl` when syncing operational defaults (e.g., `ask_when_uncertain` / `refactor_intent`) into canonical global Thought DB preference Claims tagged `mi:setting:*`.
 
 Run batch autopilot:
 

@@ -11,6 +11,8 @@ def sanitize_mindspec_base_for_runtime(base: dict[str, Any] | None) -> dict[str,
     - Canonical values/preferences live in Thought DB preference/goal Claims.
     - `values_text` / `values_summary` remain useful for humans and `mi init`, but
       should not steer runtime decisions once claims exist.
+    - Operational defaults (e.g., ask_when_uncertain/refactor_intent) are also treated
+      as canonical Thought DB preference claims; avoid duplicating them in prompts.
     """
 
     if not isinstance(base, dict):
@@ -22,5 +24,7 @@ def sanitize_mindspec_base_for_runtime(base: dict[str, Any] | None) -> dict[str,
     out["values_text"] = ""
     out["values_summary"] = []
 
-    return out
+    # Defaults are derived from canonical Thought DB claims at runtime.
+    out["defaults"] = {}
 
+    return out

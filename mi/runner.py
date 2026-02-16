@@ -45,6 +45,7 @@ from .thought_context import build_decide_next_thoughtdb_context
 from .injection import build_light_injection
 from .thoughtdb import ThoughtDbStore, claim_signature
 from .values import apply_values_claim_patch, existing_values_claims, write_values_set_event
+from .operational_defaults import ensure_operational_defaults_claims_current, resolve_operational_defaults
 from .pins import TESTLESS_STRATEGY_TAG
 
 
@@ -1422,6 +1423,23 @@ def run_autopilot(
             rationale=overlay_rationale or "migrate from overlay",
         )
 
+    # Canonical operational defaults (ask_when_uncertain/refactor_intent) live as global Thought DB preference claims.
+    # Keep them in sync with MindSpec base.defaults for now; runtime logic reads from claims.
+    try:
+        defaults_sync = ensure_operational_defaults_claims_current(home_dir=home, tdb=tdb, mindspec_base=loaded.base, mode="sync")
+    except Exception as e:
+        defaults_sync = {"ok": False, "changed": False, "mode": "sync", "event_id": "", "error": f"{type(e).__name__}: {e}"}
+
+    evw.append(
+        {
+            "kind": "defaults_claim_sync",
+            "batch_id": "b0.defaults_claim_sync",
+            "ts": now_rfc3339(),
+            "thread_id": "",
+            "sync": defaults_sync if isinstance(defaults_sync, dict) else {"ok": False, "error": "invalid result"},
+        }
+    )
+
     _ensure_values_claims_current()
     _ensure_testless_strategy_claim_current()
 
@@ -2360,7 +2378,9 @@ def run_autopilot(
             evidence_window.append({"kind": "loop_guard", "batch_id": batch_id, "pattern": pattern, "reason": reason})
             evidence_window[:] = evidence_window[-8:]
 
-            ask_when_uncertain = bool((loaded.base.get("defaults") or {}).get("ask_when_uncertain", True))
+            ask_when_uncertain = bool(
+                resolve_operational_defaults(tdb=tdb, mindspec_base=loaded.base, as_of_ts=now_rfc3339()).ask_when_uncertain
+            )
             if ask_when_uncertain:
                 q = (
                     "MI detected a repeated loop (pattern="
@@ -3243,7 +3263,9 @@ def run_autopilot(
             batch_id=batch_id,
         )
         if decision_obj is None:
-            ask_when_uncertain = bool((loaded.base.get("defaults") or {}).get("ask_when_uncertain", True))
+            ask_when_uncertain = bool(
+                resolve_operational_defaults(tdb=tdb, mindspec_base=loaded.base, as_of_ts=now_rfc3339()).ask_when_uncertain
+            )
             if ask_when_uncertain:
                 if decision_state == "skipped":
                     if _looks_like_user_question(codex_last):

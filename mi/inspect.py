@@ -110,6 +110,23 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
         sid = str(obj.get("suggestion_id") or "")
         applied = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
         detail = f"suggestion_id={sid} applied={len(applied)}"
+    elif kind == "claim_mining":
+        applied = obj.get("applied") if isinstance(obj.get("applied"), dict) else {}
+        w = applied.get("written") if isinstance(applied.get("written"), list) else []
+        le = applied.get("linked_existing") if isinstance(applied.get("linked_existing"), list) else []
+        we = applied.get("written_edges") if isinstance(applied.get("written_edges"), list) else []
+        sk = applied.get("skipped") if isinstance(applied.get("skipped"), list) else []
+        detail = f"written={len(w)} linked_existing={len(le)} edges={len(we)} skipped={len(sk)}"
+    elif kind == "why_trace":
+        out = obj.get("output") if isinstance(obj.get("output"), dict) else {}
+        st = str(out.get("status") or "").strip()
+        cf = out.get("confidence")
+        chosen = out.get("chosen_claim_ids") if isinstance(out.get("chosen_claim_ids"), list) else []
+        try:
+            cf_s = f"{float(cf):.2f}" if cf is not None else ""
+        except Exception:
+            cf_s = str(cf or "")
+        detail = " ".join([x for x in [f"status={st}" if st else "", (f"conf={cf_s}" if cf_s else ""), f"chosen={len(chosen)}"] if x]).strip()
     elif kind == "loop_guard":
         detail = f"pattern={obj.get('pattern')}"
     elif kind == "user_input":

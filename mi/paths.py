@@ -391,6 +391,16 @@ class GlobalPaths:
     home_dir: Path
 
     @property
+    def global_dir(self) -> Path:
+        # Global ledger + non-project artifacts that should still have event_id provenance.
+        return self.home_dir / "global"
+
+    @property
+    def global_evidence_log_path(self) -> Path:
+        # Append-only global EvidenceLog (values/prefs lifecycle, etc.).
+        return self.global_dir / "evidence.jsonl"
+
+    @property
     def minds_dir(self) -> Path:
         return self.home_dir / "mindspec"
 

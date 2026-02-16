@@ -6,6 +6,7 @@ Other important docs to keep aligned:
 
 - `README.md` (default English, public entry point)
 - `README.zh-CN.md` (Chinese entry point; should mirror README structure for user-facing changes)
+- `docs/mi-thought-db.md` (Thought DB design notes; keep aligned when claims/nodes/why/values->claims change)
 - `AGENTS.md` / `skills/mi-doc-keeper/*` (doc hygiene and maintenance rules)
 
 ## Update mapping
@@ -19,6 +20,9 @@ Other important docs to keep aligned:
   - Update: `docs/mi-v1-spec.md` ("Soft-Constraint Violations", "Data Models (MindSpec)", related sections)
 - Storage/logging changes (transcripts, evidence log, learned changes)
   - Update: `docs/mi-v1-spec.md` ("Transparency", "Data Models", "Doc Update Policy")
+- Thought DB changes (claims/nodes/edges/why trace/values->claims)
+  - Update: `docs/mi-v1-spec.md` ("Thought DB", "Prompts")
+  - Update: `docs/mi-thought-db.md` (design notes + what is implemented)
 - Policy changes (values compilation, learned rule tightening, auto-answering)
   - Update: `docs/mi-v1-spec.md` ("Prompts", "Soft-Constraint Violations", "MindSpec")
 - CLI commands/flags or behavior changes

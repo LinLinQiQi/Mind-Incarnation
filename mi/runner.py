@@ -38,6 +38,7 @@ from .hosts import sync_hosts_from_overlay
 from .memory_facade import MemoryFacade
 from .memory_ingest import thoughtdb_node_item
 from .evidence import EvidenceWriter, new_run_id
+from .thought_context import build_decide_next_thoughtdb_context
 from .thoughtdb import ThoughtDbStore
 
 
@@ -730,6 +731,7 @@ def run_autopilot(
         batch_id: str,
         phase: str,
         mind_transcript_ref: str,
+        thought_db_context_summary: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         if not isinstance(decision_obj, dict):
             return None
@@ -747,6 +749,7 @@ def run_autopilot(
                 "ask_user_question": str(decision_obj.get("ask_user_question") or ""),
                 "next_codex_input": str(decision_obj.get("next_codex_input") or ""),
                 "mind_transcript_ref": str(mind_transcript_ref or ""),
+                "thought_db": thought_db_context_summary if isinstance(thought_db_context_summary, dict) else {},
                 "decision": decision_obj,
             }
         )
@@ -2690,12 +2693,28 @@ def run_autopilot(
             continue
 
         # Decide what to do next.
+        tdb_ctx = build_decide_next_thoughtdb_context(
+            tdb=tdb,
+            as_of_ts=now_rfc3339(),
+            task=task,
+            hands_last_message=codex_last,
+            recent_evidence=evidence_window,
+        )
+        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
+        tdb_ctx_summary = {
+            "as_of_ts": tdb_ctx.as_of_ts,
+            "values_claim_ids": [str(c.get("claim_id") or "") for c in (tdb_ctx.values_claims or []) if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
+            "query_claim_ids": [str(c.get("claim_id") or "") for c in (tdb_ctx.query_claims or []) if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
+            "edges_n": len(tdb_ctx.edges or []),
+            "notes": str(tdb_ctx.notes or "").strip(),
+        }
         decision_prompt = decide_next_prompt(
             task=task,
             hands_provider=cur_provider,
             mindspec_base=loaded.base,
             learned_text=loaded.learned_text,
             project_overlay=loaded.project_overlay,
+            thought_db_context=tdb_ctx_obj,
             active_workflow=_active_workflow(),
             workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
             recent_evidence=evidence_window,
@@ -2768,6 +2787,7 @@ def run_autopilot(
             batch_id=f"b{batch_idx}",
             phase="initial",
             mind_transcript_ref=decision_mind_ref,
+            thought_db_context_summary=tdb_ctx_summary,
         )
         if decide_rec:
             _segment_add(decide_rec)
@@ -3003,12 +3023,28 @@ def run_autopilot(
             _persist_segment_state()
 
             # Re-decide with the user input included (no extra Hands run yet).
+            tdb_ctx2 = build_decide_next_thoughtdb_context(
+                tdb=tdb,
+                as_of_ts=now_rfc3339(),
+                task=task,
+                hands_last_message=codex_last,
+                recent_evidence=evidence_window,
+            )
+            tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
+            tdb_ctx2_summary = {
+                "as_of_ts": tdb_ctx2.as_of_ts,
+                "values_claim_ids": [str(c.get("claim_id") or "") for c in (tdb_ctx2.values_claims or []) if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
+                "query_claim_ids": [str(c.get("claim_id") or "") for c in (tdb_ctx2.query_claims or []) if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
+                "edges_n": len(tdb_ctx2.edges or []),
+                "notes": str(tdb_ctx2.notes or "").strip(),
+            }
             decision_prompt2 = decide_next_prompt(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=loaded.base,
                 learned_text=loaded.learned_text,
                 project_overlay=loaded.project_overlay,
+                thought_db_context=tdb_ctx2_obj,
                 active_workflow=_active_workflow(),
                 workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
                 recent_evidence=evidence_window,
@@ -3049,6 +3085,7 @@ def run_autopilot(
                 batch_id=f"b{batch_idx}",
                 phase="after_user",
                 mind_transcript_ref=decision2_mind_ref,
+                thought_db_context_summary=tdb_ctx2_summary,
             )
             if decide_rec2:
                 _segment_add(decide_rec2)

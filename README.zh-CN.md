@@ -123,6 +123,11 @@ MI 可以通过 `hands.provider=cli` 包装大多数 agent CLI。你需要提供
 mi init --values "我的偏好：尽量少问；默认行为不变重构；没有测试就停下来；非必要不联网/不安装依赖/不 push。"
 ```
 
+说明：
+
+- `mi init` 会在 `~/.mind-incarnation/global/evidence.jsonl` 追加一个全局 EvidenceLog `values_set` 事件（稳定的 `event_id` 证据来源）。
+- 除非设置 `--no-compile` 或 `--no-values-claims`，`mi init` 还会将价值观迁移为全局 Thought DB 的 preference/goal Claim（带 `values:base` 标签），供 `mi run` 的 `decide_next` 作为 canonical values 使用。
+
 在 Hands 之上运行 MI（默认将 transcript + evidence 写入 `~/.mind-incarnation/projects/<id>/`；默认 Hands=Codex）：
 
 ```bash
@@ -273,6 +278,7 @@ mi host sync --cd /path/to/your/project
 - Hands 原始 transcript：`~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`
 - Mind transcripts（MI prompt-pack 调用）：`~/.mind-incarnation/projects/<id>/transcripts/mind/*.jsonl`
 - EvidenceLog（追加写入；包含 `snapshot` + `cross_project_recall` 等记录）：`~/.mind-incarnation/projects/<id>/evidence.jsonl`
+- 全局 EvidenceLog（追加写入；价值观/偏好生命周期事件，例如 `values_set`）：`~/.mind-incarnation/global/evidence.jsonl`
 - Thought DB（追加写的 Claim/Edge/Node）：`~/.mind-incarnation/projects/<id>/thoughtdb/{claims,edges,nodes}.jsonl` 以及 `~/.mind-incarnation/thoughtdb/global/{claims,edges,nodes}.jsonl`
 - 记忆文本索引（materialized view；可重建；默认 backend=`sqlite_fts`）：`~/.mind-incarnation/indexes/memory.sqlite`
 

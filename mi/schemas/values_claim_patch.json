@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MI ValuesClaimPatch",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["claims", "edges", "retract_claim_ids", "notes"],
+  "properties": {
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "local_id",
+          "claim_type",
+          "text",
+          "scope",
+          "visibility",
+          "valid_from",
+          "valid_to",
+          "confidence",
+          "source_event_ids",
+          "tags",
+          "notes"
+        ],
+        "properties": {
+          "local_id": { "type": "string" },
+          "claim_type": { "type": "string", "enum": ["fact", "preference", "assumption", "goal"] },
+          "text": { "type": "string" },
+          "scope": { "type": "string", "enum": ["project", "global"] },
+          "visibility": { "type": "string", "enum": ["private", "project", "global"] },
+          "valid_from": {
+            "anyOf": [
+              { "type": "null" },
+              { "type": "string" }
+            ]
+          },
+          "valid_to": {
+            "anyOf": [
+              { "type": "null" },
+              { "type": "string" }
+            ]
+          },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "source_event_ids": { "type": "array", "items": { "type": "string" } },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["edge_type", "from_claim_id", "to_claim_id", "confidence", "source_event_ids", "notes"],
+        "properties": {
+          "edge_type": {
+            "type": "string",
+            "enum": ["depends_on", "supports", "contradicts", "derived_from", "mentions", "supersedes", "same_as"]
+          },
+          "from_claim_id": { "type": "string" },
+          "to_claim_id": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "source_event_ids": { "type": "array", "items": { "type": "string" } },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "retract_claim_ids": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": "string" }
+  }
+}
+

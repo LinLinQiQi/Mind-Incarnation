@@ -19,7 +19,7 @@ from .config import (
     rollback_config,
 )
 from .mindspec import MindSpecStore
-from .prompts import compile_mindspec_prompt, edit_workflow_prompt, mine_claims_prompt
+from .prompts import compile_mindspec_prompt, edit_workflow_prompt, mine_claims_prompt, values_claim_patch_prompt
 from .runner import run_autopilot
 from .paths import GlobalPaths, ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
 from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
@@ -42,6 +42,7 @@ from .hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overl
 from .memory_ingest import thoughtdb_node_item
 from .memory_service import MemoryService
 from .evidence import EvidenceWriter, new_run_id
+from .values import write_values_set_event, existing_values_claims, apply_values_claim_patch
 from .why import (
     find_evidence_event,
     query_from_evidence_event,
@@ -130,6 +131,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-compile",
         action="store_true",
         help="Do not call the model; write defaults + values_text only.",
+    )
+    p_init.add_argument(
+        "--no-values-claims",
+        action="store_true",
+        help="Skip migrating values/preferences into global Thought DB preference/goal Claims.",
     )
     p_init.add_argument(
         "--dry-run",
@@ -588,6 +594,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Values text is empty. Provide --values or pipe text to stdin.", file=sys.stderr)
             return 2
 
+        llm = None
         compiled = None
         if not args.no_compile:
             # Run compile in an isolated directory to avoid accidental project context bleed.
@@ -634,6 +641,85 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         print(f"Wrote base MindSpec to {store.base_path}")
+
+        # Record values changes into a global EvidenceLog so later Claims can cite stable event_id provenance.
+        base_after = store.load_base()
+        values_ev = write_values_set_event(
+            home_dir=store.home_dir,
+            values_text=values,
+            compiled_mindspec=base_after,
+            notes="mi init",
+        )
+        values_event_id = str(values_ev.get("event_id") or "").strip()
+        if values_event_id:
+            print(f"[mi] recorded global values_set event_id={values_event_id}", file=sys.stderr)
+        else:
+            print("[mi] warning: failed to record global values_set event_id; skipping values->claims migration", file=sys.stderr)
+            return 0
+
+        # Migrate values into global Thought DB preference/goal claims (best-effort).
+        if args.no_compile:
+            print("[mi] values->claims skipped (--no-compile)", file=sys.stderr)
+            return 0
+        if bool(args.no_values_claims):
+            print("[mi] values->claims skipped (--no-values-claims)", file=sys.stderr)
+            return 0
+        if llm is None:
+            print("[mi] values->claims skipped (mind provider unavailable)", file=sys.stderr)
+            return 0
+
+        try:
+            # Use a dummy ProjectPaths id to avoid accidentally creating a project mapping during global init.
+            dummy_pp = ProjectPaths(home_dir=store.home_dir, project_root=Path("."), _project_id="__global__")
+            tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=dummy_pp)
+
+            existing = existing_values_claims(tdb=tdb, limit=120)
+            retractable_ids = [
+                str(c.get("claim_id") or "").strip()
+                for c in existing
+                if isinstance(c, dict) and str(c.get("claim_id") or "").strip()
+            ]
+
+            prompt2 = values_claim_patch_prompt(
+                values_text=values,
+                compiled_mindspec=base_after,
+                existing_values_claims=existing,
+                allowed_event_ids=[values_event_id],
+                allowed_retract_claim_ids=retractable_ids,
+                notes="mi init (values -> Thought DB claims)",
+            )
+            patch_obj = llm.call(schema_filename="values_claim_patch.json", prompt=prompt2, tag="values_claim_patch").obj
+
+            tcfg = base_after.get("thought_db") if isinstance(base_after.get("thought_db"), dict) else {}
+            try:
+                min_conf = float(tcfg.get("min_confidence", 0.9) or 0.9)
+            except Exception:
+                min_conf = 0.9
+            try:
+                base_max = int(tcfg.get("max_claims_per_checkpoint", 6) or 6)
+            except Exception:
+                base_max = 6
+            max_claims = max(8, min(20, base_max * 2))
+
+            applied = apply_values_claim_patch(
+                tdb=tdb,
+                patch_obj=patch_obj if isinstance(patch_obj, dict) else {},
+                values_event_id=values_event_id,
+                min_confidence=min_conf,
+                max_claims=max_claims,
+            )
+            if applied.ok:
+                a = applied.applied if isinstance(applied.applied, dict) else {}
+                written = a.get("written") if isinstance(a.get("written"), list) else []
+                linked = a.get("linked_existing") if isinstance(a.get("linked_existing"), list) else []
+                edges = a.get("written_edges") if isinstance(a.get("written_edges"), list) else []
+                print(
+                    f"[mi] values->claims ok: written={len(written)} linked_existing={len(linked)} edges={len(edges)} retracted={len(applied.retracted)}",
+                    file=sys.stderr,
+                )
+        except Exception as e:
+            print(f"[mi] values->claims migration failed: {type(e).__name__}: {e}", file=sys.stderr)
+
         return 0
 
     if args.cmd == "run":

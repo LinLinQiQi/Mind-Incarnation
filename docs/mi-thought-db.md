@@ -18,6 +18,7 @@ Implemented in V1 (incremental; safe foundation):
 
 - Append-only Claim + Edge stores (project + global) with `source_refs` that cite **EvidenceLog `event_id` only**
 - Append-only Node store (project + global) for `Decision` / `Action` / `Summary` nodes (first-class IDs; append-only; cites EvidenceLog `event_id` only)
+- Global values/preferences can be migrated into global preference/goal Claims via `mi init` (`values_claim_patch`), citing a `values_set` event in `global/evidence.jsonl` and tagging claims with `values:base` + `values_set:<event_id>`
 - Checkpoint-only, high-threshold claim mining during `mi run` (no per-step protocol; no user prompts)
 - Deterministic checkpoint materialization of `Decision` / `Action` / `Summary` nodes during `mi run` (no extra model calls; best-effort; append-only)
 - When the model outputs high-confidence edges, MI also appends `Edge` records (best-effort; scoped to project/global).

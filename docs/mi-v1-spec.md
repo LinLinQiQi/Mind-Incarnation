@@ -65,7 +65,8 @@ flowchart TD
   AA --> ARB[MI: pre-action arbitration]
   ARB -->|answer/checks available| I
   ARB -->|need user input| Q[Ask user (minimal)]
-  ARB -->|no pre-actions| D[MI: decide_next (includes closure)]
+  ARB -->|no pre-actions| TDB[MI: build Thought DB context (deterministic)]
+  TDB --> D[MI: decide_next (includes closure)]
   D -->|need info not covered| Q
   D -->|continue or run checks| I
   D -->|done/blocked| END[Stop]
@@ -93,6 +94,14 @@ Cross-project recall (on-demand, V1):
 - Output is recorded as `kind="cross_project_recall"` in EvidenceLog and is included in `recent_evidence` for later Mind prompts.
 - MI maintains a best-effort materialized text index under `<home>/indexes/memory.sqlite` (materialized view; source of truth remains MI logs/stores). Rebuild via `mi memory index rebuild`.
 - Index sync prunes disabled/deleted `learned`/`workflow` items so rolled-back preferences don't reappear in recall.
+
+Thought DB context (always-on, deterministic, V1):
+
+- Before each `decide_next` (and the post-user re-decide), MI builds a small Thought DB context (no extra model calls):
+  - `values_claims`: active global preference/goal claims tagged `values:base` (canonical values)
+  - `query_claims`: token-ranked active claims from project + global
+  - `edges`: a small set of reasoning/evolution edges among included claim ids
+- This context is passed to the `decide_next` prompt as `thought_db_context` and should be treated as canonical over free-form learned text when conflicts arise.
 
 Loop/stuck guard (deterministic, V1):
 
@@ -227,7 +236,7 @@ MI uses the following internal prompts (all should return strict JSON):
    - Output: an optional Hands reply (`codex_answer_input`, legacy name) that answers Hands' question(s) using values + evidence; only asks the user when MI cannot answer
 
 7) `decide_next` (implemented)
-   - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, optional risk judgement
+   - Input: Hands provider hint + `MindSpec`, `ProjectOverlay`, recent `EvidenceLog`, and a deterministic Thought DB context subgraph (`values_claims` + `query_claims` + `edges`)
    - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). `send_to_codex` is legacy naming and means "send the next batch input to Hands". This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
 
 8) `checkpoint_decide` (implemented; internal)
@@ -253,6 +262,10 @@ MI uses the following internal prompts (all should return strict JSON):
 13) `why_trace` (implemented; on-demand; Thought DB)
    - Input: a target (EvidenceLog `event_id` or a `claim_id`), an `as_of_ts`, and a bounded list of candidate claims (from recall/search).
    - Output: a minimal support set of `claim_id`s + short explanation + confidence. MI may materialize `depends_on(event_id -> claim_id)` edges when the target is an EvidenceLog `event_id`.
+
+14) `values_claim_patch` (implemented; on-demand; values -> Thought DB)
+   - Input: `values_text` + compiled MindSpec base + existing global values claims + allowed `event_id` list + allowed retract claim ids
+   - Output: a small patch of global preference/goal Claims (plus optional supersedes/same_as edges) and a list of old claim_ids to retract. Used by `mi init` to keep values canonical as Thought DB claims (tagged `values:base`).
 
 Planned (not required for V1 loop to function; can be added incrementally):
 
@@ -854,6 +867,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
 - Global:
   - `mindspec/base.json`
   - `mindspec/learned.jsonl`
+  - `global/evidence.jsonl` (global EvidenceLog for values/preferences lifecycle; provides stable `event_id` provenance)
   - `thoughtdb/global/claims.jsonl` (global Claims)
   - `thoughtdb/global/edges.jsonl` (global Edges)
   - `thoughtdb/global/nodes.jsonl` (global Nodes)
@@ -957,6 +971,12 @@ Common init flags:
 - `--show`: print `values_summary` and `decision_procedure` after compiling
 - `--dry-run`: compile and print, but do not write `mindspec/base.json`
 - `--no-compile`: skip model compilation and write defaults + `values_text` only
+- `--no-values-claims`: skip migrating values into global Thought DB preference/goal Claims
+
+Notes:
+
+- `mi init` appends a global EvidenceLog `values_set` event under `global/evidence.jsonl` (so global value claims can cite stable `event_id` provenance).
+- Unless `--no-compile` or `--no-values-claims` is set, `mi init` also calls `values_claim_patch` and applies it into `thoughtdb/global/*` as preference/goal Claims tagged `values:base`.
 
 Run batch autopilot:
 

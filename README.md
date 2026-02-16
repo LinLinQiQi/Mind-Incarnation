@@ -123,6 +123,11 @@ Initialize global values/preferences (writes MindSpec to `~/.mind-incarnation/mi
 mi init --values "My values: minimize questions; prefer behavior-preserving refactors; stop when no tests exist; avoid network/install/push unless necessary."
 ```
 
+Notes:
+
+- `mi init` appends a global EvidenceLog `values_set` event under `~/.mind-incarnation/global/evidence.jsonl` (stable `event_id` provenance).
+- Unless `--no-compile` or `--no-values-claims` is set, `mi init` also migrates values into global Thought DB preference/goal Claims (tagged `values:base`) so `mi run` can treat them as canonical during `decide_next`.
+
 Run MI batch autopilot above Hands (stores transcripts + evidence under `~/.mind-incarnation/projects/<id>/`):
 
 ```bash
@@ -273,6 +278,7 @@ Notes:
 - Raw Hands transcript: `~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`
 - Mind transcripts (MI prompt-pack calls): `~/.mind-incarnation/projects/<id>/transcripts/mind/*.jsonl`
 - EvidenceLog (append-only; includes `snapshot` + `cross_project_recall` kinds): `~/.mind-incarnation/projects/<id>/evidence.jsonl`
+- Global EvidenceLog (append-only; values/preferences lifecycle events such as `values_set`): `~/.mind-incarnation/global/evidence.jsonl`
 - Thought DB (append-only Claims/Edges/Nodes): `~/.mind-incarnation/projects/<id>/thoughtdb/{claims,edges,nodes}.jsonl` and `~/.mind-incarnation/thoughtdb/global/{claims,edges,nodes}.jsonl`
 - Memory text index (materialized view; rebuildable; default backend=`sqlite_fts`): `~/.mind-incarnation/indexes/memory.sqlite`
 

@@ -36,6 +36,7 @@ from .workflows import (
 from .preferences import load_preference_candidates, write_preference_candidates, preference_signature
 from .hosts import sync_hosts_from_overlay
 from .memory_facade import MemoryFacade
+from .memory_ingest import thoughtdb_node_item
 from .evidence import EvidenceWriter, new_run_id
 from .thoughtdb import ThoughtDbStore
 
@@ -1585,6 +1586,8 @@ def run_autopilot(
         # Create nodes (project scope only for now).
         written_nodes: list[dict[str, str]] = []
         written_edges: list[dict[str, str]] = []
+        index_items: list[Any] = []
+        base_node_refs = [{"kind": "evidence_event", "event_id": x} for x in src_ids[:12] if str(x).strip()]
 
         def write_edge(*, edge_type: str, frm: str, to: str, source_eids: list[str], notes: str) -> None:
             if not frm or not to:
@@ -1644,6 +1647,24 @@ def run_autopilot(
                         source_eids=[snap_event_id],
                         notes="auto derived_from snapshot",
                     )
+                try:
+                    index_items.append(
+                        thoughtdb_node_item(
+                            node_id=nid,
+                            node_type="summary",
+                            title=title,
+                            text=text,
+                            scope="project",
+                            project_id=project_paths.project_id,
+                            ts=now_rfc3339(),
+                            visibility="project",
+                            tags=tags,
+                            nodes_path=project_paths.thoughtdb_nodes_path,
+                            source_refs=base_node_refs,
+                        )
+                    )
+                except Exception:
+                    pass
 
             # Decision node: only when we have a decide_next record.
             if decide_next_action or decide_notes or decide_status:
@@ -1681,6 +1702,24 @@ def run_autopilot(
                         source_eids=[decide_event_id],
                         notes="auto derived_from decide_next",
                     )
+                try:
+                    index_items.append(
+                        thoughtdb_node_item(
+                            node_id=nid,
+                            node_type="decision",
+                            title=title,
+                            text=text,
+                            scope="project",
+                            project_id=project_paths.project_id,
+                            ts=now_rfc3339(),
+                            visibility="project",
+                            tags=tags,
+                            nodes_path=project_paths.thoughtdb_nodes_path,
+                            source_refs=base_node_refs,
+                        )
+                    )
+                except Exception:
+                    pass
 
             # Action node: only when evidence recorded non-empty actions.
             if action_lines:
@@ -1717,9 +1756,34 @@ def run_autopilot(
                             source_eids=[eid],
                             notes="auto derived_from evidence(actions)",
                         )
+                try:
+                    index_items.append(
+                        thoughtdb_node_item(
+                            node_id=nid,
+                            node_type="action",
+                            title=title,
+                            text=text,
+                            scope="project",
+                            project_id=project_paths.project_id,
+                            ts=now_rfc3339(),
+                            visibility="project",
+                            tags=tags,
+                            nodes_path=project_paths.thoughtdb_nodes_path,
+                            source_refs=base_node_refs,
+                        )
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             ok = False
             err = f"{type(e).__name__}: {e}"
+
+        # Index the created nodes for recall (best-effort; derived).
+        if index_items:
+            try:
+                mem.upsert_items([x for x in index_items if x])
+            except Exception:
+                pass
 
         # Record the materialization attempt in EvidenceLog for audit (best-effort).
         try:

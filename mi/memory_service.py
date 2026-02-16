@@ -7,10 +7,10 @@ from typing import Any
 from .memory_backends.base import MemoryBackend
 from .memory_backends.in_memory import InMemoryBackend
 from .memory_backends.sqlite_fts import SqliteFtsBackend
-from .memory_ingest import ingest_learned_and_workflows, iter_project_ids
+from .memory_ingest import ingest_learned_and_workflows, iter_project_ids, _active_node_items_for_paths
 from .memory_snapshot import snapshot_item_from_event
 from .memory_types import MemoryItem
-from .paths import ProjectPaths
+from .paths import GlobalPaths, ProjectPaths
 from .storage import iter_jsonl
 
 
@@ -74,6 +74,7 @@ class MemoryService:
         self.ingest_structured()
 
         snap_count = 0
+        node_count = 0
         if include_snapshots:
             batch: list[MemoryItem] = []
             for pid in iter_project_ids(self._home_dir):
@@ -92,8 +93,40 @@ class MemoryService:
             if batch:
                 self._backend.upsert_items(batch)
 
+        # Thought DB nodes are indexed during rebuild (best-effort). This is a backfill path:
+        # incremental node indexing happens when MI materializes nodes during `mi run`.
+        try:
+            gp = GlobalPaths(home_dir=self._home_dir)
+            global_nodes = _active_node_items_for_paths(
+                nodes_path=gp.thoughtdb_global_nodes_path,
+                edges_path=gp.thoughtdb_global_edges_path,
+                scope="global",
+                project_id="",
+            )
+            node_count += len(global_nodes)
+            for i in range(0, len(global_nodes), 200):
+                self._backend.upsert_items(global_nodes[i : i + 200])
+        except Exception:
+            pass
+
+        try:
+            for pid in iter_project_ids(self._home_dir):
+                pp = ProjectPaths(home_dir=self._home_dir, project_root=Path("."), _project_id=str(pid))
+                items = _active_node_items_for_paths(
+                    nodes_path=pp.thoughtdb_nodes_path,
+                    edges_path=pp.thoughtdb_edges_path,
+                    scope="project",
+                    project_id=str(pid),
+                )
+                node_count += len(items)
+                for i in range(0, len(items), 200):
+                    self._backend.upsert_items(items[i : i + 200])
+        except Exception:
+            pass
+
         st = self.status()
         st["rebuilt"] = True
         st["included_snapshots"] = bool(include_snapshots)
         st["indexed_snapshots"] = snap_count
+        st["indexed_nodes"] = node_count
         return st

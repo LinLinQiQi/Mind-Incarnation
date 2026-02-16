@@ -81,6 +81,41 @@ class TestMemoryIndex(unittest.TestCase):
             hits = mem.search(query="hello world", top_k=5, kinds={"snapshot"}, include_global=True, exclude_project_id="")
             self.assertTrue(any(h.kind == "snapshot" and h.project_id == pp.project_id for h in hits))
 
+    def test_rebuild_indexes_thoughtdb_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:
+            home = Path(td_home)
+            project_root = Path(td_proj)
+            project_root.mkdir(exist_ok=True)
+
+            pp = ProjectPaths(home_dir=home, project_root=project_root)
+            pp.project_dir.mkdir(parents=True, exist_ok=True)
+
+            node_id = "nd_test"
+            append_jsonl(
+                pp.thoughtdb_nodes_path,
+                {
+                    "kind": "node",
+                    "version": "v1",
+                    "node_id": node_id,
+                    "node_type": "summary",
+                    "title": "My Summary",
+                    "text": "hello node world",
+                    "visibility": "project",
+                    "scope": "project",
+                    "project_id": pp.project_id,
+                    "asserted_ts": now_rfc3339(),
+                    "tags": ["auto"],
+                    "source_refs": [{"kind": "evidence_event", "event_id": "ev_x"}],
+                    "confidence": 1.0,
+                    "notes": "",
+                },
+            )
+
+            mem = MemoryService(home)
+            mem.rebuild(include_snapshots=False)
+            hits = mem.search(query="hello node world", top_k=5, kinds={"node"}, include_global=True, exclude_project_id="")
+            self.assertTrue(any(h.kind == "node" and h.item_id.endswith(":" + node_id) for h in hits))
+
 
 if __name__ == "__main__":
     unittest.main()

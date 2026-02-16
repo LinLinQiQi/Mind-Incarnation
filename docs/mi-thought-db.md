@@ -24,7 +24,7 @@ Implemented in V1 (incremental; safe foundation):
 - On-demand mining + basic management via CLI (`mi claim ...`)
 - On-demand root-cause tracing via `mi why ...`: selects a minimal support set of claim ids for an EvidenceLog `event_id` (and may materialize `depends_on(event_id -> claim_id)` edges).
 - Manual node/edge management via CLI (`mi node ...`, `mi edge ...`)
-- Memory index ingestion of **active canonical** claims (`kind=claim`) for optional text recall/search
+- Memory index ingestion of **active canonical** claims (`kind=claim`) and nodes (`kind=node`) for optional text recall/search
 
 Not implemented yet (future direction):
 

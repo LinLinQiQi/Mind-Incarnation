@@ -39,6 +39,7 @@ from .workflows import (
     apply_global_overrides,
 )
 from .hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
+from .memory_ingest import thoughtdb_node_item
 from .memory_service import MemoryService
 from .evidence import EvidenceWriter, new_run_id
 from .why import (
@@ -1663,6 +1664,31 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as e:
                 print(f"node create failed: {e}", file=sys.stderr)
                 return 2
+
+            # Derived: index the node for text recall (best-effort; no hard dependency).
+            try:
+                nodes_path = (
+                    GlobalPaths(home_dir=store.home_dir).thoughtdb_global_nodes_path
+                    if scope == "global"
+                    else pp.thoughtdb_nodes_path
+                )
+                refs = [{"kind": "evidence_event", "event_id": x} for x in source_event_ids[:12] if x]
+                it = thoughtdb_node_item(
+                    node_id=nid,
+                    node_type=nt,
+                    title=title,
+                    text=text,
+                    scope=scope,
+                    project_id="" if scope == "global" else pp.project_id,
+                    ts=now_rfc3339(),
+                    visibility=vis,
+                    tags=tags,
+                    nodes_path=nodes_path,
+                    source_refs=refs,
+                )
+                MemoryService(store.home_dir).upsert_items([it])
+            except Exception:
+                pass
 
             payload = {"node_id": nid, "scope": scope}
             if getattr(args, "json", False):

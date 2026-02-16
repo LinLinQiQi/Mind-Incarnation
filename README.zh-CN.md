@@ -193,6 +193,7 @@ MI 可以维护一个追加写（append-only）的“Thought DB”，把可复�
 
 - 如果 `MindSpec.thought_db.auto_mine=true`（默认），MI 会在 `mi run` 的 checkpoint 边界调用 `mine_claims`，并记录 `kind=claim_mining`。
 - 如果 `MindSpec.thought_db.auto_materialize_nodes=true`（默认），MI 也会在 checkpoint 边界把 `Decision` / `Action` / `Summary` 节点落盘（确定性；不增加额外模型调用），并记录 `kind=node_materialized`。
+- 记忆索引（memory index）：Thought DB 的 `node` 也可以被索引用于文本召回；如果你希望跨项目召回能返回这些节点，请在 `cross_project_recall.include_kinds` 中加入 `"node"`（默认 include_kinds 很克制）。
 - Claim/Edge 存储在项目级（以及可选的全局）目录中，可用 CLI 管理：
 
 ```bash

@@ -177,6 +177,13 @@ class MemoryFacade:
         }
         return RecallOutcome(evidence_event=ev, window_entry=win)
 
+    def upsert_items(self, items: list[MemoryItem]) -> None:
+        """Upsert items into the memory index (best-effort; must not raise)."""
+        try:
+            self._mem.upsert_items(items)
+        except Exception:
+            return
+
     def materialize_snapshot(
         self,
         *,

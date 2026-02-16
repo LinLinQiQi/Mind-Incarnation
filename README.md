@@ -193,6 +193,7 @@ MI can maintain an append-only "Thought DB" of atomic reusable `Claim`s (fact/pr
 
 - If `MindSpec.thought_db.auto_mine=true` (default), MI may call `mine_claims` at checkpoints during `mi run` and records `kind=claim_mining`.
 - If `MindSpec.thought_db.auto_materialize_nodes=true` (default), MI may also materialize `Decision` / `Action` / `Summary` nodes at checkpoints (deterministic; no extra model calls) and records `kind=node_materialized`.
+- Memory index: Thought DB `node` items are also indexable for text recall; include `"node"` in `cross_project_recall.include_kinds` if you want recall to surface them (default include_kinds is conservative).
 - Claims are stored per project (and optionally global) and can be managed via CLI:
 
 ```bash

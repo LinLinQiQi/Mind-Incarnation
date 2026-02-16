@@ -9,7 +9,7 @@ class MemoryItem:
     """A recallable memory unit (materialized view) with traceable sources."""
 
     item_id: str
-    kind: str  # snapshot|learned|workflow|claim
+    kind: str  # snapshot|learned|workflow|claim|node
     scope: str  # global|project
     project_id: str  # empty for global scope
     ts: str

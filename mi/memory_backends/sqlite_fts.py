@@ -205,7 +205,7 @@ class SqliteFtsBackend:
                             f"""
                             SELECT item_id FROM items
                             WHERE scope='project'
-                              AND kind IN ('learned','workflow','claim')
+                              AND kind IN ('learned','workflow','claim','node')
                               AND project_id NOT IN ({qs})
                             """,
                             keep,
@@ -214,7 +214,7 @@ class SqliteFtsBackend:
                         rows = cur.execute(
                             """
                             SELECT item_id FROM items
-                            WHERE scope='project' AND kind IN ('learned','workflow','claim')
+                            WHERE scope='project' AND kind IN ('learned','workflow','claim','node')
                             """
                         ).fetchall()
                     orphan_ids = [str(r[0] or "") for r in rows if r and str(r[0] or "").strip()]

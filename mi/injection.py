@@ -4,6 +4,7 @@ from typing import Any
 
 from .thoughtdb import ThoughtDbStore, ThoughtDbView
 from .values import VALUES_BASE_TAG
+from .pins import PINNED_PREF_GOAL_TAGS
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -72,6 +73,26 @@ def collect_canonical_pref_goal_claims(
     values = [_compact_claim(c, view=v_glob) for c in values_raw]
     seen_ids = {str(x.get("claim_id") or "").strip() for x in values if isinstance(x, dict)}
 
+    pinned: list[dict[str, Any]] = []
+    if PINNED_PREF_GOAL_TAGS:
+        for view, _scope in ((v_proj, "project"), (v_glob, "global")):
+            for c in _iter_pref_goal_claims(view, as_of_ts=as_of_ts):
+                cid = str(c.get("claim_id") or "").strip()
+                if not cid or cid in seen_ids:
+                    continue
+                tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+                tagset = {str(x).strip() for x in tags if str(x).strip()}
+                if VALUES_BASE_TAG in tagset:
+                    continue
+                if not (tagset & PINNED_PREF_GOAL_TAGS):
+                    continue
+                pinned.append(_compact_claim(c, view=view))
+                seen_ids.add(cid)
+                if len(pinned) >= 6:
+                    break
+            if len(pinned) >= 6:
+                break
+
     other: list[dict[str, Any]] = []
     for view, scope in ((v_proj, "project"), (v_glob, "global")):
         for c in _iter_pref_goal_claims(view, as_of_ts=as_of_ts):
@@ -90,7 +111,7 @@ def collect_canonical_pref_goal_claims(
         if len(other) >= max(0, int(max_other)):
             break
 
-    return values + other
+    return values + pinned + other
 
 
 def build_light_injection(
@@ -137,4 +158,3 @@ def build_light_injection(
     parts.append("- If a potentially external action (network/install/push/publish) is NOT clearly covered, pause and ask.")
 
     return "\n".join([p for p in parts if p is not None]).strip() + "\n"
-

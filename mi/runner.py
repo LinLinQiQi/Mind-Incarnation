@@ -16,6 +16,7 @@ from .codex_runner import InterruptConfig
 from .llm import MiLlm
 from .mind_errors import MindCallError
 from .mindspec import MindSpecStore
+from .mindspec_runtime import sanitize_mindspec_base_for_runtime
 from .paths import GlobalPaths, ProjectPaths, default_home_dir
 from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt, workflow_progress_prompt, checkpoint_decide_prompt
 from .prompts import auto_answer_to_codex_prompt
@@ -44,6 +45,7 @@ from .thought_context import build_decide_next_thoughtdb_context
 from .injection import build_light_injection
 from .thoughtdb import ThoughtDbStore, claim_signature
 from .values import apply_values_claim_patch, existing_values_claims, write_values_set_event
+from .pins import TESTLESS_STRATEGY_TAG
 
 
 _DEFAULT = object()
@@ -427,6 +429,11 @@ def run_autopilot(
     overlay: dict[str, Any]
     hands_state: dict[str, Any]
     workflow_run: dict[str, Any]
+
+    def _mindspec_base_runtime() -> dict[str, Any]:
+        # Keep runtime Mind prompts values-driven via Thought DB claims, not raw values_text.
+        base = loaded.base if isinstance(getattr(loaded, "base", None), dict) else {}
+        return sanitize_mindspec_base_for_runtime(base)
 
     def _refresh_overlay_refs() -> None:
         nonlocal overlay, hands_state, workflow_run
@@ -1242,7 +1249,174 @@ def run_autopilot(
             }
         )
 
+    _TLS_PREFIX = "When this project has no tests, use this verification strategy:"
+
+    def _testless_strategy_claim_text(strategy: str) -> str:
+        s = " ".join((strategy or "").strip().split())
+        if not s:
+            return ""
+        return f"{_TLS_PREFIX} {s}"
+
+    def _parse_testless_strategy_from_claim_text(text: str) -> str:
+        t = (text or "").strip()
+        if not t:
+            return ""
+        if t.startswith(_TLS_PREFIX):
+            return t[len(_TLS_PREFIX) :].strip()
+        return t
+
+    def _find_testless_strategy_claim(*, as_of_ts: str) -> dict[str, Any] | None:
+        """Return the active project-scoped testless strategy preference claim (best-effort)."""
+        v = tdb.load_view(scope="project")
+        for c in v.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
+            if not isinstance(c, dict):
+                continue
+            ct = str(c.get("claim_type") or "").strip()
+            if ct not in ("preference", "goal"):
+                continue
+            tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+            tagset = {str(x).strip() for x in tags if str(x).strip()}
+            if TESTLESS_STRATEGY_TAG in tagset:
+                return c
+        return None
+
+    def _upsert_testless_strategy_claim(*, strategy_text: str, source_event_id: str, source: str, rationale: str) -> str:
+        """Create/update the project-scoped testless verification strategy as a preference Claim.
+
+        If an existing tagged claim exists with a different text, supersede it.
+        """
+        s = (strategy_text or "").strip()
+        if not s:
+            return ""
+
+        text = _testless_strategy_claim_text(s)
+        if not text:
+            return ""
+
+        as_of = now_rfc3339()
+        existing = _find_testless_strategy_claim(as_of_ts=as_of)
+        existing_id = str(existing.get("claim_id") or "").strip() if isinstance(existing, dict) else ""
+        existing_text = str(existing.get("text") or "").strip() if isinstance(existing, dict) else ""
+        if existing_id and existing_text == text:
+            return existing_id
+
+        pid = project_paths.project_id
+        sig = claim_signature(claim_type="preference", scope="project", project_id=pid, text=text)
+        sig_map = tdb.existing_signature_map(scope="project")
+        if sig in sig_map:
+            cid0 = str(sig_map[sig])
+            # If a different tagged strategy exists, still connect it for evolution tracking.
+            if existing_id and existing_id != cid0 and source_event_id:
+                try:
+                    tdb.append_edge(
+                        edge_type="supersedes",
+                        from_id=existing_id,
+                        to_id=cid0,
+                        scope="project",
+                        visibility="project",
+                        source_event_ids=[source_event_id],
+                        notes="testless strategy dedupe",
+                    )
+                except Exception:
+                    pass
+            return cid0
+
+        tags = [TESTLESS_STRATEGY_TAG, "mi:verify", "mi:testless", f"mi:source:{(source or '').strip() or 'unknown'}"]
+        note = (rationale or "").strip()
+        if note:
+            note = f"{note} (source={source})"
+        else:
+            note = f"source={source}"
+
+        try:
+            cid = tdb.append_claim_create(
+                claim_type="preference",
+                text=text,
+                scope="project",
+                visibility="project",
+                valid_from=None,
+                valid_to=None,
+                tags=tags,
+                source_event_ids=([str(source_event_id).strip()] if str(source_event_id or "").strip() else []),
+                confidence=1.0,
+                notes=note,
+            )
+        except Exception:
+            return ""
+
+        if existing_id and source_event_id:
+            try:
+                tdb.append_edge(
+                    edge_type="supersedes",
+                    from_id=existing_id,
+                    to_id=cid,
+                    scope="project",
+                    visibility="project",
+                    source_event_ids=[source_event_id],
+                    notes="update testless verification strategy",
+                )
+            except Exception:
+                pass
+
+        return cid
+
+    def _ensure_testless_strategy_claim_current() -> None:
+        """Unify testless verification strategy storage via Thought DB.
+
+        - If a tagged preference Claim exists, derive ProjectOverlay from it (best-effort).
+        - Else, if ProjectOverlay has a chosen strategy, migrate it into a tagged preference Claim.
+        """
+        nonlocal loaded
+
+        as_of = now_rfc3339()
+        claim = _find_testless_strategy_claim(as_of_ts=as_of)
+        claim_id = str(claim.get("claim_id") or "").strip() if isinstance(claim, dict) else ""
+        claim_text = str(claim.get("text") or "").strip() if isinstance(claim, dict) else ""
+        claim_strategy = _parse_testless_strategy_from_claim_text(claim_text)
+
+        tls = loaded.project_overlay.get("testless_verification_strategy") if isinstance(loaded.project_overlay, dict) else None
+        overlay_chosen = bool(tls.get("chosen_once", False)) if isinstance(tls, dict) else False
+        overlay_strategy = str(tls.get("strategy") or "").strip() if isinstance(tls, dict) else ""
+        overlay_rationale = str(tls.get("rationale") or "").strip() if isinstance(tls, dict) else ""
+
+        if claim_id and claim_strategy:
+            # Derive overlay from canonical claim when missing or divergent.
+            if (not overlay_chosen) or (overlay_strategy.strip() != claim_strategy.strip()):
+                loaded.project_overlay.setdefault("testless_verification_strategy", {})
+                loaded.project_overlay["testless_verification_strategy"] = {
+                    "chosen_once": True,
+                    "strategy": claim_strategy,
+                    "rationale": f"derived from Thought DB {claim_id}",
+                }
+                store.write_project_overlay(project_path, loaded.project_overlay)
+                loaded = store.load(project_path)
+                _refresh_overlay_refs()
+            return
+
+        if not overlay_chosen or not overlay_strategy:
+            return
+
+        # Migrate overlay strategy into a canonical preference claim (append-only).
+        mig = evw.append(
+            {
+                "kind": "testless_strategy_migrate",
+                "batch_id": "b0.migrate_testless",
+                "ts": now_rfc3339(),
+                "thread_id": "",
+                "strategy": overlay_strategy,
+                "rationale": overlay_rationale or "migrate from ProjectOverlay.testless_verification_strategy",
+            }
+        )
+        eid = str(mig.get("event_id") or "").strip()
+        _upsert_testless_strategy_claim(
+            strategy_text=overlay_strategy,
+            source_event_id=eid,
+            source="overlay_migrate",
+            rationale=overlay_rationale or "migrate from overlay",
+        )
+
     _ensure_values_claims_current()
+    _ensure_testless_strategy_claim_current()
 
     # Seed one conservative recall at run start so later Mind calls can use it without bothering the user.
     if str(task or "").strip():
@@ -1276,7 +1450,7 @@ def run_autopilot(
         prompt = suggest_workflow_prompt(
             task=task,
             hands_provider=cur_provider,
-            mindspec_base=loaded.base,
+            mindspec_base=_mindspec_base_runtime(),
             project_overlay=loaded.project_overlay,
             thought_db_context=tdb_ctx_obj,
             recent_evidence=seg_evidence,
@@ -1462,7 +1636,7 @@ def run_autopilot(
         prompt = mine_preferences_prompt(
             task=task,
             hands_provider=cur_provider,
-            mindspec_base=loaded.base,
+            mindspec_base=_mindspec_base_runtime(),
             project_overlay=loaded.project_overlay,
             thought_db_context=tdb_ctx_obj,
             recent_evidence=seg_evidence,
@@ -1653,7 +1827,7 @@ def run_autopilot(
         prompt = mine_claims_prompt(
             task=task,
             hands_provider=cur_provider,
-            mindspec_base=loaded.base,
+            mindspec_base=_mindspec_base_runtime(),
             project_overlay=loaded.project_overlay,
             thought_db_context=tdb_ctx_obj,
             segment_evidence=seg_evidence,
@@ -2062,7 +2236,7 @@ def run_autopilot(
         prompt = checkpoint_decide_prompt(
             task=task,
             hands_provider=cur_provider,
-            mindspec_base=loaded.base,
+            mindspec_base=_mindspec_base_runtime(),
             project_overlay=loaded.project_overlay,
             thought_db_context=tdb_ctx_obj,
             segment_evidence=segment_records,
@@ -2405,7 +2579,7 @@ def run_autopilot(
             wf_prog_prompt = workflow_progress_prompt(
                 task=task,
                 hands_provider=cur_provider,
-                mindspec_base=loaded.base,
+                mindspec_base=_mindspec_base_runtime(),
                 project_overlay=loaded.project_overlay,
                 thought_db_context=tdb_ctx_batch_obj,
                 workflow=active_wf,
@@ -2493,7 +2667,7 @@ def run_autopilot(
             risk_prompt = risk_judge_prompt(
                 task=task,
                 hands_provider=cur_provider,
-                mindspec_base=loaded.base,
+                mindspec_base=_mindspec_base_runtime(),
                 project_overlay=loaded.project_overlay,
                 thought_db_context=tdb_ctx_batch_obj,
                 risk_signals=risk_signals,
@@ -2609,7 +2783,7 @@ def run_autopilot(
             checks_prompt = plan_min_checks_prompt(
                 task=task,
                 hands_provider=cur_provider,
-                mindspec_base=loaded.base,
+                mindspec_base=_mindspec_base_runtime(),
                 project_overlay=loaded.project_overlay,
                 thought_db_context=tdb_ctx_batch_obj,
                 recent_evidence=evidence_window,
@@ -2659,7 +2833,7 @@ def run_autopilot(
             aa_prompt = auto_answer_to_codex_prompt(
                 task=task,
                 hands_provider=cur_provider,
-                mindspec_base=loaded.base,
+                mindspec_base=_mindspec_base_runtime(),
                 project_overlay=loaded.project_overlay,
                 thought_db_context=tdb_ctx_batch_obj,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -2720,7 +2894,7 @@ def run_autopilot(
             aa_prompt_retry = auto_answer_to_codex_prompt(
                 task=task,
                 hands_provider=cur_provider,
-                mindspec_base=loaded.base,
+                mindspec_base=_mindspec_base_runtime(),
                 project_overlay=loaded.project_overlay,
                 thought_db_context=tdb_ctx_batch_obj,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -2822,6 +2996,27 @@ def run_autopilot(
 
         tls = loaded.project_overlay.get("testless_verification_strategy") if isinstance(loaded.project_overlay, dict) else None
         tls_chosen_once = bool(tls.get("chosen_once", False)) if isinstance(tls, dict) else False
+
+        # Thought DB is canonical: treat a tagged strategy claim as the one-time choice.
+        tls_claim = _find_testless_strategy_claim(as_of_ts=now_rfc3339())
+        tls_claim_strategy = ""
+        if isinstance(tls_claim, dict):
+            tls_claim_strategy = _parse_testless_strategy_from_claim_text(str(tls_claim.get("text") or ""))
+        if tls_claim_strategy:
+            tls_chosen_once = True
+            # Keep overlay aligned for backward compatibility and to avoid decide_next prompting.
+            cur_strategy = str(tls.get("strategy") or "").strip() if isinstance(tls, dict) else ""
+            if cur_strategy.strip() != tls_claim_strategy.strip():
+                loaded.project_overlay.setdefault("testless_verification_strategy", {})
+                loaded.project_overlay["testless_verification_strategy"] = {
+                    "chosen_once": True,
+                    "strategy": tls_claim_strategy.strip(),
+                    "rationale": f"derived from Thought DB {str(tls_claim.get('claim_id') or '').strip()}",
+                }
+                store.write_project_overlay(project_path, loaded.project_overlay)
+                loaded = store.load(project_path)
+                _refresh_overlay_refs()
+
         needs_tls = bool(checks_obj.get("needs_testless_strategy", False)) if isinstance(checks_obj, dict) else False
         if needs_tls and not tls_chosen_once:
             q = str(checks_obj.get("testless_strategy_question") or "").strip()
@@ -2847,11 +3042,20 @@ def run_autopilot(
             _segment_add(ui3)
             _persist_segment_state()
 
+            # Canonicalize into Thought DB as a project preference claim.
+            src_eid = str(ui3.get("event_id") or "").strip()
+            tls_cid = _upsert_testless_strategy_claim(
+                strategy_text=answer.strip(),
+                source_event_id=src_eid,
+                source="user_input:testless_strategy",
+                rationale="user provided testless verification strategy",
+            )
+
             loaded.project_overlay.setdefault("testless_verification_strategy", {})
             loaded.project_overlay["testless_verification_strategy"] = {
                 "chosen_once": True,
                 "strategy": answer.strip(),
-                "rationale": "user provided testless verification strategy",
+                "rationale": (f"user provided (canonical claim {tls_cid})" if tls_cid else "user provided testless verification strategy"),
             }
             store.write_project_overlay(project_path, loaded.project_overlay)
             loaded = store.load(project_path)
@@ -2869,7 +3073,7 @@ def run_autopilot(
             checks_prompt2 = plan_min_checks_prompt(
                 task=task,
                 hands_provider=cur_provider,
-                mindspec_base=loaded.base,
+                mindspec_base=_mindspec_base_runtime(),
                 project_overlay=loaded.project_overlay,
                 thought_db_context=tdb_ctx2_obj,
                 recent_evidence=evidence_window,
@@ -2912,6 +3116,72 @@ def run_autopilot(
             )
             _persist_segment_state()
 
+        # If Thought DB already provides a canonical testless strategy but the check planner
+        # still requested it, re-plan once (best-effort) to avoid blocking.
+        needs_tls2 = bool(checks_obj.get("needs_testless_strategy", False)) if isinstance(checks_obj, dict) else False
+        if needs_tls2 and tls_claim_strategy:
+            tdb_ctx_tls = build_decide_next_thoughtdb_context(
+                tdb=tdb,
+                as_of_ts=now_rfc3339(),
+                task=task,
+                hands_last_message=codex_last,
+                recent_evidence=evidence_window,
+            )
+            tdb_ctx_tls_obj = tdb_ctx_tls.to_prompt_obj()
+            checks_prompt_tls = plan_min_checks_prompt(
+                task=task,
+                hands_provider=cur_provider,
+                mindspec_base=_mindspec_base_runtime(),
+                project_overlay=loaded.project_overlay,
+                thought_db_context=tdb_ctx_tls_obj,
+                recent_evidence=evidence_window,
+                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            )
+            checks_obj3, checks_mind_ref3, checks_state3 = _mind_call(
+                schema_filename="plan_min_checks.json",
+                prompt=checks_prompt_tls,
+                tag=f"checks_after_tls_claim_b{batch_idx}",
+                batch_id=f"b{batch_idx}.after_tls_claim",
+            )
+            if checks_obj3 is None:
+                # Ensure we don't ask again; proceed with a conservative "no checks" plan.
+                if not isinstance(checks_obj, dict):
+                    checks_obj = _empty_check_plan()
+                checks_obj["needs_testless_strategy"] = False
+                checks_obj["testless_strategy_question"] = ""
+                base_note = str(checks_obj.get("notes") or "").strip()
+                extra = (
+                    "skipped: mind_circuit_open (plan_min_checks after_tls_claim)"
+                    if checks_state3 == "skipped"
+                    else "mind_error: plan_min_checks(after_tls_claim) failed; using Thought DB strategy"
+                )
+                checks_obj["notes"] = (base_note + "; " + extra).strip("; ").strip()
+            else:
+                checks_obj = checks_obj3
+            checks3_rec = evw.append(
+                {
+                    "kind": "check_plan",
+                    "batch_id": f"b{batch_idx}.after_tls_claim",
+                    "ts": now_rfc3339(),
+                    "thread_id": thread_id,
+                    "mind_transcript_ref": checks_mind_ref3,
+                    "checks": checks_obj,
+                }
+            )
+            evidence_window.append(
+                {"kind": "check_plan", "batch_id": f"b{batch_idx}.after_tls_claim", "event_id": checks3_rec.get("event_id"), **checks_obj}
+            )
+            evidence_window = evidence_window[-8:]
+            _segment_add(
+                {
+                    "kind": "check_plan",
+                    "batch_id": f"b{batch_idx}.after_tls_claim",
+                    "event_id": checks3_rec.get("event_id"),
+                    **(checks_obj if isinstance(checks_obj, dict) else {}),
+                }
+            )
+            _persist_segment_state()
+
         answer_text = ""
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("should_answer", False)):
             answer_text = str(auto_answer_obj.get("codex_answer_input") or "").strip()
@@ -2948,7 +3218,7 @@ def run_autopilot(
         decision_prompt = decide_next_prompt(
             task=task,
             hands_provider=cur_provider,
-            mindspec_base=loaded.base,
+            mindspec_base=_mindspec_base_runtime(),
             project_overlay=loaded.project_overlay,
             thought_db_context=tdb_ctx_obj,
             active_workflow=_active_workflow(),
@@ -3047,11 +3317,30 @@ def run_autopilot(
                 strategy = str(set_tls.get("strategy") or "").strip()
                 rationale = str(set_tls.get("rationale") or "").strip()
                 if strategy:
+                    src_eid = str((decide_rec or {}).get("event_id") or "").strip()
+                    if not src_eid:
+                        rec = evw.append(
+                            {
+                                "kind": "testless_strategy_set",
+                                "batch_id": f"b{batch_idx}.set_testless",
+                                "ts": now_rfc3339(),
+                                "thread_id": thread_id,
+                                "strategy": strategy,
+                                "rationale": rationale or "decide_next overlay update",
+                            }
+                        )
+                        src_eid = str(rec.get("event_id") or "").strip()
+                    tls_cid = _upsert_testless_strategy_claim(
+                        strategy_text=strategy,
+                        source_event_id=src_eid,
+                        source="decide_next:set_testless_strategy",
+                        rationale=rationale or "decide_next overlay update",
+                    )
                     loaded.project_overlay.setdefault("testless_verification_strategy", {})
                     loaded.project_overlay["testless_verification_strategy"] = {
                         "chosen_once": True,
                         "strategy": strategy,
-                        "rationale": rationale,
+                        "rationale": (f"{rationale} (canonical claim {tls_cid})" if tls_cid else rationale),
                     }
                     store.write_project_overlay(project_path, loaded.project_overlay)
 
@@ -3088,7 +3377,7 @@ def run_autopilot(
                 aa_prompt2 = auto_answer_to_codex_prompt(
                     task=task,
                     hands_provider=cur_provider,
-                    mindspec_base=loaded.base,
+                    mindspec_base=_mindspec_base_runtime(),
                     project_overlay=loaded.project_overlay,
                     thought_db_context=tdb_ctx_aa_obj,
                     repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -3176,7 +3465,7 @@ def run_autopilot(
                 aa_prompt3 = auto_answer_to_codex_prompt(
                     task=task,
                     hands_provider=cur_provider,
-                    mindspec_base=loaded.base,
+                    mindspec_base=_mindspec_base_runtime(),
                     project_overlay=loaded.project_overlay,
                     thought_db_context=tdb_ctx_aa2_obj,
                     repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -3289,7 +3578,7 @@ def run_autopilot(
             decision_prompt2 = decide_next_prompt(
                 task=task,
                 hands_provider=cur_provider,
-                mindspec_base=loaded.base,
+                mindspec_base=_mindspec_base_runtime(),
                 project_overlay=loaded.project_overlay,
                 thought_db_context=tdb_ctx2_obj,
                 active_workflow=_active_workflow(),

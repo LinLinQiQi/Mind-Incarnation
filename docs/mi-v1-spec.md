@@ -75,7 +75,7 @@ flowchart TD
 Pre-action arbitration (deterministic, V1):
 
 - If `auto_answer_to_codex.needs_user_input=true`: ask the user with `ask_user_question`, then send the user's answer to Hands (optionally combined with minimal checks).
-- Else if `plan_min_checks.needs_testless_strategy=true` and ProjectOverlay has not chosen a strategy: ask the user once per project, persist it, then re-plan checks.
+- Else if `plan_min_checks.needs_testless_strategy=true` and there is no canonical testless strategy preference Claim (tagged `mi:testless_verification_strategy`): ask the user once per project, store it as a project-scoped Thought DB preference Claim (canonical) and mirror it into ProjectOverlay (derived), then re-plan checks.
 - Else if `auto_answer_to_codex.should_answer=true` and/or `plan_min_checks.should_run_checks=true`: send `codex_answer_input` and/or `codex_check_input` to Hands (combined into one batch input when both exist).
 - Otherwise: fall back to `decide_next`.
 
@@ -280,9 +280,13 @@ Planned (not required for V1 loop to function; can be added incrementally):
 MindSpec is the merge of:
 
 - `base` (user-authored values prompt + configuration knobs; not canonical at runtime for values)
-- `project_overlay` (project-specific defaults/state; e.g., testless verification strategy)
+- `project_overlay` (project-specific defaults/state; may include derived mirrors of canonical preferences, e.g., a testless verification strategy)
 
 Canonical values/preferences are stored in Thought DB as preference/goal Claims (see "Thought DB context" and "Thought DB (Claims + Nodes)").
+
+Runtime prompt hygiene (V1):
+
+- For runtime Mind prompt-pack calls, MI **sanitizes** `MindSpec.base` by redacting `values_text` / `values_summary` so the model relies on the canonical Thought DB context for values/preferences.
 
 Minimal shape:
 
@@ -354,6 +358,8 @@ Minimal shape:
 ```
 
 ### ProjectOverlay
+
+Note: `testless_verification_strategy` is a derived mirror for backward compatibility. Canonical storage is a project-scoped Thought DB preference Claim tagged `mi:testless_verification_strategy`.
 
 ```json
 {
@@ -467,6 +473,8 @@ Minimal shape:
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
 - `learn_suggested` (a suggested preference tightening produced by Mind (`learned_changes`, legacy field name); may be auto-applied as Thought DB preference Claims depending on `violation_response.auto_learn`)
 - `learn_applied` (a manual application of a prior `learn_suggested` record; written by `mi learned apply-suggested ...`)
+- `testless_strategy_migrate` (internal: migrated a legacy ProjectOverlay testless strategy into a canonical Thought DB preference Claim tagged `mi:testless_verification_strategy`)
+- `testless_strategy_set` (internal: recorded a testless strategy set/update so a canonical preference Claim can cite an EvidenceLog `event_id`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
 - `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
@@ -611,7 +619,7 @@ Stable identifiers (V1+):
 }
 ```
 
-Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g., `batch_id="b0"` then `batch_id="b0.after_testless"`) when it re-plans after persisting a one-time testless verification strategy.
+Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g., `batch_id="b0"` then `batch_id="b0.after_testless"` or `batch_id="b0.after_tls_claim"`) when it re-plans after learning/deriving a one-time testless verification strategy (canonicalized as a Thought DB preference Claim tagged `mi:testless_verification_strategy`).
 
 `user_input` record shape (captured answer):
 

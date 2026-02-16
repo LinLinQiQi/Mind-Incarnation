@@ -19,6 +19,7 @@ from .config import (
     rollback_config,
 )
 from .mindspec import MindSpecStore
+from .mindspec_runtime import sanitize_mindspec_base_for_runtime
 from .prompts import compile_mindspec_prompt, edit_workflow_prompt, mine_claims_prompt, values_claim_patch_prompt
 from .runner import run_autopilot
 from .paths import GlobalPaths, ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
@@ -1502,7 +1503,7 @@ def main(argv: list[str] | None = None) -> int:
             prompt = mine_claims_prompt(
                 task=str("(manual claim mine) " + (seg.get("task_hint") if isinstance(seg, dict) else "")).strip(),
                 hands_provider=str(cfg.get("hands", {}).get("provider") or ""),
-                mindspec_base=loaded2.base,
+                mindspec_base=sanitize_mindspec_base_for_runtime(loaded2.base if isinstance(getattr(loaded2, "base", None), dict) else {}),
                 project_overlay=overlay2,
                 thought_db_context=tdb_ctx_obj,
                 segment_evidence=seg_records,
@@ -2402,7 +2403,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 tdb_ctx_obj = tdb_ctx.to_prompt_obj()
                 prompt = edit_workflow_prompt(
-                    mindspec_base=loaded2.base,
+                    mindspec_base=sanitize_mindspec_base_for_runtime(loaded2.base if isinstance(getattr(loaded2, "base", None), dict) else {}),
                     project_overlay=overlay2,
                     thought_db_context=tdb_ctx_obj,
                     workflow=w0,

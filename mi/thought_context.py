@@ -6,6 +6,7 @@ from typing import Any
 from .memory_text import tokenize_query, truncate
 from .thoughtdb import ThoughtDbStore, ThoughtDbView
 from .values import VALUES_BASE_TAG
+from .pins import PINNED_PREF_GOAL_TAGS
 
 
 def _safe_list_str(items: Any, *, limit: int) -> list[str]:
@@ -158,6 +159,30 @@ def build_decide_next_thoughtdb_context(
 
     # Canonical preference/goal claims beyond values:base: always include a small set so decisions
     # do not depend on free-form learned text or query token luck.
+    pinned_raw: list[tuple[int, str, dict[str, Any], ThoughtDbView]] = []
+    pinned_ids: set[str] = set()
+    if PINNED_PREF_GOAL_TAGS:
+        for view, scope_rank in ((v_proj, 0), (v_glob, 1)):
+            for c in view.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
+                if not isinstance(c, dict):
+                    continue
+                ct = str(c.get("claim_type") or "").strip()
+                if ct not in ("preference", "goal"):
+                    continue
+                tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+                tagset = {str(x).strip() for x in tags if str(x).strip()}
+                if not (tagset & PINNED_PREF_GOAL_TAGS):
+                    continue
+                cid = str(c.get("claim_id") or "").strip()
+                if not cid or cid in values_ids or cid in pinned_ids:
+                    continue
+                pinned_ids.add(cid)
+                pinned_raw.append((scope_rank, str(c.get("asserted_ts") or ""), c, view))
+
+    # Prefer project scope over global; newest-first within scope.
+    pinned_raw.sort(key=lambda x: str(x[1] or ""), reverse=True)
+    pinned_raw.sort(key=lambda x: int(x[0]), reverse=False)
+
     pref_goal_raw: list[tuple[int, str, dict[str, Any], ThoughtDbView]] = []
     for view, scope_rank in ((v_proj, 0), (v_glob, 1)):
         for c in view.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
@@ -167,7 +192,7 @@ def build_decide_next_thoughtdb_context(
             if ct not in ("preference", "goal"):
                 continue
             cid = str(c.get("claim_id") or "").strip()
-            if not cid or cid in values_ids:
+            if not cid or cid in values_ids or cid in pinned_ids:
                 continue
             tags = c.get("tags") if isinstance(c.get("tags"), list) else []
             tagset = {str(x).strip() for x in tags if str(x).strip()}
@@ -179,7 +204,13 @@ def build_decide_next_thoughtdb_context(
     pref_goal_raw.sort(key=lambda x: str(x[1] or ""), reverse=True)
     pref_goal_raw.sort(key=lambda x: int(x[0]), reverse=False)
     pref_goal_claims: list[dict[str, Any]] = []
-    for _rank, _ts, c, view in pref_goal_raw[: max(0, int(max_pref_goal_claims))]:
+    for _rank, _ts, c, view in pinned_raw:
+        if len(pref_goal_claims) >= max(0, int(max_pref_goal_claims)):
+            break
+        pref_goal_claims.append(_compact_claim(c, view=view))
+    for _rank, _ts, c, view in pref_goal_raw:
+        if len(pref_goal_claims) >= max(0, int(max_pref_goal_claims)):
+            break
         pref_goal_claims.append(_compact_claim(c, view=view))
 
     pref_goal_ids = {str(c.get("claim_id") or "").strip() for c in pref_goal_claims if isinstance(c, dict)}

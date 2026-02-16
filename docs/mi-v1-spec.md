@@ -1,7 +1,7 @@
 # Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-15
+Last updated: 2026-02-16
 
 ## Goal
 
@@ -466,6 +466,12 @@ Minimal shape:
 - `preference_mining` (output from `mine_preferences` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
 - `preference_solidified` (MI emitted a learned suggestion (and may auto-apply) when a mined preference reaches its occurrence threshold)
 - `claim_mining` (output from `mine_claims` at a checkpoint/segment boundary; includes applied Thought DB claim ids; best-effort, high-threshold)
+- `claim_retract` (user-driven append-only claim retraction via CLI)
+- `claim_supersede` (user-driven append-only claim update via CLI; implemented as new claim + supersedes edge)
+- `claim_same_as` (user-driven append-only claim de-duplication via CLI; implemented as same_as edge)
+- `node_create` (user-driven append-only Thought DB node creation via CLI; Decision/Action/Summary)
+- `node_retract` (user-driven append-only Thought DB node retraction via CLI)
+- `edge_create` (user-driven append-only Thought DB edge creation via CLI)
 - `why_trace` (root-cause tracing output: minimal support set of claim ids + explanation; may materialize `depends_on(event_id -> claim_id)` edges; best-effort, on-demand)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `user_input` (answers captured when MI asks the user)
@@ -833,7 +839,7 @@ Behavior in `mi run` (V1):
 
 Notes:
 
-- Root-cause tracing via minimal-support-set subgraph selection is a future extension; see `docs/mi-thought-db.md`.
+- On-demand root-cause tracing is implemented via `mi why ...` (WhyTrace) and may materialize `depends_on(event_id -> claim_id)` edges (best-effort). More advanced subgraph traversal + refactors remain future work; see `docs/mi-thought-db.md`.
 - Claims are optionally indexed into the memory text index as `kind=claim` (active, canonical only).
 
 ## Storage Layout (V1)
@@ -845,6 +851,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `mindspec/learned.jsonl`
   - `thoughtdb/global/claims.jsonl` (global Claims)
   - `thoughtdb/global/edges.jsonl` (global Edges)
+  - `thoughtdb/global/nodes.jsonl` (global Nodes)
 - Project index (stable identity -> project_id mapping):
   - `projects/index.json`
 - Per project (keyed by a resolved `project_id`):
@@ -854,6 +861,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/<project_id>/segment_state.json` (best-effort segment buffer for checkpoint-based mining; internal)
   - `projects/<project_id>/thoughtdb/claims.jsonl` (project Claims)
   - `projects/<project_id>/thoughtdb/edges.jsonl` (project Edges)
+  - `projects/<project_id>/thoughtdb/nodes.jsonl` (project Nodes)
   - `projects/<project_id>/workflows/*.json` (workflow IR; source of truth)
   - `projects/<project_id>/workflow_candidates.json` (signature -> count; used for workflow mining)
   - `projects/<project_id>/preference_candidates.json` (signature -> count; used for preference mining)
@@ -1051,9 +1059,23 @@ mi --home ~/.mind-incarnation claim supersede <claim_id> --cd <project_root> --t
 mi --home ~/.mind-incarnation claim same-as <dup_id> <canonical_id> --cd <project_root>
 ```
 
+Manage Thought DB nodes (Decision/Action/Summary):
+
+```bash
+mi --home ~/.mind-incarnation node list --cd <project_root> --scope project
+mi --home ~/.mind-incarnation node list --cd <project_root> --scope global
+mi --home ~/.mind-incarnation node list --cd <project_root> --scope effective
+
+mi --home ~/.mind-incarnation node create --cd <project_root> --scope project --type decision --title "..." --text "..."
+mi --home ~/.mind-incarnation node show <node_id> --cd <project_root> --scope effective --json
+mi --home ~/.mind-incarnation node retract <node_id> --cd <project_root> --scope project
+```
+
 Manage Thought DB edges (project/global/effective):
 
 ```bash
+mi --home ~/.mind-incarnation edge create --cd <project_root> --scope project --type depends_on --from <from_id> --to <to_id>
+
 mi --home ~/.mind-incarnation edge list --cd <project_root> --scope project
 mi --home ~/.mind-incarnation edge list --cd <project_root> --scope global
 mi --home ~/.mind-incarnation edge list --cd <project_root> --scope effective

@@ -203,9 +203,19 @@ mi claim supersede <claim_id> --cd /path/to/your/project --text "..."
 mi claim same-as <dup_id> <canonical_id> --cd /path/to/your/project
 ```
 
+节点（Decision/Action/Summary）：
+
+```bash
+mi node list --cd /path/to/your/project --scope effective
+mi node create --cd /path/to/your/project --scope project --type decision --title "..." --text "..."
+mi node show <node_id> --cd /path/to/your/project
+mi node retract <node_id> --cd /path/to/your/project
+```
+
 边（Edge）：
 
 ```bash
+mi edge create --cd /path/to/your/project --scope project --type depends_on --from <from_id> --to <to_id>
 mi edge list --cd /path/to/your/project --scope project
 mi edge list --cd /path/to/your/project --scope project --type depends_on --from <event_id>
 mi edge show <edge_id> --cd /path/to/your/project
@@ -261,7 +271,7 @@ mi host sync --cd /path/to/your/project
 - Hands 原始 transcript：`~/.mind-incarnation/projects/<id>/transcripts/hands/*.jsonl`
 - Mind transcripts（MI prompt-pack 调用）：`~/.mind-incarnation/projects/<id>/transcripts/mind/*.jsonl`
 - EvidenceLog（追加写入；包含 `snapshot` + `cross_project_recall` 等记录）：`~/.mind-incarnation/projects/<id>/evidence.jsonl`
-- Thought DB（追加写的 Claim + Edge）：`~/.mind-incarnation/projects/<id>/thoughtdb/{claims,edges}.jsonl` 以及 `~/.mind-incarnation/thoughtdb/global/{claims,edges}.jsonl`
+- Thought DB（追加写的 Claim/Edge/Node）：`~/.mind-incarnation/projects/<id>/thoughtdb/{claims,edges,nodes}.jsonl` 以及 `~/.mind-incarnation/thoughtdb/global/{claims,edges,nodes}.jsonl`
 - 记忆文本索引（materialized view；可重建；默认 backend=`sqlite_fts`）：`~/.mind-incarnation/indexes/memory.sqlite`
 
 记忆索引维护：

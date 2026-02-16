@@ -22,6 +22,10 @@ def new_edge_id() -> str:
     return f"ed_{time.time_ns()}_{secrets.token_hex(4)}"
 
 
+def new_node_id() -> str:
+    return f"nd_{time.time_ns()}_{secrets.token_hex(4)}"
+
+
 def _norm_text(text: str) -> str:
     return " ".join((text or "").strip().split()).lower()
 
@@ -72,10 +76,12 @@ class ThoughtDbView:
     scope: str
     project_id: str
     claims_by_id: dict[str, dict[str, Any]]
+    nodes_by_id: dict[str, dict[str, Any]]
     edges: list[dict[str, Any]]
     redirects_same_as: dict[str, str]
     superseded_ids: set[str]
     retracted_ids: set[str]
+    retracted_node_ids: set[str]
 
     def resolve_id(self, claim_id: str) -> str:
         return _follow_redirects(claim_id, self.redirects_same_as)
@@ -127,6 +133,37 @@ class ThoughtDbView:
             out["canonical_id"] = self.resolve_id(cid)
             yield out
 
+    def node_status(self, node_id: str) -> str:
+        nid = (node_id or "").strip()
+        if not nid:
+            return "unknown"
+        if nid in self.retracted_node_ids:
+            return "retracted"
+        if nid in self.superseded_ids:
+            return "superseded"
+        return "active"
+
+    def iter_nodes(
+        self,
+        *,
+        include_inactive: bool,
+        include_aliases: bool,
+    ) -> Iterable[dict[str, Any]]:
+        """Iterate nodes (Decision/Action/Summary) with derived status/redirect info."""
+
+        for nid, n in self.nodes_by_id.items():
+            if not isinstance(n, dict):
+                continue
+            if not include_aliases and nid in self.redirects_same_as:
+                continue
+            status = self.node_status(nid)
+            if not include_inactive and status != "active":
+                continue
+            out = dict(n)
+            out["status"] = status
+            out["canonical_id"] = self.resolve_id(nid)
+            yield out
+
 
 class ThoughtDbStore:
     """Append-only Thought DB store (Claims + Edges).
@@ -150,14 +187,21 @@ class ThoughtDbStore:
             return self._gp.thoughtdb_global_edges_path
         return self._project_paths.thoughtdb_edges_path
 
+    def _nodes_path(self, scope: str) -> Path:
+        if scope == "global":
+            return self._gp.thoughtdb_global_nodes_path
+        return self._project_paths.thoughtdb_nodes_path
+
     def _project_id_for_scope(self, scope: str) -> str:
         return "" if scope == "global" else self._project_paths.project_id
 
     def _ensure_scope_dirs(self, scope: str) -> None:
         claims = self._claims_path(scope)
         edges = self._edges_path(scope)
+        nodes = self._nodes_path(scope)
         ensure_dir(claims.parent)
         ensure_dir(edges.parent)
+        ensure_dir(nodes.parent)
 
     def load_view(self, *, scope: str) -> ThoughtDbView:
         sc = (scope or "project").strip()
@@ -166,6 +210,7 @@ class ThoughtDbStore:
 
         claims_path = self._claims_path(sc)
         edges_path = self._edges_path(sc)
+        nodes_path = self._nodes_path(sc)
 
         claims_by_id: dict[str, dict[str, Any]] = {}
         retracted: set[str] = set()
@@ -182,6 +227,21 @@ class ThoughtDbStore:
                 cid = str(obj.get("claim_id") or "").strip()
                 if cid:
                     retracted.add(cid)
+
+        nodes_by_id: dict[str, dict[str, Any]] = {}
+        retracted_nodes: set[str] = set()
+        for obj in iter_jsonl(nodes_path):
+            if not isinstance(obj, dict):
+                continue
+            k = str(obj.get("kind") or "").strip()
+            if k == "node":
+                nid = str(obj.get("node_id") or "").strip()
+                if nid:
+                    nodes_by_id[nid] = obj
+            elif k == "node_retract":
+                nid = str(obj.get("node_id") or "").strip()
+                if nid:
+                    retracted_nodes.add(nid)
 
         edges: list[dict[str, Any]] = []
         redirects: dict[str, str] = {}
@@ -205,10 +265,12 @@ class ThoughtDbStore:
             scope=sc,
             project_id=pid,
             claims_by_id=claims_by_id,
+            nodes_by_id=nodes_by_id,
             edges=edges,
             redirects_same_as=redirects,
             superseded_ids=superseded,
             retracted_ids=retracted,
+            retracted_node_ids=retracted_nodes,
         )
 
     def existing_signatures(self, *, scope: str) -> set[str]:
@@ -338,6 +400,100 @@ class ThoughtDbStore:
                 "version": THOUGHTDB_VERSION,
                 "ts": now_rfc3339(),
                 "claim_id": cid,
+                "rationale": (rationale or "").strip(),
+                "source_refs": refs,
+            },
+        )
+
+    def append_node_create(
+        self,
+        *,
+        node_type: str,
+        title: str,
+        text: str,
+        scope: str,
+        visibility: str,
+        tags: list[str],
+        source_event_ids: list[str],
+        confidence: float,
+        notes: str,
+    ) -> str:
+        sc = (scope or "project").strip()
+        if sc not in ("project", "global"):
+            sc = "project"
+        vis = (visibility or "project").strip()
+        if vis not in ("private", "project", "global"):
+            vis = "project"
+
+        nt = (node_type or "").strip()
+        if nt not in ("decision", "action", "summary"):
+            raise ValueError(f"invalid node_type: {node_type!r}")
+
+        t = (text or "").strip()
+        if not t:
+            raise ValueError("node text is empty")
+
+        ttl = (title or "").strip()
+        if not ttl:
+            ttl = t.splitlines()[0].strip()
+        if len(ttl) > 140:
+            ttl = ttl[:137] + "..."
+
+        try:
+            conf = float(confidence)
+        except Exception:
+            conf = 0.0
+        conf = max(0.0, min(1.0, conf))
+
+        self._ensure_scope_dirs(sc)
+        nid = new_node_id()
+        pid = self._project_id_for_scope(sc)
+        ev_ids = [str(x).strip() for x in (source_event_ids or []) if str(x).strip()][:12]
+        refs = [{"kind": "evidence_event", "event_id": x} for x in ev_ids]
+        obj: dict[str, Any] = {
+            "kind": "node",
+            "version": THOUGHTDB_VERSION,
+            "node_id": nid,
+            "node_type": nt,
+            "title": ttl,
+            "text": t,
+            "visibility": vis,
+            "scope": sc,
+            "project_id": pid,
+            "asserted_ts": now_rfc3339(),
+            "tags": [str(x).strip() for x in (tags or []) if str(x).strip()][:20],
+            "source_refs": refs,
+            "confidence": conf,
+            "notes": (notes or "").strip(),
+        }
+        append_jsonl(self._nodes_path(sc), obj)
+        return nid
+
+    def append_node_retract(
+        self,
+        *,
+        node_id: str,
+        scope: str,
+        rationale: str,
+        source_event_ids: list[str],
+    ) -> None:
+        sc = (scope or "project").strip()
+        if sc not in ("project", "global"):
+            sc = "project"
+        nid = (node_id or "").strip()
+        if not nid:
+            raise ValueError("node_id is required")
+
+        self._ensure_scope_dirs(sc)
+        ev_ids = [str(x).strip() for x in (source_event_ids or []) if str(x).strip()]
+        refs = [{"kind": "evidence_event", "event_id": x} for x in ev_ids[:8]]
+        append_jsonl(
+            self._nodes_path(sc),
+            {
+                "kind": "node_retract",
+                "version": THOUGHTDB_VERSION,
+                "ts": now_rfc3339(),
+                "node_id": nid,
                 "rationale": (rationale or "").strip(),
                 "source_refs": refs,
             },

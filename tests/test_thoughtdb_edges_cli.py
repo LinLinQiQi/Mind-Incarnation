@@ -32,24 +32,65 @@ class TestThoughtDbEdgesCli(unittest.TestCase):
                 confidence=1.0,
                 notes="",
             )
-            eid_project = tdb.append_edge(
-                edge_type="depends_on",
-                from_id=event_id,
-                to_id=cid,
-                scope="project",
-                visibility="project",
-                source_event_ids=[event_id],
-                notes="test",
-            )
-            eid_global = tdb.append_edge(
-                edge_type="depends_on",
-                from_id=event_id,
-                to_id=cid,
-                scope="global",
-                visibility="project",
-                source_event_ids=[event_id],
-                notes="test",
-            )
+
+            # Create edges via CLI (covers EvidenceLog + append-only store write).
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                code = mi_main(
+                    [
+                        "--home",
+                        str(home),
+                        "edge",
+                        "create",
+                        "--cd",
+                        str(project_root),
+                        "--scope",
+                        "project",
+                        "--type",
+                        "depends_on",
+                        "--from",
+                        event_id,
+                        "--to",
+                        cid,
+                        "--json",
+                    ]
+                )
+                out = sys.stdout.getvalue()
+            finally:
+                sys.stdout = old_stdout
+            self.assertEqual(code, 0)
+            eid_project = str(json.loads(out).get("edge_id") or "")
+
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                code = mi_main(
+                    [
+                        "--home",
+                        str(home),
+                        "edge",
+                        "create",
+                        "--cd",
+                        str(project_root),
+                        "--scope",
+                        "global",
+                        "--type",
+                        "depends_on",
+                        "--from",
+                        event_id,
+                        "--to",
+                        cid,
+                        "--visibility",
+                        "project",
+                        "--json",
+                    ]
+                )
+                out = sys.stdout.getvalue()
+            finally:
+                sys.stdout = old_stdout
+            self.assertEqual(code, 0)
+            eid_global = str(json.loads(out).get("edge_id") or "")
 
             # List (project)
             old_stdout = sys.stdout
@@ -121,4 +162,3 @@ class TestThoughtDbEdgesCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

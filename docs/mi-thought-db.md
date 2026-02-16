@@ -1,7 +1,7 @@
 # MI Thought DB (Design Notes)
 
 Status: implemented (partial, V1)
-Last updated: 2026-02-15
+Last updated: 2026-02-16
 
 This document captures the "Thought DB" direction for Mind Incarnation (MI):
 
@@ -17,15 +17,17 @@ It is intentionally written as a stable reference to prevent multi-iteration con
 Implemented in V1 (incremental; safe foundation):
 
 - Append-only Claim + Edge stores (project + global) with `source_refs` that cite **EvidenceLog `event_id` only**
+- Append-only Node store (project + global) for `Decision` / `Action` / `Summary` nodes (first-class IDs; append-only; cites EvidenceLog `event_id` only)
 - Checkpoint-only, high-threshold claim mining during `mi run` (no per-step protocol; no user prompts)
 - When the model outputs high-confidence edges, MI also appends `Edge` records (best-effort; scoped to project/global).
 - On-demand mining + basic management via CLI (`mi claim ...`)
 - On-demand root-cause tracing via `mi why ...`: selects a minimal support set of claim ids for an EvidenceLog `event_id` (and may materialize `depends_on(event_id -> claim_id)` edges).
+- Manual node/edge management via CLI (`mi node ...`, `mi edge ...`)
 - Memory index ingestion of **active canonical** claims (`kind=claim`) for optional text recall/search
 
 Not implemented yet (future direction):
 
-- First-class Decision/Action/Summary node types (beyond using EvidenceLog `event_id` as anchor node ids)
+- Automatic mining/extraction of Decision/Action/Summary nodes from EvidenceLog / transcripts (beyond manual CLI creation)
 - Whole-graph LLM refactors via validated patch application (subgraph retrieval -> patch -> validate -> apply)
 
 ## Problem / Goal
@@ -201,11 +203,13 @@ Project-scoped (per `project_id`):
 
 - `~/.mind-incarnation/projects/<project_id>/thoughtdb/claims.jsonl`
 - `~/.mind-incarnation/projects/<project_id>/thoughtdb/edges.jsonl`
+- `~/.mind-incarnation/projects/<project_id>/thoughtdb/nodes.jsonl`
 
 Global (shared across projects):
 
 - `~/.mind-incarnation/thoughtdb/global/claims.jsonl`
 - `~/.mind-incarnation/thoughtdb/global/edges.jsonl`
+- `~/.mind-incarnation/thoughtdb/global/nodes.jsonl`
 
 ### CLI (V1)
 
@@ -215,6 +219,9 @@ Global (shared across projects):
 - `mi claim retract <claim_id> --cd <project>`
 - `mi claim supersede <old_claim_id> --text "..." --cd <project>`
 - `mi claim same-as <dup_id> <canonical_id> --cd <project>`
+- `mi node create --type decision|action|summary --text "..." --cd <project>` (append-only)
+- `mi node list --cd <project>` / `mi node show <node_id> --cd <project>` / `mi node retract <node_id> --cd <project>`
+- `mi edge create --type depends_on|supports|... --from <id> --to <id> --cd <project>` (append-only)
 - `mi edge list --cd <project>` (filterable by `--type/--from/--to`; default scope=project)
 - `mi edge show <edge_id> --cd <project>`
 - `mi why last --cd <project>` / `mi why event <event_id> --cd <project>` / `mi why claim <claim_id> --cd <project>`

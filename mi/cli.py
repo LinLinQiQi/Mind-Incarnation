@@ -246,8 +246,58 @@ def main(argv: list[str] | None = None) -> int:
     p_clsa.add_argument("--scope", choices=["project", "global"], default="project", help="Which store to write to.")
     p_clsa.add_argument("--notes", default="", help="Optional notes for audit.")
 
+    p_node = sub.add_parser("node", help="Manage Thought DB nodes (Decision/Action/Summary).")
+    node_sub = p_node.add_subparsers(dest="node_cmd", required=True)
+
+    p_nl = node_sub.add_parser("list", help="List nodes (default: active + canonical).")
+    p_nl.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_nl.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to list.")
+    p_nl.add_argument("--all", action="store_true", help="Include superseded/retracted and alias nodes.")
+    p_nl.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_ns = node_sub.add_parser("show", help="Show a node by id.")
+    p_ns.add_argument("id", help="Node id (nd_...).")
+    p_ns.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_ns.add_argument("--scope", choices=["project", "global", "effective"], default="effective", help="Where to resolve the id.")
+    p_ns.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_nc = node_sub.add_parser("create", help="Create a node (append-only).")
+    p_nc.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_nc.add_argument("--scope", choices=["project", "global"], default="project", help="Which store to write to.")
+    p_nc.add_argument("--type", dest="node_type", choices=["decision", "action", "summary"], required=True, help="Node type.")
+    p_nc.add_argument("--title", default="", help="Optional title (defaults to first line of text).")
+    p_nc.add_argument("--text", default="-", help="Node text. If omitted or '-', read from stdin.")
+    p_nc.add_argument("--visibility", choices=["private", "project", "global"], default="", help="Visibility label (defaults to scope).")
+    p_nc.add_argument("--tag", action="append", default=[], help="Tag to attach (repeatable).")
+    p_nc.add_argument("--cite", action="append", default=[], help="Extra EvidenceLog event_id to cite (repeatable).")
+    p_nc.add_argument("--confidence", type=float, default=1.0, help="Confidence 0..1 (best-effort).")
+    p_nc.add_argument("--notes", default="", help="Optional notes for audit.")
+    p_nc.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_nr = node_sub.add_parser("retract", help="Retract a node (append-only).")
+    p_nr.add_argument("id", help="Node id to retract.")
+    p_nr.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_nr.add_argument("--scope", choices=["project", "global"], default="project", help="Which store to write to.")
+    p_nr.add_argument("--rationale", default="user retract", help="Reason recorded for audit.")
+
     p_edge = sub.add_parser("edge", help="Manage Thought DB edges (dependencies + evolution).")
     edge_sub = p_edge.add_subparsers(dest="edge_cmd", required=True)
+
+    p_ec = edge_sub.add_parser("create", help="Create an edge (append-only).")
+    p_ec.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_ec.add_argument("--scope", choices=["project", "global"], default="project", help="Which store to write to.")
+    p_ec.add_argument(
+        "--type",
+        dest="edge_type",
+        choices=["depends_on", "supports", "contradicts", "derived_from", "mentions", "supersedes", "same_as"],
+        required=True,
+        help="Edge type.",
+    )
+    p_ec.add_argument("--from", dest="from_id", required=True, help="Edge from_id (claim_id/node_id/event_id).")
+    p_ec.add_argument("--to", dest="to_id", required=True, help="Edge to_id (claim_id/node_id/event_id).")
+    p_ec.add_argument("--visibility", choices=["private", "project", "global"], default="", help="Visibility label (defaults to scope).")
+    p_ec.add_argument("--notes", default="", help="Optional notes for audit.")
+    p_ec.add_argument("--json", action="store_true", help="Print as JSON.")
 
     p_el = edge_sub.add_parser("list", help="List edges (default: project scope).")
     p_el.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
@@ -1402,6 +1452,259 @@ def main(argv: list[str] | None = None) -> int:
         print("unknown claim subcommand", file=sys.stderr)
         return 2
 
+    if args.cmd == "node":
+        project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
+        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+
+        def _iter_effective_nodes(*, include_inactive: bool, include_aliases: bool) -> list[dict[str, Any]]:
+            proj = tdb.load_view(scope="project")
+            glob = tdb.load_view(scope="global")
+            out: list[dict[str, Any]] = []
+            seen: set[str] = set()
+
+            for n in proj.iter_nodes(include_inactive=include_inactive, include_aliases=include_aliases):
+                if not isinstance(n, dict):
+                    continue
+                nid = str(n.get("node_id") or "").strip()
+                if nid:
+                    seen.add(nid)
+                out.append(n)
+
+            for n in glob.iter_nodes(include_inactive=include_inactive, include_aliases=include_aliases):
+                if not isinstance(n, dict):
+                    continue
+                nid = str(n.get("node_id") or "").strip()
+                if nid and nid in seen:
+                    continue
+                out.append(n)
+
+            out.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
+            return out
+
+        def _find_node_effective(nid: str) -> tuple[str, dict[str, Any] | None]:
+            """Return (scope, node) searching project then global."""
+            n = (nid or "").strip()
+            if not n:
+                return "", None
+            for sc in ("project", "global"):
+                v = tdb.load_view(scope=sc)
+                if n in v.nodes_by_id:
+                    obj = dict(v.nodes_by_id[n])
+                    obj["status"] = v.node_status(n)
+                    obj["canonical_id"] = v.resolve_id(n)
+                    return sc, obj
+                canon = v.resolve_id(n)
+                if canon and canon in v.nodes_by_id:
+                    obj = dict(v.nodes_by_id[canon])
+                    obj["status"] = v.node_status(canon)
+                    obj["canonical_id"] = v.resolve_id(canon)
+                    obj["requested_id"] = n
+                    return sc, obj
+            return "", None
+
+        if args.node_cmd == "list":
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            include_inactive = bool(getattr(args, "all", False))
+            include_aliases = bool(getattr(args, "all", False))
+
+            if scope == "effective":
+                items = _iter_effective_nodes(include_inactive=include_inactive, include_aliases=include_aliases)
+            else:
+                v = tdb.load_view(scope=scope)
+                items = list(v.iter_nodes(include_inactive=include_inactive, include_aliases=include_aliases))
+                items.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
+
+            if getattr(args, "json", False):
+                print(json.dumps(items, indent=2, sort_keys=True))
+                return 0
+
+            if not items:
+                print("(no nodes)")
+                return 0
+            for n in items:
+                if not isinstance(n, dict):
+                    continue
+                nid = str(n.get("node_id") or "").strip()
+                nt = str(n.get("node_type") or "").strip()
+                st = str(n.get("status") or "").strip()
+                sc = str(n.get("scope") or scope).strip()
+                title = str(n.get("title") or "").strip().replace("\n", " ")
+                if len(title) > 140:
+                    title = title[:137] + "..."
+                print(f"{nid} scope={sc} status={st} type={nt} {title}".strip())
+            return 0
+
+        if args.node_cmd == "show":
+            nid = str(args.id or "").strip()
+            scope = str(getattr(args, "scope", "effective") or "effective").strip()
+            found_scope = ""
+            obj: dict[str, Any] | None = None
+            edges: list[dict[str, Any]] = []
+
+            if scope == "effective":
+                found_scope, obj = _find_node_effective(nid)
+                if found_scope:
+                    v = tdb.load_view(scope=found_scope)
+                    canon = v.resolve_id(nid)
+                    for e in v.edges:
+                        if not isinstance(e, dict):
+                            continue
+                        frm = str(e.get("from_id") or "").strip()
+                        to = str(e.get("to_id") or "").strip()
+                        if nid in (frm, to) or (canon and canon in (frm, to)):
+                            edges.append(e)
+            else:
+                v = tdb.load_view(scope=scope)
+                if nid in v.nodes_by_id:
+                    obj = dict(v.nodes_by_id[nid])
+                    obj["status"] = v.node_status(nid)
+                    obj["canonical_id"] = v.resolve_id(nid)
+                    found_scope = scope
+                else:
+                    canon = v.resolve_id(nid)
+                    if canon and canon in v.nodes_by_id:
+                        obj = dict(v.nodes_by_id[canon])
+                        obj["status"] = v.node_status(canon)
+                        obj["canonical_id"] = v.resolve_id(canon)
+                        obj["requested_id"] = nid
+                        found_scope = scope
+                if found_scope:
+                    canon = v.resolve_id(nid)
+                    for e in v.edges:
+                        if not isinstance(e, dict):
+                            continue
+                        frm = str(e.get("from_id") or "").strip()
+                        to = str(e.get("to_id") or "").strip()
+                        if nid in (frm, to) or (canon and canon in (frm, to)):
+                            edges.append(e)
+
+            if not obj:
+                print(f"node not found: {nid}", file=sys.stderr)
+                return 2
+
+            payload = {"scope": found_scope, "node": obj, "edges": edges}
+            if getattr(args, "json", False):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+            n = obj
+            print(f"node_id={n.get('node_id')}")
+            if n.get("requested_id") and n.get("requested_id") != n.get("node_id"):
+                print(f"requested_id={n.get('requested_id')}")
+            print(f"scope={found_scope}")
+            print(f"type={n.get('node_type')}")
+            print(f"status={n.get('status')}")
+            canon = n.get("canonical_id")
+            if canon and canon != n.get("node_id"):
+                print(f"canonical_id={canon}")
+            title = str(n.get("title") or "").strip()
+            if title:
+                print(f"title={title}")
+            text = str(n.get("text") or "").strip()
+            if text:
+                print("text:")
+                print(text)
+            if edges:
+                print(f"edges={len(edges)}")
+            return 0
+
+        if args.node_cmd == "create":
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            nt = str(getattr(args, "node_type", "") or "").strip()
+            title = str(getattr(args, "title", "") or "").strip()
+            raw_text = str(getattr(args, "text", "-") or "-").strip()
+            text = _read_stdin_text() if (not raw_text or raw_text == "-") else raw_text
+            if not text.strip():
+                print("node text is empty", file=sys.stderr)
+                return 2
+
+            vis = str(getattr(args, "visibility", "") or "").strip() or ("global" if scope == "global" else "project")
+            tags = [str(x).strip() for x in (getattr(args, "tag", None) or []) if str(x).strip()]
+            cite_raw = getattr(args, "cite", None) or []
+            cite = [str(x).strip() for x in cite_raw if str(x).strip()]
+            notes = str(getattr(args, "notes", "") or "").strip()
+            try:
+                conf = float(getattr(args, "confidence", 1.0) or 1.0)
+            except Exception:
+                conf = 1.0
+
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            ev = evw.append(
+                {
+                    "kind": "node_create",
+                    "batch_id": "cli.node_create",
+                    "ts": now_rfc3339(),
+                    "thread_id": "",
+                    "scope": scope,
+                    "node_type": nt,
+                    "title": title,
+                    "text": text,
+                    "visibility": vis,
+                    "tags": tags,
+                    "confidence": conf,
+                    "notes": notes,
+                    "cite_event_ids": cite,
+                }
+            )
+            ev_id = str(ev.get("event_id") or "").strip()
+            source_event_ids = [x for x in [ev_id, *cite] if x]
+            try:
+                nid = tdb.append_node_create(
+                    node_type=nt,
+                    title=title,
+                    text=text,
+                    scope=scope,
+                    visibility=vis,
+                    tags=tags,
+                    source_event_ids=source_event_ids,
+                    confidence=conf,
+                    notes=notes,
+                )
+            except Exception as e:
+                print(f"node create failed: {e}", file=sys.stderr)
+                return 2
+
+            payload = {"node_id": nid, "scope": scope}
+            if getattr(args, "json", False):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+            print(nid)
+            return 0
+
+        if args.node_cmd == "retract":
+            nid = str(args.id or "").strip()
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            rationale = str(getattr(args, "rationale", "") or "").strip()
+
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            ev = evw.append(
+                {
+                    "kind": "node_retract",
+                    "batch_id": "cli.node_retract",
+                    "ts": now_rfc3339(),
+                    "thread_id": "",
+                    "scope": scope,
+                    "node_id": nid,
+                    "rationale": rationale,
+                }
+            )
+            ev_id = str(ev.get("event_id") or "").strip()
+            try:
+                tdb.append_node_retract(
+                    node_id=nid,
+                    scope=scope,
+                    rationale=rationale,
+                    source_event_ids=[ev_id] if ev_id else [],
+                )
+            except Exception as e:
+                print(f"node retract failed: {e}", file=sys.stderr)
+                return 2
+            print(nid)
+            return 0
+
+        print("unknown node subcommand", file=sys.stderr)
+        return 2
+
     if args.cmd == "edge":
         project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
         pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
@@ -1410,6 +1713,51 @@ def main(argv: list[str] | None = None) -> int:
         def _iter_edges_for_scope(scope: str) -> list[dict[str, Any]]:
             v = tdb.load_view(scope=scope)
             return [e for e in v.edges if isinstance(e, dict) and str(e.get("kind") or "").strip() == "edge"]
+
+        if args.edge_cmd == "create":
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            et = str(getattr(args, "edge_type", "") or "").strip()
+            frm = str(getattr(args, "from_id", "") or "").strip()
+            to = str(getattr(args, "to_id", "") or "").strip()
+            vis = str(getattr(args, "visibility", "") or "").strip() or ("global" if scope == "global" else "project")
+            notes = str(getattr(args, "notes", "") or "").strip()
+
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            ev = evw.append(
+                {
+                    "kind": "edge_create",
+                    "batch_id": "cli.edge_create",
+                    "ts": now_rfc3339(),
+                    "thread_id": "",
+                    "scope": scope,
+                    "edge_type": et,
+                    "from_id": frm,
+                    "to_id": to,
+                    "visibility": vis,
+                    "notes": notes,
+                }
+            )
+            ev_id = str(ev.get("event_id") or "").strip()
+            try:
+                eid = tdb.append_edge(
+                    edge_type=et,
+                    from_id=frm,
+                    to_id=to,
+                    scope=scope,
+                    visibility=vis,
+                    source_event_ids=[ev_id] if ev_id else [],
+                    notes=notes,
+                )
+            except Exception as e:
+                print(f"edge create failed: {e}", file=sys.stderr)
+                return 2
+
+            payload = {"edge_id": eid, "scope": scope, "edge_type": et, "from_id": frm, "to_id": to}
+            if getattr(args, "json", False):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+            print(eid)
+            return 0
 
         if args.edge_cmd == "list":
             scope = str(getattr(args, "scope", "project") or "project").strip()

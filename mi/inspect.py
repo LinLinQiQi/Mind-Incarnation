@@ -110,6 +110,34 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
         sid = str(obj.get("suggestion_id") or "")
         applied = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
         detail = f"suggestion_id={sid} applied={len(applied)}"
+    elif kind == "claim_retract":
+        cid = str(obj.get("claim_id") or "").strip()
+        scope = str(obj.get("scope") or "").strip()
+        detail = f"claim_id={cid} scope={scope}".strip()
+    elif kind == "claim_supersede":
+        old_id = str(obj.get("old_claim_id") or "").strip()
+        scope = str(obj.get("scope") or "").strip()
+        detail = f"old_claim_id={old_id} scope={scope}".strip()
+    elif kind == "claim_same_as":
+        dup_id = str(obj.get("dup_id") or "").strip()
+        canon_id = str(obj.get("canonical_id") or "").strip()
+        scope = str(obj.get("scope") or "").strip()
+        detail = f"{dup_id}->{canon_id} scope={scope}".strip()
+    elif kind == "node_create":
+        nt = str(obj.get("node_type") or "").strip()
+        title = _truncate(str(obj.get("title") or "").strip().replace("\n", " "), 90)
+        scope = str(obj.get("scope") or "").strip()
+        detail = " ".join([x for x in [f"type={nt}" if nt else "", f"scope={scope}" if scope else "", title] if x]).strip()
+    elif kind == "node_retract":
+        nid = str(obj.get("node_id") or "").strip()
+        scope = str(obj.get("scope") or "").strip()
+        detail = f"node_id={nid} scope={scope}".strip()
+    elif kind == "edge_create":
+        et = str(obj.get("edge_type") or "").strip()
+        frm = str(obj.get("from_id") or "").strip()
+        to = str(obj.get("to_id") or "").strip()
+        scope = str(obj.get("scope") or "").strip()
+        detail = f"type={et} {frm}->{to} scope={scope}".strip()
     elif kind == "claim_mining":
         applied = obj.get("applied") if isinstance(obj.get("applied"), dict) else {}
         w = applied.get("written") if isinstance(applied.get("written"), list) else []

@@ -366,6 +366,11 @@ class ProjectPaths:
         return self.thoughtdb_dir / "edges.jsonl"
 
     @property
+    def thoughtdb_nodes_path(self) -> Path:
+        # Thought DB nodes (Decision/Action/Summary) are append-only and reference EvidenceLog event_id.
+        return self.thoughtdb_dir / "nodes.jsonl"
+
+    @property
     def workflow_candidates_path(self) -> Path:
         # Signature -> count mapping for "suggested workflow" mining.
         return self.project_dir / "workflow_candidates.json"
@@ -423,3 +428,7 @@ class GlobalPaths:
     @property
     def thoughtdb_global_edges_path(self) -> Path:
         return self.thoughtdb_global_dir / "edges.jsonl"
+
+    @property
+    def thoughtdb_global_nodes_path(self) -> Path:
+        return self.thoughtdb_global_dir / "nodes.jsonl"

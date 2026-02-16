@@ -18,7 +18,7 @@ Implemented in V1 (incremental; safe foundation):
 
 - Append-only Claim + Edge stores (project + global) with `source_refs` that cite **EvidenceLog `event_id` only**
 - Append-only Node store (project + global) for `Decision` / `Action` / `Summary` nodes (first-class IDs; append-only; cites EvidenceLog `event_id` only)
-- Global values/preferences can be migrated into global preference/goal Claims via `mi init` (`values_claim_patch`), citing a `values_set` event in `global/evidence.jsonl` and tagging claims with `values:base` + `values_set:<event_id>`
+- Global values/preferences can be migrated into global preference/goal Claims via `mi init` (`values_claim_patch`), citing a `values_set` event in `global/evidence.jsonl` and tagging claims with `values:base` + `values_set:<event_id>`. `mi run` may also auto-migrate when claims are missing/out-of-date; it reuses the latest matching `values_set` event_id when possible to avoid duplicating the global ledger.
 - Preference tightening suggestions (`learned_changes`, legacy field name) are canonically materialized as Thought DB preference Claims when `violation_response.auto_learn=true` (append-only, reversible via claim retraction). Legacy `learned.jsonl` entries remain non-canonical.
 - Checkpoint-only, high-threshold claim mining during `mi run` (no per-step protocol; no user prompts)
 - Deterministic checkpoint materialization of `Decision` / `Action` / `Summary` nodes during `mi run` (no extra model calls; best-effort; append-only)

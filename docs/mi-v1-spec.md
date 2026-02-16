@@ -266,7 +266,7 @@ MI uses the following internal prompts (all should return strict JSON):
 
 14) `values_claim_patch` (implemented; on-demand; values -> Thought DB)
    - Input: `values_text` + compiled MindSpec base + existing global values claims + allowed `event_id` list + allowed retract claim ids
-   - Output: a small patch of global preference/goal Claims (plus optional supersedes/same_as edges) and a list of old claim_ids to retract. Used by `mi init` to keep values canonical as Thought DB claims (tagged `values:base`).
+   - Output: a small patch of global preference/goal Claims (plus optional supersedes/same_as edges) and a list of old claim_ids to retract. Used by `mi init` (and by `mi run` auto-migration when needed) to keep values canonical as Thought DB claims (tagged `values:base`), citing a `values_set` event_id for provenance.
 
 Planned (not required for V1 loop to function; can be added incrementally):
 

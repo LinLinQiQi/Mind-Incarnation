@@ -1161,6 +1161,7 @@ def run_autopilot(
 
         # Compare to last global values_set event payload (best-effort).
         last_text = ""
+        last_event_id = ""
         for ev in iter_global_events(home_dir=home):
             if not isinstance(ev, dict):
                 continue
@@ -1168,17 +1169,23 @@ def run_autopilot(
                 continue
             payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
             last_text = str(payload.get("values_text") or "")
+            last_event_id = str(ev.get("event_id") or "").strip()
 
         if existing0 and last_text.strip() == values_text:
             return
 
-        values_ev = write_values_set_event(
-            home_dir=home,
-            values_text=values_text,
-            compiled_mindspec=loaded.base if isinstance(loaded.base, dict) else {},
-            notes="auto_migrate_on_run",
-        )
-        values_event_id = str(values_ev.get("event_id") or "").strip()
+        # Prefer reusing the last values_set event_id when it matches current values_text.
+        # This avoids spamming global/evidence.jsonl when claims are missing but values were
+        # already recorded by `mi init` (e.g., init --no-compile).
+        values_event_id = last_event_id if (last_text.strip() == values_text and last_event_id) else ""
+        if not values_event_id:
+            values_ev = write_values_set_event(
+                home_dir=home,
+                values_text=values_text,
+                compiled_mindspec=loaded.base if isinstance(loaded.base, dict) else {},
+                notes="auto_migrate_on_run",
+            )
+            values_event_id = str(values_ev.get("event_id") or "").strip()
         if not values_event_id:
             return
 

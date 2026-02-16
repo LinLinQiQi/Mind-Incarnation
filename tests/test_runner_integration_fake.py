@@ -11,9 +11,11 @@ from mi.memory_service import MemoryService
 from mi.memory_types import MemoryItem
 from mi.mind_errors import MindCallError
 from mi.mindspec import MindSpecStore
-from mi.paths import ProjectPaths
+from mi.paths import GlobalPaths, ProjectPaths
 from mi.runner import run_autopilot
+from mi.storage import iter_jsonl
 from mi.thoughtdb import ThoughtDbStore
+from mi.values import write_values_set_event
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,112 @@ def _mk_result(*, thread_id: str, last_message: str, command: str = "") -> Codex
 
 
 class TestRunnerIntegrationFake(unittest.TestCase):
+    def test_values_claim_migration_reuses_last_values_set_event_id(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            store = MindSpecStore(home_dir=home)
+            base = store.load_base()
+            base["values_text"] = "Prefer minimal questions; avoid unnecessary prompts."
+            store.write_base(base)
+
+            # Simulate `mi init` recording a global values_set event but not writing value claims yet.
+            rec = write_values_set_event(
+                home_dir=Path(home),
+                values_text=str(base.get("values_text") or ""),
+                compiled_mindspec=base,
+                notes="test",
+            )
+            ev_id = str(rec.get("event_id") or "").strip()
+            self.assertTrue(ev_id.startswith("ev_"))
+
+            fake_hands = _FakeHands([_mk_result(thread_id="t_vals", last_message="All done.", command="ls")])
+            fake_llm = _FakeLlm(
+                {
+                    # Values migration during run start (must cite the existing values_set event_id).
+                    "values_claim_patch.json": [
+                        {
+                            "claims": [
+                                {
+                                    "local_id": "c1",
+                                    "claim_type": "preference",
+                                    "text": "Prefer minimal questions; avoid unnecessary prompts.",
+                                    "scope": "global",
+                                    "visibility": "global",
+                                    "valid_from": None,
+                                    "valid_to": None,
+                                    "confidence": 0.95,
+                                    "source_event_ids": [],
+                                    "tags": [],
+                                    "notes": "",
+                                }
+                            ],
+                            "edges": [],
+                            "retract_claim_ids": [],
+                            "notes": "",
+                        }
+                    ],
+                    "extract_evidence.json": [
+                        {
+                            "facts": ["ran ls"],
+                            "actions": [{"kind": "command", "detail": "ls"}],
+                            "results": ["ok"],
+                            "unknowns": [],
+                            "risk_signals": [],
+                        },
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="do something",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+            self.assertEqual(result.status, "done")
+
+            # Global ledger should NOT get a duplicate values_set event during auto-migration.
+            gp = GlobalPaths(home_dir=Path(home))
+            values_set = [x for x in iter_jsonl(gp.global_evidence_log_path) if isinstance(x, dict) and x.get("kind") == "values_set"]
+            self.assertEqual(len(values_set), 1)
+            self.assertEqual(str(values_set[0].get("event_id") or "").strip(), ev_id)
+
+            # Project EvidenceLog should record the migration and reference the reused values_event_id.
+            found = False
+            for obj in iter_jsonl(result.evidence_log_path):
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("kind") != "values_claim_patch":
+                    continue
+                self.assertEqual(str(obj.get("values_event_id") or "").strip(), ev_id)
+                found = True
+                break
+            self.assertTrue(found)
+
     def test_checkpoint_materializes_thoughtdb_nodes_without_extra_mind_calls(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             # Disable claim mining to keep this test focused (node materialization is deterministic).

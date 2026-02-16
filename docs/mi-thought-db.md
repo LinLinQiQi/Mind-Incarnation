@@ -215,6 +215,9 @@ Global (shared across projects):
 - `mi claim retract <claim_id> --cd <project>`
 - `mi claim supersede <old_claim_id> --text "..." --cd <project>`
 - `mi claim same-as <dup_id> <canonical_id> --cd <project>`
+- `mi edge list --cd <project>` (filterable by `--type/--from/--to`; default scope=project)
+- `mi edge show <edge_id> --cd <project>`
+- `mi why last --cd <project>` / `mi why event <event_id> --cd <project>` / `mi why claim <claim_id> --cd <project>`
 
 ### Mining Trigger (V1)
 

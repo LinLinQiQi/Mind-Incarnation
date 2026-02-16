@@ -203,6 +203,14 @@ mi claim supersede <claim_id> --cd /path/to/your/project --text "..."
 mi claim same-as <dup_id> <canonical_id> --cd /path/to/your/project
 ```
 
+边（Edge）：
+
+```bash
+mi edge list --cd /path/to/your/project --scope project
+mi edge list --cd /path/to/your/project --scope project --type depends_on --from <event_id>
+mi edge show <edge_id> --cd /path/to/your/project
+```
+
 根因追踪（WhyTrace）：
 
 ```bash

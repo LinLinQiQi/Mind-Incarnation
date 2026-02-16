@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import __version__
 from .config import (
@@ -244,6 +245,24 @@ def main(argv: list[str] | None = None) -> int:
     p_clsa.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_clsa.add_argument("--scope", choices=["project", "global"], default="project", help="Which store to write to.")
     p_clsa.add_argument("--notes", default="", help="Optional notes for audit.")
+
+    p_edge = sub.add_parser("edge", help="Manage Thought DB edges (dependencies + evolution).")
+    edge_sub = p_edge.add_subparsers(dest="edge_cmd", required=True)
+
+    p_el = edge_sub.add_parser("list", help="List edges (default: project scope).")
+    p_el.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_el.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to list.")
+    p_el.add_argument("--type", dest="edge_type", default="", help="Filter by edge_type (depends_on/supports/...).")
+    p_el.add_argument("--from", dest="from_id", default="", help="Filter by from_id.")
+    p_el.add_argument("--to", dest="to_id", default="", help="Filter by to_id.")
+    p_el.add_argument("--limit", type=int, default=50, help="Maximum number of edges to print.")
+    p_el.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_es = edge_sub.add_parser("show", help="Show an edge by id.")
+    p_es.add_argument("id", help="Edge id (ed_...).")
+    p_es.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_es.add_argument("--scope", choices=["project", "global", "effective"], default="effective", help="Where to resolve the id.")
+    p_es.add_argument("--json", action="store_true", help="Print as JSON.")
 
     p_why = sub.add_parser("why", help="Root-cause tracing (WhyTrace) using Thought DB claims.")
     why_sub = p_why.add_subparsers(dest="why_cmd", required=True)
@@ -1381,6 +1400,103 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         print("unknown claim subcommand", file=sys.stderr)
+        return 2
+
+    if args.cmd == "edge":
+        project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
+        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+
+        def _iter_edges_for_scope(scope: str) -> list[dict[str, Any]]:
+            v = tdb.load_view(scope=scope)
+            return [e for e in v.edges if isinstance(e, dict) and str(e.get("kind") or "").strip() == "edge"]
+
+        if args.edge_cmd == "list":
+            scope = str(getattr(args, "scope", "project") or "project").strip()
+            edge_type = str(getattr(args, "edge_type", "") or "").strip()
+            from_id = str(getattr(args, "from_id", "") or "").strip()
+            to_id = str(getattr(args, "to_id", "") or "").strip()
+            try:
+                limit = int(getattr(args, "limit", 50) or 50)
+            except Exception:
+                limit = 50
+            limit = max(1, min(500, limit))
+
+            items: list[dict[str, Any]] = []
+            seen_keys: set[str] = set()
+
+            scopes = [scope] if scope in ("project", "global") else ["project", "global"]
+            for sc in scopes:
+                for e in _iter_edges_for_scope(sc):
+                    et = str(e.get("edge_type") or "").strip()
+                    frm = str(e.get("from_id") or "").strip()
+                    to = str(e.get("to_id") or "").strip()
+                    if edge_type and et != edge_type:
+                        continue
+                    if from_id and frm != from_id:
+                        continue
+                    if to_id and to != to_id:
+                        continue
+
+                    key = f"{et}|{frm}|{to}"
+                    if scope == "effective":
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                    items.append(e)
+                    if len(items) >= limit:
+                        break
+                if len(items) >= limit:
+                    break
+
+            # Newest first when possible.
+            items.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
+
+            if getattr(args, "json", False):
+                print(json.dumps(items, indent=2, sort_keys=True))
+                return 0
+
+            if not items:
+                print("(no edges)")
+                return 0
+            for e in items:
+                eid = str(e.get("edge_id") or "").strip()
+                et = str(e.get("edge_type") or "").strip()
+                frm = str(e.get("from_id") or "").strip()
+                to = str(e.get("to_id") or "").strip()
+                sc = str(e.get("scope") or "").strip()
+                print(f"{eid} scope={sc} type={et} {frm} -> {to}".strip())
+            return 0
+
+        if args.edge_cmd == "show":
+            eid = str(args.id or "").strip()
+            scope = str(getattr(args, "scope", "effective") or "effective").strip()
+
+            found_scope = ""
+            obj: dict[str, Any] | None = None
+
+            scopes = [scope] if scope in ("project", "global") else ["project", "global"]
+            for sc in scopes:
+                for e in _iter_edges_for_scope(sc):
+                    if str(e.get("edge_id") or "").strip() == eid:
+                        found_scope = sc
+                        obj = e
+                        break
+                if obj:
+                    break
+
+            if not obj:
+                print(f"edge not found: {eid}", file=sys.stderr)
+                return 2
+
+            payload = {"scope": found_scope, "edge": obj}
+            if getattr(args, "json", False):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+
+        print("unknown edge subcommand", file=sys.stderr)
         return 2
 
     if args.cmd == "why":

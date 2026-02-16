@@ -1051,6 +1051,17 @@ mi --home ~/.mind-incarnation claim supersede <claim_id> --cd <project_root> --t
 mi --home ~/.mind-incarnation claim same-as <dup_id> <canonical_id> --cd <project_root>
 ```
 
+Manage Thought DB edges (project/global/effective):
+
+```bash
+mi --home ~/.mind-incarnation edge list --cd <project_root> --scope project
+mi --home ~/.mind-incarnation edge list --cd <project_root> --scope global
+mi --home ~/.mind-incarnation edge list --cd <project_root> --scope effective
+
+mi --home ~/.mind-incarnation edge list --cd <project_root> --scope project --type depends_on --from <event_id>
+mi --home ~/.mind-incarnation edge show <edge_id> --cd <project_root>
+```
+
 Root-cause tracing (WhyTrace):
 
 ```bash

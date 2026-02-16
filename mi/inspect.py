@@ -138,6 +138,13 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
         to = str(obj.get("to_id") or "").strip()
         scope = str(obj.get("scope") or "").strip()
         detail = f"type={et} {frm}->{to} scope={scope}".strip()
+    elif kind == "node_materialized":
+        ok = bool(obj.get("ok", True))
+        ck = str(obj.get("checkpoint_kind") or "").strip()
+        wn = obj.get("written_nodes") if isinstance(obj.get("written_nodes"), list) else []
+        we = obj.get("written_edges") if isinstance(obj.get("written_edges"), list) else []
+        parts = [f"ok={str(ok).lower()}", (f"checkpoint_kind={ck}" if ck else ""), f"nodes={len(wn)}", f"edges={len(we)}"]
+        detail = " ".join([p for p in parts if p]).strip()
     elif kind == "claim_mining":
         applied = obj.get("applied") if isinstance(obj.get("applied"), dict) else {}
         w = applied.get("written") if isinstance(applied.get("written"), list) else []

@@ -458,6 +458,7 @@ Minimal shape:
 - `workflow_progress` (best-effort workflow cursor update from `workflow_progress`; helps MI infer completed/next steps without forcing step-by-step reporting)
 - `checkpoint` (segment boundary judgement from `checkpoint_decide`; may trigger workflow/preference mining and segment reset)
 - `snapshot` (a compact segment snapshot written at checkpoint boundaries; used for cross-project recall; includes `snapshot_id`; traceable via `source_refs` which may include `event_ids`)
+- `node_materialized` (checkpoint materialization of Thought DB nodes (Decision/Action/Summary); lists written ids and traceability edges; best-effort)
 - `cross_project_recall` (on-demand recall results for this run; includes a compact list of recalled items + traceable `source_refs`)
 - `workflow_trigger` (an enabled workflow matched the user task and was injected into the first batch input)
 - `workflow_suggestion` (output from `suggest_workflow` at a checkpoint/segment boundary; can occur multiple times per `mi run`)
@@ -814,21 +815,24 @@ Behavior in `mi run` (V1):
 - When the occurrence threshold is met, MI emits a `kind=learn_suggested` record (source=`mine_preferences`) and records `kind=preference_solidified`.
   - If `violation_response.auto_learn=true`, MI also appends the learned rule into `learned.jsonl` and includes `applied_entry_ids` in the `learn_suggested` record.
 
-## Thought DB (Claims) (V1, Experimental)
+## Thought DB (Claims + Nodes) (V1, Experimental)
 
 MI can maintain a durable, provenance-traceable "Thought DB" of atomic reusable `Claim`s (the "basic arguments") that support future root-cause tracing ("why did we do this?").
 
 V1 scope (implemented):
 
 - Append-only Claim + Edge stores (project + global)
+- Append-only Node store (project + global) for `Decision` / `Action` / `Summary` nodes
 - `source_refs` cite **EvidenceLog `event_id` only** (no direct references to external logs)
 - Checkpoint-only, high-threshold claim mining during `mi run` (no user prompts)
-- Basic CLI management via `mi claim ...`
+- Deterministic checkpoint materialization of `Decision` / `Action` / `Summary` nodes during `mi run` (no extra model calls; best-effort; append-only)
+- Basic CLI management via `mi claim ...`, `mi node ...`, and `mi edge ...`
 
 Knobs in `MindSpec.thought_db`:
 
 - `enabled`: enable Thought DB features (default true)
 - `auto_mine`: allow MI to call `mine_claims` at LLM-judged checkpoints during `mi run` (default true)
+- `auto_materialize_nodes`: create `Decision` / `Action` / `Summary` nodes at checkpoint boundaries (deterministic; no extra model calls) (default true)
 - `min_confidence`: skip claims below this confidence (default 0.9)
 - `max_claims_per_checkpoint`: cap the number of claims written per checkpoint (default 6)
 
@@ -836,6 +840,7 @@ Behavior in `mi run` (V1):
 
 - At checkpoint boundaries, MI may call `mine_claims` and records `kind=claim_mining`.
 - Only "high-confidence, reusable" claims (and optional edges) should be written; otherwise MI writes none (to avoid noisy graphs).
+- At checkpoint boundaries, MI may also materialize Thought DB nodes (Decision/Action/Summary) derived from the segment evidence + snapshot + decide_next; it records `kind=node_materialized` (best-effort) and may add `derived_from(node_id -> event_id)` edges for traceability.
 
 Notes:
 

@@ -187,11 +187,12 @@ mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
 
 - 如果 `MindSpec.preference_mining.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `mine_preferences`，并在重复出现时输出 `kind=learn_suggested`（详见 `docs/mi-v1-spec.md`）。
 
-实验性：Thought DB（原子 Claim）
+实验性：Thought DB（原子 Claim + Node）
 
 MI 可以维护一个追加写（append-only）的“Thought DB”，把可复用的原子 `Claim`（fact/preference/assumption/goal）沉淀下来，并且 provenance 只引用 **EvidenceLog 的 `event_id`**（便于审计和追溯）。
 
 - 如果 `MindSpec.thought_db.auto_mine=true`（默认），MI 会在 `mi run` 的 checkpoint 边界调用 `mine_claims`，并记录 `kind=claim_mining`。
+- 如果 `MindSpec.thought_db.auto_materialize_nodes=true`（默认），MI 也会在 checkpoint 边界把 `Decision` / `Action` / `Summary` 节点落盘（确定性；不增加额外模型调用），并记录 `kind=node_materialized`。
 - Claim/Edge 存储在项目级（以及可选的全局）目录中，可用 CLI 管理：
 
 ```bash

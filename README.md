@@ -187,11 +187,12 @@ Experimental: preference mining
 
 - If `MindSpec.preference_mining.auto_mine=true` (default), MI may call `mine_preferences` at LLM-judged checkpoints during `mi run` (including at run end) and may emit `kind=learn_suggested` after repeated occurrences (see `docs/mi-v1-spec.md`).
 
-Experimental: Thought DB (atomic Claims)
+Experimental: Thought DB (atomic Claims + Nodes)
 
 MI can maintain an append-only "Thought DB" of atomic reusable `Claim`s (fact/preference/assumption/goal), with provenance that cites **EvidenceLog `event_id` only**.
 
 - If `MindSpec.thought_db.auto_mine=true` (default), MI may call `mine_claims` at checkpoints during `mi run` and records `kind=claim_mining`.
+- If `MindSpec.thought_db.auto_materialize_nodes=true` (default), MI may also materialize `Decision` / `Action` / `Summary` nodes at checkpoints (deterministic; no extra model calls) and records `kind=node_materialized`.
 - Claims are stored per project (and optionally global) and can be managed via CLI:
 
 ```bash

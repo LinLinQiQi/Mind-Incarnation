@@ -13,6 +13,7 @@ from mi.mind_errors import MindCallError
 from mi.mindspec import MindSpecStore
 from mi.paths import ProjectPaths
 from mi.runner import run_autopilot
+from mi.thoughtdb import ThoughtDbStore
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,84 @@ def _mk_result(*, thread_id: str, last_message: str, command: str = "") -> Codex
 
 
 class TestRunnerIntegrationFake(unittest.TestCase):
+    def test_checkpoint_materializes_thoughtdb_nodes_without_extra_mind_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            # Disable claim mining to keep this test focused (node materialization is deterministic).
+            store = MindSpecStore(home_dir=home)
+            base = store.load_base()
+            base.setdefault("thought_db", {})
+            base["thought_db"]["enabled"] = True
+            base["thought_db"]["auto_mine"] = False
+            base["thought_db"]["auto_materialize_nodes"] = True
+            store.write_base(base)
+
+            fake_hands = _FakeHands([_mk_result(thread_id="t_nodes", last_message="All done.", command="ls")])
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {
+                            "facts": ["ran ls"],
+                            "actions": [{"kind": "command", "detail": "ls"}],
+                            "results": ["ok"],
+                            "unknowns": [],
+                            "risk_signals": [],
+                        },
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": True,
+                            "checkpoint_kind": "done",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "checkpoint for node materialization",
+                        }
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="do something",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+            self.assertEqual(result.status, "done")
+
+            # EvidenceLog should include node_materialized.
+            found = False
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict) and obj.get("kind") == "node_materialized":
+                        self.assertTrue(bool(obj.get("ok", False)))
+                        wn = obj.get("written_nodes") if isinstance(obj.get("written_nodes"), list) else []
+                        self.assertTrue(len(wn) >= 1)
+                        found = True
+                        break
+            self.assertTrue(found)
+
+            # Thought DB nodes store should contain node records.
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            v = tdb.load_view(scope="project")
+            self.assertTrue(any(isinstance(n, dict) and n.get("kind") == "node" for n in v.nodes_by_id.values()))
+
     def test_recall_prefers_current_project_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))

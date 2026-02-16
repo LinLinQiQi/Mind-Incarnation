@@ -109,6 +109,8 @@ def _default_base(values_text: str) -> dict[str, Any]:
             "auto_mine": True,
             "min_confidence": 0.9,
             "max_claims_per_checkpoint": 6,
+            # Deterministic checkpoint materialization of Decision/Action/Summary nodes (no extra model calls).
+            "auto_materialize_nodes": True,
         },
         "violation_response": {
             "auto_learn": True,

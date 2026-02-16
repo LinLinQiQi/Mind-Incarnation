@@ -19,6 +19,7 @@ Implemented in V1 (incremental; safe foundation):
 - Append-only Claim + Edge stores (project + global) with `source_refs` that cite **EvidenceLog `event_id` only**
 - Append-only Node store (project + global) for `Decision` / `Action` / `Summary` nodes (first-class IDs; append-only; cites EvidenceLog `event_id` only)
 - Checkpoint-only, high-threshold claim mining during `mi run` (no per-step protocol; no user prompts)
+- Deterministic checkpoint materialization of `Decision` / `Action` / `Summary` nodes during `mi run` (no extra model calls; best-effort; append-only)
 - When the model outputs high-confidence edges, MI also appends `Edge` records (best-effort; scoped to project/global).
 - On-demand mining + basic management via CLI (`mi claim ...`)
 - On-demand root-cause tracing via `mi why ...`: selects a minimal support set of claim ids for an EvidenceLog `event_id` (and may materialize `depends_on(event_id -> claim_id)` edges).
@@ -27,7 +28,7 @@ Implemented in V1 (incremental; safe foundation):
 
 Not implemented yet (future direction):
 
-- Automatic mining/extraction of Decision/Action/Summary nodes from EvidenceLog / transcripts (beyond manual CLI creation)
+- LLM-based mining/extraction + de-duplication of Decision/Action/Summary nodes from EvidenceLog / transcripts (beyond the deterministic checkpoint materialization)
 - Whole-graph LLM refactors via validated patch application (subgraph retrieval -> patch -> validate -> apply)
 
 ## Problem / Goal

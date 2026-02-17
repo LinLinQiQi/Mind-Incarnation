@@ -141,7 +141,7 @@ class TestLearnSuggestedApply(unittest.TestCase):
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
             try:
-                code = mi_main(["--home", home, "learned", "apply-suggested", suggestion_id, "--cd", project_root])
+                code = mi_main(["--home", home, "claim", "apply-suggested", suggestion_id, "--cd", project_root])
             finally:
                 sys.stdout = old_stdout
             self.assertEqual(code, 0)

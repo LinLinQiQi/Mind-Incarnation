@@ -54,14 +54,14 @@ class InMemoryBackend:
             for item_id in stale:
                 self._items.pop(item_id, None)
 
-        # Prune orphaned project-scoped learned/workflow items when projects were deleted.
+        # Prune orphaned project-scoped structured items when projects were deleted.
         if existing_project_ids is not None:
             keep = {str(x).strip() for x in existing_project_ids if str(x).strip()}
             stale2: list[str] = []
             for it in self._items.values():
                 if it.scope != "project":
                     continue
-                if it.kind not in ("learned", "workflow"):
+                if it.kind not in ("workflow", "claim", "node"):
                     continue
                 if it.project_id and it.project_id not in keep:
                     stale2.append(it.item_id)

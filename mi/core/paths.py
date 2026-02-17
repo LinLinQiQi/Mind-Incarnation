@@ -339,10 +339,6 @@ class ProjectPaths:
         return self.project_dir / "evidence.jsonl"
 
     @property
-    def learned_path(self) -> Path:
-        return self.project_dir / "learned.jsonl"
-
-    @property
     def transcripts_dir(self) -> Path:
         return self.project_dir / "transcripts"
 
@@ -407,10 +403,6 @@ class GlobalPaths:
     @property
     def base_path(self) -> Path:
         return self.minds_dir / "base.json"
-
-    @property
-    def learned_path(self) -> Path:
-        return self.minds_dir / "learned.jsonl"
 
     @property
     def global_workflows_dir(self) -> Path:

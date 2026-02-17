@@ -1,7 +1,7 @@
 # MI Thought DB (Design Notes)
 
 Status: implemented (partial, V1)
-Last updated: 2026-02-16
+Last updated: 2026-02-17
 
 This document captures the "Thought DB" direction for Mind Incarnation (MI):
 
@@ -20,7 +20,7 @@ Implemented in V1 (incremental; safe foundation):
 - Append-only Node store (project + global) for `Decision` / `Action` / `Summary` nodes (first-class IDs; append-only; cites EvidenceLog `event_id` only)
 - Global values/preferences can be migrated into global preference/goal Claims via `mi init` (`values_claim_patch`), citing a `values_set` event in `global/evidence.jsonl` and tagging claims with `values:base` + `values_set:<event_id>`. `mi run` may also auto-migrate when claims are missing/out-of-date; it reuses the latest matching `values_set` event_id when possible to avoid duplicating the global ledger.
 - Operational defaults (MI behavior switches like `ask_when_uncertain` / `refactor_intent`) are canonically stored as global preference Claims tagged `mi:setting:*` and pinned into compact contexts; `mi run` syncs them from `mindspec/base.json.defaults` by writing/using a global `mi_defaults_set` event in `global/evidence.jsonl` for provenance.
-- Preference tightening suggestions (`learned_changes`, legacy field name) are canonically materialized as Thought DB preference Claims when `violation_response.auto_learn=true` (append-only, reversible via claim retraction). Legacy `learned.jsonl` entries remain non-canonical.
+- Preference tightening suggestions (`learned_changes`, legacy field name) are canonically materialized as Thought DB preference Claims when `violation_response.auto_learn=true` (append-only, reversible via claim retraction). Legacy `learned.jsonl` files are ignored by current MI versions (keep only for manual migration/audit).
 - Checkpoint-only, high-threshold claim mining during `mi run` (no per-step protocol; no user prompts)
 - Deterministic checkpoint materialization of `Decision` / `Action` / `Summary` nodes during `mi run` (no extra model calls; best-effort; append-only)
 - When the model outputs high-confidence edges, MI also appends `Edge` records (best-effort; scoped to project/global).

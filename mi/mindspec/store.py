@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import secrets
-import time
 from pathlib import Path
 from typing import Any
 
 from ..core.paths import GlobalPaths, ProjectPaths, default_home_dir, project_identity
-from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339, read_json, write_json
+from ..core.storage import read_json, write_json
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -33,7 +31,7 @@ def _default_base(values_text: str) -> dict[str, Any]:
             ),
             "mermaid": (
                 "flowchart TD\n"
-                "  U[User task + values] --> S[Load MindSpec/Overlay/Learned]\n"
+                "  U[User task + values] --> S[Load MindSpec/Overlay]\n"
                 "  S --> I[Build light injection + task input]\n"
                 "  I --> C[Run Hands (free execution)]\n"
                 "  C --> T[Capture raw transcript]\n"
@@ -77,7 +75,7 @@ def _default_base(values_text: str) -> dict[str, Any]:
             "auto_sync_on_change": True,
         },
         "cross_project_recall": {
-            # Default: enabled but very conservative. Uses snapshot/learned/workflow + text search (no embeddings required).
+            # Default: enabled but very conservative. Uses snapshot/workflow/claim/node + text search (no embeddings required).
             "enabled": True,
             "top_k": 3,
             "max_chars": 1800,
@@ -129,7 +127,6 @@ def _default_base(values_text: str) -> dict[str, Any]:
 @dataclass(frozen=True)
 class LoadedMindSpec:
     base: dict[str, Any]
-    learned_text: str
     project_overlay: dict[str, Any]
 
     def light_injection(self) -> str:
@@ -139,7 +136,6 @@ class LoadedMindSpec:
             values = "User values/preferences (summary):\n" + "\n".join([f"- {str(x).strip()}" for x in values_summary if str(x).strip()])
         else:
             values = values_text
-        learned = (self.learned_text or "").strip()
 
         # "Light injection": enough to steer behavior and reduce unnecessary questions,
         # but does not impose a step protocol.
@@ -154,9 +150,6 @@ class LoadedMindSpec:
             if dp_summary:
                 parts.append("Decision procedure (summary):")
                 parts.append(dp_summary)
-        if learned:
-            parts.append("Learned preferences (reversible):")
-            parts.append(learned)
 
         defaults = self.base.get("defaults", {})
         refactor_intent = defaults.get("refactor_intent", "behavior_preserving")
@@ -183,10 +176,6 @@ class MindSpecStore:
     def base_path(self) -> Path:
         return self._paths.base_path
 
-    @property
-    def learned_path(self) -> Path:
-        return self._paths.learned_path
-
     def write_base_values(self, values_text: str) -> None:
         write_json(self.base_path, _default_base(values_text=values_text))
 
@@ -203,79 +192,6 @@ class MindSpecStore:
         values_text = str(raw.get("values_text") or "")
         defaults = _default_base(values_text=values_text)
         return _deep_merge(defaults, raw)
-
-    def append_learned(self, *, project_root: Path, scope: str, text: str, rationale: str) -> str:
-        entry_id = f"lc_{time.time_ns()}_{secrets.token_hex(4)}"
-        if scope == "project":
-            target = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root).learned_path
-        else:
-            target = self.learned_path
-        append_jsonl(
-            target,
-            {
-                "id": entry_id,
-                "ts": now_rfc3339(),
-                "scope": scope,
-                "enabled": True,
-                "text": text,
-                "rationale": rationale,
-            },
-        )
-        return entry_id
-
-    def load_learned_text(self, project_root: Path) -> str:
-        project_learned_path = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root).learned_path
-        sources = (self.learned_path, project_learned_path)
-
-        # Pass 1: gather disables so later project-scoped rollbacks can mask earlier global entries.
-        disabled: set[str] = set()
-        for source in sources:
-            for entry in iter_jsonl(source):
-                if entry.get("action") == "disable" and entry.get("target_id"):
-                    disabled.add(str(entry["target_id"]))
-
-        # Pass 2: gather enabled text entries, skipping disabled ones.
-        enabled_lines: list[str] = []
-        for source in sources:
-            for entry in iter_jsonl(source):
-                if entry.get("action") == "disable":
-                    continue
-                entry_id = str(entry.get("id") or "")
-                if not entry_id or entry_id in disabled:
-                    continue
-                if not entry.get("enabled", True):
-                    continue
-                text = str(entry.get("text") or "").strip()
-                if text:
-                    enabled_lines.append(f"- {text}")
-        return "\n".join(enabled_lines).strip()
-
-    def list_learned_entries(self, project_root: Path) -> list[dict[str, Any]]:
-        project_learned_path = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root).learned_path
-        entries: list[dict[str, Any]] = []
-        for source_name, source in (("global", self.learned_path), ("project", project_learned_path)):
-            for entry in iter_jsonl(source):
-                if isinstance(entry, dict):
-                    entries.append({"_source": source_name, **entry})
-        return entries
-
-    def disable_learned(self, *, project_root: Path, scope: str, target_id: str, rationale: str) -> str:
-        entry_id = f"ld_{time.time_ns()}_{secrets.token_hex(4)}"
-        if scope == "project":
-            target = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root).learned_path
-        else:
-            target = self.learned_path
-        append_jsonl(
-            target,
-            {
-                "id": entry_id,
-                "ts": now_rfc3339(),
-                "action": "disable",
-                "target_id": target_id,
-                "rationale": rationale,
-            },
-        )
-        return entry_id
 
     def load_project_overlay(self, project_root: Path) -> dict[str, Any]:
         project_paths = ProjectPaths(home_dir=self._paths.home_dir, project_root=project_root)
@@ -425,6 +341,5 @@ class MindSpecStore:
 
     def load(self, project_root: Path) -> LoadedMindSpec:
         base = self.load_base()
-        learned_text = self.load_learned_text(project_root)
         overlay = self.load_project_overlay(project_root)
-        return LoadedMindSpec(base=base, learned_text=learned_text, project_overlay=overlay)
+        return LoadedMindSpec(base=base, project_overlay=overlay)

@@ -7,7 +7,7 @@ from typing import Any
 from .backends.base import MemoryBackend
 from .backends.in_memory import InMemoryBackend
 from .backends.sqlite_fts import SqliteFtsBackend
-from .ingest import ingest_learned_and_workflows, iter_project_ids, _active_node_items_for_paths
+from .ingest import _active_node_items_for_paths, ingest_structured_sources, iter_project_ids
 from .snapshot import snapshot_item_from_event
 from .types import MemoryItem
 from ..core.paths import GlobalPaths, ProjectPaths
@@ -39,7 +39,7 @@ class MemoryService:
 
     def ingest_structured(self) -> None:
         """Sync small structured stores into the index (best-effort)."""
-        ingest_learned_and_workflows(home_dir=self._home_dir, backend=self._backend)
+        ingest_structured_sources(home_dir=self._home_dir, backend=self._backend)
 
     def upsert_items(self, items: list[MemoryItem]) -> None:
         self._backend.upsert_items(items)

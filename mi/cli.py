@@ -178,37 +178,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Print MI summaries plus pointers to raw transcript and evidence log.",
     )
 
-    p_learned = sub.add_parser("learned", help="Inspect or rollback learned preferences.")
-    learned_sub = p_learned.add_subparsers(dest="learned_cmd", required=True)
-
-    p_ll = learned_sub.add_parser("list", help="List learned entries (global + project).")
-    p_ll.add_argument("--cd", default="", help="Project root used for project-scoped learned entries.")
-
-    p_ld = learned_sub.add_parser("disable", help="Disable a learned entry by id (append-only).")
-    p_ld.add_argument("id", help="Learned change id to disable.")
-    p_ld.add_argument(
-        "--scope",
-        choices=["global", "project"],
-        default="project",
-        help="Where to record the disable action. 'project' disables only for this project; 'global' disables everywhere.",
-    )
-    p_ld.add_argument("--cd", default="", help="Project root used for project-scoped disable.")
-    p_ld.add_argument("--rationale", default="user rollback", help="Reason to record for the rollback.")
-
-    p_las = learned_sub.add_parser(
-        "apply-suggested",
-        help="Apply a previously suggested learned change from EvidenceLog (append-only).",
-    )
-    p_las.add_argument("suggestion_id", help="Suggestion id from EvidenceLog record kind=learn_suggested.")
-    p_las.add_argument("--cd", default="", help="Project root used to locate EvidenceLog and learned storage.")
-    p_las.add_argument("--dry-run", action="store_true", help="Show what would be applied without writing.")
-    p_las.add_argument("--force", action="store_true", help="Apply even if the suggestion looks already applied.")
-    p_las.add_argument(
-        "--extra-rationale",
-        default="",
-        help="Optional extra rationale to append to the learned entry (for audit).",
-    )
-
     p_claim = sub.add_parser("claim", help="Manage Thought DB claims (atomic reusable arguments).")
     claim_sub = p_claim.add_subparsers(dest="claim_cmd", required=True)
 
@@ -229,6 +198,20 @@ def main(argv: list[str] | None = None) -> int:
     p_clm.add_argument("--min-confidence", type=float, default=-1.0, help="Override MindSpec.thought_db.min_confidence.")
     p_clm.add_argument("--max-claims", type=int, default=-1, help="Override MindSpec.thought_db.max_claims_per_checkpoint.")
     p_clm.add_argument("--json", action="store_true", help="Print result as JSON.")
+
+    p_cas = claim_sub.add_parser(
+        "apply-suggested",
+        help="Apply a previously suggested preference tightening from EvidenceLog (append-only).",
+    )
+    p_cas.add_argument("suggestion_id", help="Suggestion id from EvidenceLog record kind=learn_suggested.")
+    p_cas.add_argument("--cd", default="", help="Project root used to locate EvidenceLog and Thought DB storage.")
+    p_cas.add_argument("--dry-run", action="store_true", help="Show what would be applied without writing.")
+    p_cas.add_argument("--force", action="store_true", help="Apply even if the suggestion looks already applied.")
+    p_cas.add_argument(
+        "--extra-rationale",
+        default="",
+        help="Optional extra rationale to append to the applied claims (for audit).",
+    )
 
     p_clr = claim_sub.add_parser("retract", help="Retract a claim (append-only).")
     p_clr.add_argument("id", help="Claim id to retract.")
@@ -489,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
     mi_sub = p_mi.add_subparsers(dest="mi_cmd", required=True)
     p_mis = mi_sub.add_parser("status", help="Show memory index status.")
     p_mis.add_argument("--json", action="store_true", help="Print status as JSON.")
-    p_mir = mi_sub.add_parser("rebuild", help="Rebuild memory index from MI stores (learned/workflows + snapshots).")
+    p_mir = mi_sub.add_parser("rebuild", help="Rebuild memory index from MI stores (workflows + Thought DB + snapshots).")
     p_mir.add_argument("--no-snapshots", action="store_true", help="Skip indexing snapshot records from EvidenceLog.")
     p_mir.add_argument("--json", action="store_true", help="Print rebuild result as JSON.")
 
@@ -893,7 +876,7 @@ def main(argv: list[str] | None = None) -> int:
                     applied_ids = rec.get("applied_entry_ids") if isinstance(rec.get("applied_entry_ids"), list) else []
                 summary = summarize_evidence_record(rec)
                 if sid and (not auto) and (not applied_ids):
-                    summary = summary + f" (apply: mi learned apply-suggested {sid} --cd {project_root})"
+                    summary = summary + f" (apply: mi claim apply-suggested {sid} --cd {project_root})"
                 print(f"- {summary}")
 
         la = out.get("learn_applied")
@@ -1072,7 +1055,6 @@ def main(argv: list[str] | None = None) -> int:
             "project_index_path": str(idx_path),
             "project_index_mapped_id": idx_mapped,
             "evidence_log": str(pp.evidence_log_path),
-            "learned_path": str(pp.learned_path),
             "transcripts_dir": str(pp.transcripts_dir),
             "thoughtdb_dir": str(pp.thoughtdb_dir),
             "thoughtdb_claims": str(pp.thoughtdb_claims_path),
@@ -1105,7 +1087,6 @@ def main(argv: list[str] | None = None) -> int:
         if idx_mapped:
             print(f"index_mapped_project_id={idx_mapped}")
         print(f"evidence_log={out['evidence_log']}")
-        print(f"learned_path={out['learned_path']}")
         print(f"transcripts_dir={out['transcripts_dir']}")
         print(f"thoughtdb_dir={out['thoughtdb_dir']}")
         return 0
@@ -1303,6 +1284,138 @@ def main(argv: list[str] | None = None) -> int:
                 print(text)
             if edges:
                 print(f"edges={len(edges)}")
+            return 0
+
+        if args.claim_cmd == "apply-suggested":
+            sug_id = str(getattr(args, "suggestion_id", "") or "").strip()
+            if not sug_id:
+                print("missing suggestion_id", file=sys.stderr)
+                return 2
+
+            suggestion: dict[str, object] | None = None
+            for obj in iter_jsonl(pp.evidence_log_path):
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("kind") != "learn_suggested":
+                    continue
+                if str(obj.get("id") or "") == sug_id:
+                    suggestion = obj
+
+            if suggestion is None:
+                print(f"suggestion not found: {sug_id}", file=sys.stderr)
+                return 2
+
+            # Avoid duplicate application unless forced.
+            already_applied = False
+            applied_ids0 = suggestion.get("applied_claim_ids")
+            if isinstance(applied_ids0, list) and any(str(x).strip() for x in applied_ids0):
+                already_applied = True
+            applied_ids1 = suggestion.get("applied_entry_ids")
+            if isinstance(applied_ids1, list) and any(str(x).strip() for x in applied_ids1):
+                already_applied = True
+
+            if not already_applied:
+                for obj in iter_jsonl(pp.evidence_log_path):
+                    if not isinstance(obj, dict):
+                        continue
+                    if obj.get("kind") != "learn_applied":
+                        continue
+                    if str(obj.get("suggestion_id") or "") == sug_id:
+                        already_applied = True
+                        break
+
+            if already_applied and not bool(getattr(args, "force", False)):
+                print(f"Suggestion already applied: {sug_id}")
+                return 0
+
+            changes = suggestion.get("learned_changes") if isinstance(suggestion.get("learned_changes"), list) else []
+            normalized: list[dict[str, str]] = []
+            for ch in changes:
+                if not isinstance(ch, dict):
+                    continue
+                scope = str(ch.get("scope") or "").strip()
+                text = str(ch.get("text") or "").strip()
+                if scope not in ("global", "project") or not text:
+                    continue
+                normalized.append(
+                    {
+                        "scope": scope,
+                        "text": text,
+                        "rationale": str(ch.get("rationale") or "").strip(),
+                        "severity": str(ch.get("severity") or "").strip(),
+                    }
+                )
+
+            if not normalized:
+                print(f"(no applicable learned changes in suggestion {sug_id})")
+                return 0
+
+            if bool(getattr(args, "dry_run", False)):
+                print(json.dumps({"suggestion_id": sug_id, "changes": normalized}, indent=2, sort_keys=True))
+                return 0
+
+            extra = str(getattr(args, "extra_rationale", "") or "").strip()
+            sig_to_id = {
+                "project": tdb.existing_signature_map(scope="project"),
+                "global": tdb.existing_signature_map(scope="global"),
+            }
+            ev_id = str(suggestion.get("event_id") or "").strip()
+            src_eids = [ev_id] if ev_id else []
+
+            applied_claim_ids: list[str] = []
+            for item in normalized:
+                scope0 = str(item.get("scope") or "").strip()
+                sc = "global" if scope0 == "global" else "project"
+                pid = pp.project_id if sc == "project" else ""
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+
+                sig = claim_signature(claim_type="preference", scope=sc, project_id=pid, text=text)
+                existing = sig_to_id.get(sc, {}).get(sig)
+                if existing:
+                    applied_claim_ids.append(str(existing))
+                    continue
+
+                base_r = (item.get("rationale") or "").strip() or "manual_apply"
+                notes = f"{base_r} (apply_suggestion={sug_id})"
+                if extra:
+                    notes = f"{notes}; {extra}"
+                sev = str(item.get("severity") or "").strip()
+                tags = ["mi:learned_apply", f"learn_suggested:{sug_id}"]
+                if sev:
+                    tags.append(f"severity:{sev}")
+
+                cid = tdb.append_claim_create(
+                    claim_type="preference",
+                    text=text,
+                    scope=sc,
+                    visibility=("global" if sc == "global" else "project"),
+                    valid_from=None,
+                    valid_to=None,
+                    tags=tags,
+                    source_event_ids=src_eids,
+                    confidence=1.0,
+                    notes=notes,
+                )
+                sig_to_id.setdefault(sc, {})[sig] = cid
+                applied_claim_ids.append(cid)
+
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            evw.append(
+                {
+                    "kind": "learn_applied",
+                    "ts": now_rfc3339(),
+                    "suggestion_id": sug_id,
+                    "batch_id": str(suggestion.get("batch_id") or ""),
+                    "thread_id": str(suggestion.get("thread_id") or ""),
+                    "applied_entry_ids": [],
+                    "applied_claim_ids": applied_claim_ids,
+                }
+            )
+            print(f"Applied suggestion {sug_id}: {len(applied_claim_ids)} preference claims")
+            for cid in applied_claim_ids:
+                print(cid)
             return 0
 
         if args.claim_cmd == "retract":
@@ -2660,158 +2773,5 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if ok else 1
 
         return 2
-
-    if args.cmd == "learned":
-        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
-        if args.learned_cmd == "list":
-            entries = store.list_learned_entries(project_root)
-            if not entries:
-                print("(no learned entries)")
-                return 0
-            for e in entries:
-                src = e.get("_source")
-                entry_id = e.get("id")
-                action = e.get("action") or "add"
-                text = e.get("text") or ""
-                print(f"{src} {entry_id} {action} {text}".strip())
-            return 0
-        if args.learned_cmd == "disable":
-            store.disable_learned(project_root=project_root, scope=args.scope, target_id=args.id, rationale=args.rationale)
-            print(f"Disabled {args.id} (scope={args.scope}) for project={project_root}")
-            return 0
-        if args.learned_cmd == "apply-suggested":
-            sug_id = str(args.suggestion_id or "").strip()
-            if not sug_id:
-                print("missing suggestion_id", file=sys.stderr)
-                return 2
-
-            pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
-
-            suggestion: dict[str, object] | None = None
-            for obj in iter_jsonl(pp.evidence_log_path):
-                if not isinstance(obj, dict):
-                    continue
-                if obj.get("kind") != "learn_suggested":
-                    continue
-                if str(obj.get("id") or "") == sug_id:
-                    suggestion = obj
-
-            if suggestion is None:
-                print(f"suggestion not found: {sug_id}", file=sys.stderr)
-                return 2
-
-            # Avoid duplicate application unless forced.
-            already_applied = False
-            applied_ids0 = suggestion.get("applied_claim_ids")
-            if isinstance(applied_ids0, list) and any(str(x).strip() for x in applied_ids0):
-                already_applied = True
-            applied_ids1 = suggestion.get("applied_entry_ids")
-            if isinstance(applied_ids1, list) and any(str(x).strip() for x in applied_ids1):
-                already_applied = True
-
-            if not already_applied:
-                for obj in iter_jsonl(pp.evidence_log_path):
-                    if not isinstance(obj, dict):
-                        continue
-                    if obj.get("kind") != "learn_applied":
-                        continue
-                    if str(obj.get("suggestion_id") or "") == sug_id:
-                        already_applied = True
-                        break
-
-            if already_applied and not bool(args.force):
-                print(f"Suggestion already applied: {sug_id}")
-                return 0
-
-            changes = suggestion.get("learned_changes") if isinstance(suggestion.get("learned_changes"), list) else []
-            normalized: list[dict[str, str]] = []
-            for ch in changes:
-                if not isinstance(ch, dict):
-                    continue
-                scope = str(ch.get("scope") or "").strip()
-                text = str(ch.get("text") or "").strip()
-                if scope not in ("global", "project") or not text:
-                    continue
-                normalized.append(
-                    {
-                        "scope": scope,
-                        "text": text,
-                        "rationale": str(ch.get("rationale") or "").strip(),
-                        "severity": str(ch.get("severity") or "").strip(),
-                    }
-                )
-
-            if not normalized:
-                print(f"(no applicable learned changes in suggestion {sug_id})")
-                return 0
-
-            if bool(args.dry_run):
-                print(json.dumps({"suggestion_id": sug_id, "changes": normalized}, indent=2, sort_keys=True))
-                return 0
-
-            extra = str(args.extra_rationale or "").strip()
-            tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
-            sig_to_id = {
-                "project": tdb.existing_signature_map(scope="project"),
-                "global": tdb.existing_signature_map(scope="global"),
-            }
-            ev_id = str(suggestion.get("event_id") or "").strip()
-            src_eids = [ev_id] if ev_id else []
-
-            applied_claim_ids: list[str] = []
-            for item in normalized:
-                scope0 = str(item.get("scope") or "").strip()
-                sc = "global" if scope0 == "global" else "project"
-                pid = pp.project_id if sc == "project" else ""
-                text = str(item.get("text") or "").strip()
-                if not text:
-                    continue
-
-                sig = claim_signature(claim_type="preference", scope=sc, project_id=pid, text=text)
-                existing = sig_to_id.get(sc, {}).get(sig)
-                if existing:
-                    applied_claim_ids.append(str(existing))
-                    continue
-
-                base_r = (item.get("rationale") or "").strip() or "manual_apply"
-                notes = f"{base_r} (apply_suggestion={sug_id})"
-                if extra:
-                    notes = f"{notes}; {extra}"
-                sev = str(item.get("severity") or "").strip()
-                tags = ["mi:learned_apply", f"learn_suggested:{sug_id}"]
-                if sev:
-                    tags.append(f"severity:{sev}")
-
-                cid = tdb.append_claim_create(
-                    claim_type="preference",
-                    text=text,
-                    scope=sc,
-                    visibility=("global" if sc == "global" else "project"),
-                    valid_from=None,
-                    valid_to=None,
-                    tags=tags,
-                    source_event_ids=src_eids,
-                    confidence=1.0,
-                    notes=notes,
-                )
-                sig_to_id.setdefault(sc, {})[sig] = cid
-                applied_claim_ids.append(cid)
-
-            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
-            evw.append(
-                {
-                    "kind": "learn_applied",
-                    "ts": now_rfc3339(),
-                    "suggestion_id": sug_id,
-                    "batch_id": str(suggestion.get("batch_id") or ""),
-                    "thread_id": str(suggestion.get("thread_id") or ""),
-                    "applied_entry_ids": [],
-                    "applied_claim_ids": applied_claim_ids,
-                }
-            )
-            print(f"Applied suggestion {sug_id}: {len(applied_claim_ids)} preference claims")
-            for cid in applied_claim_ids:
-                print(cid)
-            return 0
 
     return 2

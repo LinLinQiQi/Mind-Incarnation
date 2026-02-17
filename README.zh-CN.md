@@ -182,18 +182,14 @@ mi gc transcripts --cd /path/to/your/project --apply
 
 ```bash
 # 手动应用一条已记录的建议（当 auto-learn 关闭，或你想手动控制时）：
-mi learned apply-suggested <suggestion_id> --cd /path/to/your/project
+mi claim apply-suggested <suggestion_id> --cd /path/to/your/project
 
 # 查看/回滚“规范化”的偏好 Claim：
 mi claim list --cd /path/to/your/project --scope effective
 mi claim retract <claim_id> --cd /path/to/your/project --scope project
-
-# 旧版 learned.jsonl（非规范；早期 MI 版本遗留）：
-mi learned list --cd /path/to/your/project
-mi learned disable <id> --scope project --cd /path/to/your/project
 ```
 
-说明：`learned_changes` 建议都会记录到 EvidenceLog（`kind=learn_suggested`）。如果 `violation_response.auto_learn=true`（默认），MI 也会把它们落盘为 Thought DB 的 preference Claim（`applied_claim_ids`）。如果为 false，可用 `mi learned apply-suggested ...` 之后再应用。
+说明：`learned_changes` 建议都会记录到 EvidenceLog（`kind=learn_suggested`）。如果 `violation_response.auto_learn=true`（默认），MI 也会把它们落盘为 Thought DB 的 preference Claim（`applied_claim_ids`）。如果为 false，可用 `mi claim apply-suggested ...` 之后再应用。
 
 实验性：偏好预测（preference mining）
 
@@ -205,7 +201,7 @@ MI 可以维护一个追加写（append-only）的“Thought DB”，把可复�
 
 - 如果 `MindSpec.thought_db.auto_mine=true`（默认），MI 会在 `mi run` 的 checkpoint 边界调用 `mine_claims`，并记录 `kind=claim_mining`。
 - 如果 `MindSpec.thought_db.auto_materialize_nodes=true`（默认），MI 也会在 checkpoint 边界把 `Decision` / `Action` / `Summary` 节点落盘（确定性；不增加额外模型调用），并记录 `kind=node_materialized`。
-- 记忆索引（memory index）：Thought DB 的 `claim` / `node` 都可以被索引用于文本召回。默认 `cross_project_recall.include_kinds` 是 Thought-DB-first（`snapshot` / `workflow` / `claim` / `node`）；旧的 `"learned"` 默认不包含。
+- 记忆索引（memory index）：Thought DB 的 `claim` / `node` 都可以被索引用于文本召回。默认 `cross_project_recall.include_kinds` 是 Thought-DB-first（`snapshot` / `workflow` / `claim` / `node`）。
 - Claim/Edge 存储在项目级（以及可选的全局）目录中，可用 CLI 管理：
 
 ```bash

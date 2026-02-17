@@ -55,7 +55,7 @@ class CrossProjectRecallConfig:
 
         kinds_raw = cfg.get("include_kinds") if isinstance(cfg.get("include_kinds"), list) else ["snapshot", "workflow", "claim", "node"]
         include_kinds = {str(x).strip() for x in kinds_raw if str(x).strip()}
-        # Strict Thought DB mode: learned text is non-canonical; never recall it by default.
+        # Back-compat: older configs may mention a "learned" kind. Ignore it.
         include_kinds.discard("learned")
         if not include_kinds:
             include_kinds = {"snapshot", "workflow", "claim"}
@@ -123,7 +123,7 @@ class MemoryFacade:
             return None
         self._last_recall_key = key
 
-        # Ingest small structured stores (workflows/learned) before querying.
+        # Ingest small structured stores (workflows/claims) before querying.
         self._mem.ingest_structured()
 
         exclude_pid = self._project_paths.project_id if self._recall_cfg.exclude_current_project else ""

@@ -134,7 +134,7 @@ class SqliteFtsBackend:
             return
 
     def sync_groups(self, groups: list[MemoryGroup], *, existing_project_ids: set[str] | None = None) -> None:
-        """Sync groups into the index and prune stale learned/workflow items."""
+        """Sync groups into the index and prune stale structured items."""
 
         if not groups and existing_project_ids is None:
             return
@@ -196,7 +196,7 @@ class SqliteFtsBackend:
                         stale = [x for x in existing_ids if x not in keep_ids]
                         delete_ids(stale)
 
-                # Prune orphaned project-scoped learned/workflow items when projects were deleted.
+                # Prune orphaned project-scoped structured items when projects were deleted.
                 if existing_project_ids is not None:
                     keep = sorted({str(x).strip() for x in existing_project_ids if str(x).strip()})
                     if keep:
@@ -205,7 +205,7 @@ class SqliteFtsBackend:
                             f"""
                             SELECT item_id FROM items
                             WHERE scope='project'
-                              AND kind IN ('learned','workflow','claim','node')
+                              AND kind IN ('workflow','claim','node')
                               AND project_id NOT IN ({qs})
                             """,
                             keep,
@@ -214,7 +214,7 @@ class SqliteFtsBackend:
                         rows = cur.execute(
                             """
                             SELECT item_id FROM items
-                            WHERE scope='project' AND kind IN ('learned','workflow','claim','node')
+                            WHERE scope='project' AND kind IN ('workflow','claim','node')
                             """
                         ).fetchall()
                     orphan_ids = [str(r[0] or "") for r in rows if r and str(r[0] or "").strip()]

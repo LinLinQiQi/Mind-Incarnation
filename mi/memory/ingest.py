@@ -322,48 +322,6 @@ def thoughtdb_node_item(
     )
 
 
-def _learned_items_for_file(*, learned_path: Path, scope: str, project_id: str) -> list[MemoryItem]:
-    disables: set[str] = set()
-    for entry in iter_jsonl(learned_path):
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("action") == "disable" and entry.get("target_id"):
-            disables.add(str(entry["target_id"]))
-
-    out: list[MemoryItem] = []
-    for entry in iter_jsonl(learned_path):
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("action") == "disable":
-            continue
-        entry_id = str(entry.get("id") or "").strip()
-        if not entry_id or entry_id in disables:
-            continue
-        if not bool(entry.get("enabled", True)):
-            continue
-        text = str(entry.get("text") or "").strip()
-        if not text:
-            continue
-        ts = str(entry.get("ts") or "").strip() or now_rfc3339()
-        rationale = str(entry.get("rationale") or "").strip()
-        title = text
-        body = text + ("\n\nrationale: " + rationale if rationale else "")
-        out.append(
-            MemoryItem(
-                item_id=f"learned:{scope}:{project_id or 'global'}:{entry_id}",
-                kind="learned",
-                scope=scope,
-                project_id=project_id,
-                ts=ts,
-                title=truncate(title, 120),
-                body=truncate(body, 2400),
-                tags=["learned", scope],
-                source_refs=[{"kind": "learned_file", "path": str(learned_path), "entry_id": entry_id}],
-            )
-        )
-    return out
-
-
 def _workflow_items_for_dir(*, workflows_dir: Path, scope: str, project_id: str) -> list[MemoryItem]:
     out: list[MemoryItem] = []
     try:
@@ -414,15 +372,11 @@ def _workflow_items_for_dir(*, workflows_dir: Path, scope: str, project_id: str)
     return out
 
 
-def ingest_learned_and_workflows(*, home_dir: Path, backend: MemoryBackend) -> None:
+def ingest_structured_sources(*, home_dir: Path, backend: MemoryBackend) -> None:
     """Best-effort ingestion for small structured stores (no EvidenceLog scanning)."""
 
     gp = GlobalPaths(home_dir=Path(home_dir).expanduser().resolve())
     groups: list[MemoryGroup] = []
-
-    # Global learned.
-    gl = _learned_items_for_file(learned_path=gp.learned_path, scope="global", project_id="")
-    groups.append(MemoryGroup(kind="learned", scope="global", project_id="", items=gl))
 
     # Global workflows.
     wf_global_dir = gp.global_workflows_dir
@@ -438,11 +392,10 @@ def ingest_learned_and_workflows(*, home_dir: Path, backend: MemoryBackend) -> N
     )
     groups.append(MemoryGroup(kind="claim", scope="global", project_id="", items=gc))
 
-    # Per-project learned + workflows.
+    # Per-project workflows + claims.
     project_ids = {str(pid).strip() for pid in iter_project_ids(gp.home_dir) if str(pid).strip()}
     for pid in sorted(project_ids):
         pp = ProjectPaths(home_dir=gp.home_dir, project_root=Path("."), _project_id=pid)  # project_root unused when _project_id provided
-        pl = _learned_items_for_file(learned_path=pp.learned_path, scope="project", project_id=pid)
         pw = _workflow_items_for_dir(workflows_dir=pp.workflows_dir, scope="project", project_id=pid)
         pc = _active_claim_items_for_paths(
             claims_path=pp.thoughtdb_claims_path,
@@ -450,7 +403,6 @@ def ingest_learned_and_workflows(*, home_dir: Path, backend: MemoryBackend) -> N
             scope="project",
             project_id=pid,
         )
-        groups.append(MemoryGroup(kind="learned", scope="project", project_id=pid, items=pl))
         groups.append(MemoryGroup(kind="workflow", scope="project", project_id=pid, items=pw))
         groups.append(MemoryGroup(kind="claim", scope="project", project_id=pid, items=pc))
 

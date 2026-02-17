@@ -1,7 +1,7 @@
 # Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-16
+Last updated: 2026-02-17
 
 ## Goal
 
@@ -473,7 +473,7 @@ Minimal shape:
 - `mind_circuit` (Mind circuit breaker state change; V1 emits `state="open"` when it stops attempting further Mind calls)
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
 - `learn_suggested` (a suggested preference tightening produced by Mind (`learned_changes`, legacy field name); may be auto-applied as Thought DB preference Claims depending on `violation_response.auto_learn`)
-- `learn_applied` (a manual application of a prior `learn_suggested` record; written by `mi learned apply-suggested ...`)
+- `learn_applied` (a manual application of a prior `learn_suggested` record; written by `mi claim apply-suggested ...`)
 - `testless_strategy_migrate` (internal: migrated a legacy ProjectOverlay testless strategy into a canonical Thought DB preference Claim tagged `mi:testless_verification_strategy`)
 - `testless_strategy_set` (internal: recorded a testless strategy set/update so a canonical preference Claim can cite an EvidenceLog `event_id`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
@@ -772,7 +772,7 @@ V1 strict Thought DB mode treats these as **preference tightening suggestions** 
 `MindSpec.violation_response.auto_learn` controls what MI does:
 
 - If `auto_learn=true` (default): MI materializes each suggestion as a Thought DB `Claim` (`claim_type=preference`, scope=`project|global`) and records a `learn_suggested` EvidenceLog record with `applied_claim_ids`.
-- If `auto_learn=false`: MI does **not** write claims automatically; it records `learn_suggested` into EvidenceLog for audit and you can apply it later via CLI (`mi learned apply-suggested ...`), which appends the preference Claims and records `learn_applied`.
+- If `auto_learn=false`: MI does **not** write claims automatically; it records `learn_suggested` into EvidenceLog for audit and you can apply it later via CLI (`mi claim apply-suggested ...`), which appends the preference Claims and records `learn_applied`.
 
 Rollback:
 
@@ -781,7 +781,7 @@ Rollback:
 Legacy note:
 
 - Older MI versions wrote free-form learned rules into `mindspec/learned.jsonl` and `projects/<project_id>/learned.jsonl`.
-- Those legacy learned entries are **non-canonical** in strict Thought DB mode: they are excluded from Hands light injection and excluded from cross-project recall by default (but can still be indexed/inspected for migration or debugging).
+- Current MI versions ignore these legacy files entirely (not used for Hands injection or recall, and not indexed). If you still have them, manually re-enter important rules as Thought DB preference/goal Claims (or delete the files).
 
 ## Workflows + Host Adapters (V1, Experimental)
 
@@ -875,7 +875,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
 
 - Global:
   - `mindspec/base.json`
-  - `mindspec/learned.jsonl` (legacy; non-canonical in strict Thought DB mode)
+  - `mindspec/learned.jsonl` (legacy; ignored by current MI versions)
   - `global/evidence.jsonl` (global EvidenceLog for values + operational defaults lifecycle; provides stable `event_id` provenance for global preference/goal Claims)
   - `thoughtdb/global/claims.jsonl` (global Claims)
   - `thoughtdb/global/edges.jsonl` (global Edges)
@@ -884,7 +884,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/index.json`
 - Per project (keyed by a resolved `project_id`):
   - `projects/<project_id>/overlay.json`
-  - `projects/<project_id>/learned.jsonl` (legacy; non-canonical in strict Thought DB mode)
+  - `projects/<project_id>/learned.jsonl` (legacy; ignored by current MI versions)
   - `projects/<project_id>/evidence.jsonl`
   - `projects/<project_id>/segment_state.json` (best-effort segment buffer for checkpoint-based mining; internal)
   - `projects/<project_id>/thoughtdb/claims.jsonl` (project Claims)
@@ -1015,7 +1015,7 @@ mi --home ~/.mind-incarnation last --cd <project_root> --json
 mi --home ~/.mind-incarnation last --cd <project_root> --redact
 ```
 
-Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi learned apply-suggested ...`.
+Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`.
 
 Inspect per-project state (overlay + resolved paths):
 
@@ -1046,7 +1046,7 @@ mi --home ~/.mind-incarnation memory index rebuild --no-snapshots
 Notes:
 
 - Rebuild deletes and recreates `<home>/indexes/memory.sqlite` from MI stores and EvidenceLog `snapshot` records (safe; derived).
-- Recall is text-only in V1: it searches indexed items by kind. Default `cross_project_recall.include_kinds` is conservative and Thought-DB-first: `snapshot` / `workflow` / `claim` / `node`. Legacy `learned` items may still exist and can be included by adding `"learned"` to `include_kinds` (not recommended as canonical). Node items are indexed incrementally when MI creates them (checkpoint materialization) and are backfilled on `mi memory index rebuild`. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
+- Recall is text-only in V1: it searches indexed items by kind. Default `cross_project_recall.include_kinds` is conservative and Thought-DB-first: `snapshot` / `workflow` / `claim` / `node`. Legacy `learned.jsonl` is ignored by current MI versions and is not ingested by the memory index. Node items are indexed incrementally when MI creates them (checkpoint materialization) and are backfilled on `mi memory index rebuild`. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
 - Memory backend is pluggable (internal): default is `sqlite_fts` (persisted at `<home>/indexes/memory.sqlite`). You can override via `$MI_MEMORY_BACKEND` (e.g., `in_memory` for ephemeral/test runs). `mi memory index status` prints the active backend.
 - Thought DB direction: V1 includes append-only Claim/Edge stores + checkpoint-only claim mining; full root-cause tracing and whole-graph refactors remain future extensions. See `docs/mi-thought-db.md`.
 
@@ -1065,18 +1065,11 @@ mi --home ~/.mind-incarnation gc transcripts --cd <project_root>
 mi --home ~/.mind-incarnation gc transcripts --cd <project_root> --apply
 ```
 
-Inspect/rollback legacy learned entries (non-canonical; `learned.jsonl`):
-
-```bash
-mi --home ~/.mind-incarnation learned list --cd <project_root>
-mi --home ~/.mind-incarnation learned disable <id> --scope project --cd <project_root>
-```
-
 Apply a recorded suggestion as Thought DB preference Claims (when `violation_response.auto_learn=false` or if you want manual control):
 
 ```bash
-mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root>
-mi --home ~/.mind-incarnation learned apply-suggested <suggestion_id> --cd <project_root> --dry-run
+mi --home ~/.mind-incarnation claim apply-suggested <suggestion_id> --cd <project_root>
+mi --home ~/.mind-incarnation claim apply-suggested <suggestion_id> --cd <project_root> --dry-run
 ```
 
 Rollback claim-based preference tightening (append-only):

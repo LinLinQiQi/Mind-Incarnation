@@ -3,33 +3,12 @@ import unittest
 from pathlib import Path
 
 from mi.memory_service import MemoryService
-from mi.mindspec import MindSpecStore
 from mi.paths import GlobalPaths, ProjectPaths
 from mi.storage import append_jsonl, now_rfc3339
 from mi.workflows import GlobalWorkflowStore
 
 
 class TestMemoryIndex(unittest.TestCase):
-    def test_ingest_prunes_disabled_global_learned(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            home = Path(td)
-            project_root = home / "proj"
-            project_root.mkdir()
-            store = MindSpecStore(home_dir=str(home))
-
-            learned_id = store.append_learned(project_root=project_root, scope="global", text="PREFER_X", rationale="r")
-            mem = MemoryService(home)
-            mem.ingest_structured()
-
-            hits = mem.search(query="PREFER_X", top_k=10, kinds={"learned"}, include_global=True, exclude_project_id="")
-            self.assertTrue(any(h.kind == "learned" for h in hits))
-
-            store.disable_learned(project_root=project_root, scope="global", target_id=learned_id, rationale="nope")
-            mem.ingest_structured()
-
-            hits2 = mem.search(query="PREFER_X", top_k=10, kinds={"learned"}, include_global=True, exclude_project_id="")
-            self.assertEqual(hits2, [])
-
     def test_ingest_prunes_disabled_global_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)

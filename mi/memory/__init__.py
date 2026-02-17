@@ -6,14 +6,13 @@ MI's memory system is a *materialized view* for recall. Sources of truth live in
 - Thought DB claims/nodes (global + per-project)
 - workflows/*.json (global + per-project)
 - EvidenceLog snapshot records (per-project)
-- legacy learned.jsonl (global + per-project; non-canonical in strict Thought DB mode)
 
 The implementation is intentionally layered so we can swap backends later without
 rewiring runner/CLI code.
 """
 
 from .backends.sqlite_fts import SqliteFtsBackend as MemoryIndex  # back-compat name
-from .ingest import ingest_learned_and_workflows, iter_project_ids
+from .ingest import ingest_structured_sources, iter_project_ids
 from .render import render_recall_context
 from .snapshot import build_snapshot_item, snapshot_item_from_event
 from .types import MemoryGroup, MemoryItem
@@ -24,7 +23,7 @@ __all__ = [
     "MemoryGroup",
     # Ingestion helpers
     "iter_project_ids",
-    "ingest_learned_and_workflows",
+    "ingest_structured_sources",
     # Snapshot helpers
     "build_snapshot_item",
     "snapshot_item_from_event",

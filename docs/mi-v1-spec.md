@@ -880,6 +880,7 @@ Notes:
 
 - On-demand root-cause tracing is implemented via `mi why ...` (WhyTrace) and may materialize `depends_on(event_id -> claim_id)` edges (best-effort). More advanced subgraph traversal + refactors remain future work; see `docs/mi-thought-db.md`.
 - Claims are optionally indexed into the memory text index as `kind=claim` (active, canonical only).
+- Performance note: within a single `mi run`, MI keeps a hot in-memory Thought DB view and incrementally updates it after append-only writes (claims/nodes/edges). To keep cold-start fast across runs, MI also flushes `view.snapshot.json` at run end (best-effort).
 
 ## Storage Layout (V1)
 

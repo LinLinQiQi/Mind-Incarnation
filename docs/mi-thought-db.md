@@ -27,6 +27,7 @@ Implemented in V1 (incremental; safe foundation):
 - Preference tightening suggestions (`learned_changes`, legacy field name) are canonically materialized as Thought DB preference Claims when `violation_response.auto_learn=true` (append-only, reversible via claim retraction). Legacy `learned.jsonl` files are ignored by current MI versions (keep only for manual migration/audit).
 - Checkpoint-only, high-threshold claim mining during `mi run` (no per-step protocol; no user prompts)
 - Deterministic checkpoint materialization of `Decision` / `Action` / `Summary` nodes during `mi run` (no extra model calls; best-effort; append-only)
+- Persisted `view.snapshot.json` for faster cold loads; during `mi run`, MI keeps a hot in-memory view and updates it incrementally after Thought DB appends, then flushes the snapshot at run end (best-effort).
 - When the model outputs high-confidence edges, MI also appends `Edge` records (best-effort; scoped to project/global).
 - On-demand mining + basic management via CLI (`mi claim ...`)
 - On-demand root-cause tracing via `mi why ...`: selects a minimal support set of claim ids for an EvidenceLog `event_id` (and may materialize `depends_on(event_id -> claim_id)` edges).

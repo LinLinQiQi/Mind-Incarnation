@@ -390,6 +390,232 @@ class ThoughtDbStore:
         }
         atomic_write_json(path, obj)
 
+    def _update_cache_after_append(self, *, scope: str, obj: dict[str, Any]) -> None:
+        """Incrementally update an in-memory cached view after an append (best-effort).
+
+        This avoids re-parsing large JSONL files within a single `mi run` when the
+        store is append-heavy (claim mining / node materialization).
+        """
+
+        sc = (scope or "project").strip()
+        if sc not in ("project", "global"):
+            sc = "project"
+
+        cached = self._view_cache.get(sc)
+        if not cached:
+            return
+        view = cached[0]
+        if not isinstance(view, ThoughtDbView):
+            return
+        if not isinstance(obj, dict):
+            return
+
+        kind = str(obj.get("kind") or "").strip()
+        v2: ThoughtDbView | None = None
+
+        if kind == "claim":
+            cid = str(obj.get("claim_id") or "").strip()
+            if not cid:
+                return
+            claims_by_id = dict(view.claims_by_id)
+            claims_by_id[cid] = obj
+
+            claims_by_tag = dict(view.claims_by_tag)
+            tags = obj.get("tags") if isinstance(obj.get("tags"), list) else []
+            for t in tags:
+                ts = str(t or "").strip()
+                if not ts:
+                    continue
+                cur = claims_by_tag.get(ts)
+                nxt = set(cur) if isinstance(cur, set) else set()
+                nxt.add(cid)
+                claims_by_tag[ts] = nxt
+
+            ids = list(view.claim_ids_by_asserted_ts_desc)
+            ids.insert(0, cid)
+
+            v2 = ThoughtDbView(
+                scope=view.scope,
+                project_id=view.project_id,
+                claims_by_id=claims_by_id,
+                nodes_by_id=view.nodes_by_id,
+                edges=view.edges,
+                redirects_same_as=view.redirects_same_as,
+                superseded_ids=view.superseded_ids,
+                retracted_ids=view.retracted_ids,
+                retracted_node_ids=view.retracted_node_ids,
+                claims_by_tag=claims_by_tag,
+                nodes_by_tag=view.nodes_by_tag,
+                edges_by_from=view.edges_by_from,
+                edges_by_to=view.edges_by_to,
+                claim_ids_by_asserted_ts_desc=ids,
+                node_ids_by_asserted_ts_desc=view.node_ids_by_asserted_ts_desc,
+            )
+
+        elif kind == "claim_retract":
+            cid = str(obj.get("claim_id") or "").strip()
+            if not cid:
+                return
+            retracted = set(view.retracted_ids)
+            retracted.add(cid)
+            v2 = ThoughtDbView(
+                scope=view.scope,
+                project_id=view.project_id,
+                claims_by_id=view.claims_by_id,
+                nodes_by_id=view.nodes_by_id,
+                edges=view.edges,
+                redirects_same_as=view.redirects_same_as,
+                superseded_ids=view.superseded_ids,
+                retracted_ids=retracted,
+                retracted_node_ids=view.retracted_node_ids,
+                claims_by_tag=view.claims_by_tag,
+                nodes_by_tag=view.nodes_by_tag,
+                edges_by_from=view.edges_by_from,
+                edges_by_to=view.edges_by_to,
+                claim_ids_by_asserted_ts_desc=view.claim_ids_by_asserted_ts_desc,
+                node_ids_by_asserted_ts_desc=view.node_ids_by_asserted_ts_desc,
+            )
+
+        elif kind == "node":
+            nid = str(obj.get("node_id") or "").strip()
+            if not nid:
+                return
+            nodes_by_id = dict(view.nodes_by_id)
+            nodes_by_id[nid] = obj
+
+            nodes_by_tag = dict(view.nodes_by_tag)
+            tags = obj.get("tags") if isinstance(obj.get("tags"), list) else []
+            for t in tags:
+                ts = str(t or "").strip()
+                if not ts:
+                    continue
+                cur = nodes_by_tag.get(ts)
+                nxt = set(cur) if isinstance(cur, set) else set()
+                nxt.add(nid)
+                nodes_by_tag[ts] = nxt
+
+            ids = list(view.node_ids_by_asserted_ts_desc)
+            ids.insert(0, nid)
+
+            v2 = ThoughtDbView(
+                scope=view.scope,
+                project_id=view.project_id,
+                claims_by_id=view.claims_by_id,
+                nodes_by_id=nodes_by_id,
+                edges=view.edges,
+                redirects_same_as=view.redirects_same_as,
+                superseded_ids=view.superseded_ids,
+                retracted_ids=view.retracted_ids,
+                retracted_node_ids=view.retracted_node_ids,
+                claims_by_tag=view.claims_by_tag,
+                nodes_by_tag=nodes_by_tag,
+                edges_by_from=view.edges_by_from,
+                edges_by_to=view.edges_by_to,
+                claim_ids_by_asserted_ts_desc=view.claim_ids_by_asserted_ts_desc,
+                node_ids_by_asserted_ts_desc=ids,
+            )
+
+        elif kind == "node_retract":
+            nid = str(obj.get("node_id") or "").strip()
+            if not nid:
+                return
+            retracted_nodes = set(view.retracted_node_ids)
+            retracted_nodes.add(nid)
+            v2 = ThoughtDbView(
+                scope=view.scope,
+                project_id=view.project_id,
+                claims_by_id=view.claims_by_id,
+                nodes_by_id=view.nodes_by_id,
+                edges=view.edges,
+                redirects_same_as=view.redirects_same_as,
+                superseded_ids=view.superseded_ids,
+                retracted_ids=view.retracted_ids,
+                retracted_node_ids=retracted_nodes,
+                claims_by_tag=view.claims_by_tag,
+                nodes_by_tag=view.nodes_by_tag,
+                edges_by_from=view.edges_by_from,
+                edges_by_to=view.edges_by_to,
+                claim_ids_by_asserted_ts_desc=view.claim_ids_by_asserted_ts_desc,
+                node_ids_by_asserted_ts_desc=view.node_ids_by_asserted_ts_desc,
+            )
+
+        elif kind == "edge":
+            et = str(obj.get("edge_type") or "").strip()
+            frm = str(obj.get("from_id") or "").strip()
+            to = str(obj.get("to_id") or "").strip()
+            if not et or not frm or not to:
+                return
+
+            edges = list(view.edges)
+            edges.append(obj)
+
+            edges_by_from = dict(view.edges_by_from)
+            curf = edges_by_from.get(frm)
+            nxtf = list(curf) if isinstance(curf, list) else []
+            nxtf.append(obj)
+            edges_by_from[frm] = nxtf
+
+            edges_by_to = dict(view.edges_by_to)
+            curt = edges_by_to.get(to)
+            nxtt = list(curt) if isinstance(curt, list) else []
+            nxtt.append(obj)
+            edges_by_to[to] = nxtt
+
+            redirects = view.redirects_same_as
+            if et == "same_as":
+                redirects2 = dict(view.redirects_same_as)
+                redirects2[frm] = to
+                redirects = redirects2
+
+            superseded = view.superseded_ids
+            if et == "supersedes":
+                superseded2 = set(view.superseded_ids)
+                superseded2.add(frm)
+                superseded = superseded2
+
+            v2 = ThoughtDbView(
+                scope=view.scope,
+                project_id=view.project_id,
+                claims_by_id=view.claims_by_id,
+                nodes_by_id=view.nodes_by_id,
+                edges=edges,
+                redirects_same_as=redirects,
+                superseded_ids=superseded,
+                retracted_ids=view.retracted_ids,
+                retracted_node_ids=view.retracted_node_ids,
+                claims_by_tag=view.claims_by_tag,
+                nodes_by_tag=view.nodes_by_tag,
+                edges_by_from=edges_by_from,
+                edges_by_to=edges_by_to,
+                claim_ids_by_asserted_ts_desc=view.claim_ids_by_asserted_ts_desc,
+                node_ids_by_asserted_ts_desc=view.node_ids_by_asserted_ts_desc,
+            )
+
+        if v2 is None:
+            return
+
+        metas = self._scope_metas(sc)
+        self._view_cache[sc] = (v2, metas)
+
+    def flush_snapshots_best_effort(self) -> None:
+        """Persist view snapshots for any cached scopes (best-effort).
+
+        This keeps `view.snapshot.json` fresh even when the in-memory view cache
+        is being updated incrementally (so `load_view()` doesn't re-parse JSONL).
+        """
+
+        for sc, (view, _metas) in list(self._view_cache.items()):
+            if sc not in ("project", "global"):
+                continue
+            if not isinstance(view, ThoughtDbView):
+                continue
+            try:
+                metas2 = self._scope_metas(sc)
+                self._write_view_snapshot(scope=sc, metas=metas2, view=view)
+                self._view_cache[sc] = (view, metas2)
+            except Exception:
+                continue
+
     def load_view(self, *, scope: str) -> ThoughtDbView:
         sc = (scope or "project").strip()
         if sc not in ("project", "global"):
@@ -619,6 +845,10 @@ class ThoughtDbStore:
             "notes": (notes or "").strip(),
         }
         append_jsonl(self._claims_path(sc), obj)
+        try:
+            self._update_cache_after_append(scope=sc, obj=obj)
+        except Exception:
+            pass
         return cid
 
     def append_claim_retract(
@@ -639,17 +869,19 @@ class ThoughtDbStore:
         self._ensure_scope_dirs(sc)
         ev_ids = [str(x).strip() for x in (source_event_ids or []) if str(x).strip()]
         refs = [{"kind": "evidence_event", "event_id": x} for x in ev_ids[:8]]
-        append_jsonl(
-            self._claims_path(sc),
-            {
-                "kind": "claim_retract",
-                "version": THOUGHTDB_VERSION,
-                "ts": now_rfc3339(),
-                "claim_id": cid,
-                "rationale": (rationale or "").strip(),
-                "source_refs": refs,
-            },
-        )
+        obj: dict[str, Any] = {
+            "kind": "claim_retract",
+            "version": THOUGHTDB_VERSION,
+            "ts": now_rfc3339(),
+            "claim_id": cid,
+            "rationale": (rationale or "").strip(),
+            "source_refs": refs,
+        }
+        append_jsonl(self._claims_path(sc), obj)
+        try:
+            self._update_cache_after_append(scope=sc, obj=obj)
+        except Exception:
+            pass
 
     def append_node_create(
         self,
@@ -713,6 +945,10 @@ class ThoughtDbStore:
             "notes": (notes or "").strip(),
         }
         append_jsonl(self._nodes_path(sc), obj)
+        try:
+            self._update_cache_after_append(scope=sc, obj=obj)
+        except Exception:
+            pass
         return nid
 
     def append_node_retract(
@@ -733,17 +969,19 @@ class ThoughtDbStore:
         self._ensure_scope_dirs(sc)
         ev_ids = [str(x).strip() for x in (source_event_ids or []) if str(x).strip()]
         refs = [{"kind": "evidence_event", "event_id": x} for x in ev_ids[:8]]
-        append_jsonl(
-            self._nodes_path(sc),
-            {
-                "kind": "node_retract",
-                "version": THOUGHTDB_VERSION,
-                "ts": now_rfc3339(),
-                "node_id": nid,
-                "rationale": (rationale or "").strip(),
-                "source_refs": refs,
-            },
-        )
+        obj: dict[str, Any] = {
+            "kind": "node_retract",
+            "version": THOUGHTDB_VERSION,
+            "ts": now_rfc3339(),
+            "node_id": nid,
+            "rationale": (rationale or "").strip(),
+            "source_refs": refs,
+        }
+        append_jsonl(self._nodes_path(sc), obj)
+        try:
+            self._update_cache_after_append(scope=sc, obj=obj)
+        except Exception:
+            pass
 
     def append_edge(
         self,
@@ -777,23 +1015,25 @@ class ThoughtDbStore:
         pid = self._project_id_for_scope(sc)
         ev_ids = [str(x).strip() for x in (source_event_ids or []) if str(x).strip()]
         refs = [{"kind": "evidence_event", "event_id": x} for x in ev_ids[:8]]
-        append_jsonl(
-            self._edges_path(sc),
-            {
-                "kind": "edge",
-                "version": THOUGHTDB_VERSION,
-                "edge_id": eid,
-                "edge_type": et,
-                "from_id": frm,
-                "to_id": to,
-                "visibility": vis,
-                "scope": sc,
-                "project_id": pid,
-                "asserted_ts": now_rfc3339(),
-                "source_refs": refs,
-                "notes": (notes or "").strip(),
-            },
-        )
+        obj: dict[str, Any] = {
+            "kind": "edge",
+            "version": THOUGHTDB_VERSION,
+            "edge_id": eid,
+            "edge_type": et,
+            "from_id": frm,
+            "to_id": to,
+            "visibility": vis,
+            "scope": sc,
+            "project_id": pid,
+            "asserted_ts": now_rfc3339(),
+            "source_refs": refs,
+            "notes": (notes or "").strip(),
+        }
+        append_jsonl(self._edges_path(sc), obj)
+        try:
+            self._update_cache_after_append(scope=sc, obj=obj)
+        except Exception:
+            pass
         return eid
 
     def apply_mined_claims(

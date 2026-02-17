@@ -3673,6 +3673,13 @@ def run_autopilot(
             note="run_end",
         )
 
+    # Best-effort: persist Thought DB view snapshots at the end of the run.
+    # This keeps cold-start `load_view()` fast even when the view was maintained hot in-memory.
+    try:
+        tdb.flush_snapshots_best_effort()
+    except Exception:
+        pass
+
     return AutopilotResult(
         status=status,
         thread_id=thread_id or "unknown",

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from .thoughtdb import ThoughtDbStore, ThoughtDbView
-from .values import VALUES_BASE_TAG
-from .pins import PINNED_PREF_GOAL_TAGS
-from .operational_defaults import resolve_operational_defaults
+from ..thoughtdb import ThoughtDbStore, ThoughtDbView
+from ..thoughtdb.values import VALUES_BASE_TAG
+from ..thoughtdb.pins import PINNED_PREF_GOAL_TAGS
+from ..thoughtdb.operational_defaults import resolve_operational_defaults
 
 
 def _truncate(text: str, limit: int) -> str:

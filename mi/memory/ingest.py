@@ -3,12 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-from .memory_backends.base import MemoryBackend
-from .memory_text import truncate
-from .memory_types import MemoryGroup, MemoryItem
-from .paths import GlobalPaths, ProjectPaths
-from .storage import iter_jsonl, now_rfc3339, read_json
-from .workflows import render_workflow_markdown
+from .backends.base import MemoryBackend
+from .text import truncate
+from .types import MemoryGroup, MemoryItem
+from ..core.paths import GlobalPaths, ProjectPaths
+from ..core.storage import iter_jsonl, now_rfc3339, read_json
+from ..workflows import render_workflow_markdown
 
 
 def iter_project_ids(home_dir: Path) -> Iterable[str]:

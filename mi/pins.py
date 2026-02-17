@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+"""Back-compat wrapper for legacy imports.
 
-# Tags for "pinned" preference/goal claims that should be included in compact Thought DB contexts
-# even if they are not among the most recent preferences.
+Public API lives in `mi.thoughtdb.pins`.
+"""
 
-TESTLESS_STRATEGY_TAG = "mi:testless_verification_strategy"
-
-# Canonical operational defaults (stored as preference claims; project may override global).
-ASK_WHEN_UNCERTAIN_TAG = "mi:setting:ask_when_uncertain"
-REFACTOR_INTENT_TAG = "mi:setting:refactor_intent"
-
-# Preference/goal claim tags that are important for MI's operational decisions.
-PINNED_PREF_GOAL_TAGS: set[str] = {
-    TESTLESS_STRATEGY_TAG,
+from .thoughtdb.pins import (
     ASK_WHEN_UNCERTAIN_TAG,
+    PINNED_PREF_GOAL_TAGS,
     REFACTOR_INTENT_TAG,
-}
+    TESTLESS_STRATEGY_TAG,
+)
+
+__all__ = [
+    "ASK_WHEN_UNCERTAIN_TAG",
+    "PINNED_PREF_GOAL_TAGS",
+    "REFACTOR_INTENT_TAG",
+    "TESTLESS_STRATEGY_TAG",
+]
+

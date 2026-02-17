@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from ..memory_types import MemoryGroup, MemoryItem
+from ..types import MemoryGroup, MemoryItem
 
 
 class MemoryBackend(Protocol):
@@ -30,4 +30,3 @@ class MemoryBackend(Protocol):
     ) -> list[MemoryItem]: ...
 
     def status(self) -> dict[str, Any]: ...
-

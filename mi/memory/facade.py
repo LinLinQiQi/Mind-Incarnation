@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .memory_render import render_recall_context
-from .memory_snapshot import build_snapshot_item
-from .memory_types import MemoryItem
-from .storage import now_rfc3339
-from .paths import ProjectPaths
-from .memory_service import MemoryService
+from .render import render_recall_context
+from .snapshot import build_snapshot_item
+from .types import MemoryItem
+from ..core.storage import now_rfc3339
+from ..core.paths import ProjectPaths
+from .service import MemoryService
 
 
 def _truncate(text: str, limit: int) -> str:

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from .paths import GlobalPaths, ProjectPaths
-from .storage import append_jsonl, ensure_dir, iter_jsonl, now_rfc3339
+from ..core.paths import GlobalPaths, ProjectPaths
+from ..core.storage import append_jsonl, ensure_dir, iter_jsonl, now_rfc3339
 
 
 THOUGHTDB_VERSION = "v1"

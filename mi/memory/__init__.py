@@ -12,11 +12,11 @@ The implementation is intentionally layered so we can swap backends later withou
 rewiring runner/CLI code.
 """
 
-from .memory_backends.sqlite_fts import SqliteFtsBackend as MemoryIndex  # back-compat name
-from .memory_ingest import ingest_learned_and_workflows, iter_project_ids
-from .memory_render import render_recall_context
-from .memory_snapshot import build_snapshot_item, snapshot_item_from_event
-from .memory_types import MemoryGroup, MemoryItem
+from .backends.sqlite_fts import SqliteFtsBackend as MemoryIndex  # back-compat name
+from .ingest import ingest_learned_and_workflows, iter_project_ids
+from .render import render_recall_context
+from .snapshot import build_snapshot_item, snapshot_item_from_event
+from .types import MemoryGroup, MemoryItem
 
 __all__ = [
     # Types

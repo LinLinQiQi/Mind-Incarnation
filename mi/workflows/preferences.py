@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from .paths import ProjectPaths
-from .storage import read_json, write_json
+from ..core.paths import ProjectPaths
+from ..core.storage import read_json, write_json
 
 
 PREFERENCE_CANDIDATES_VERSION = "v1"
@@ -40,4 +40,3 @@ def write_preference_candidates(project_paths: ProjectPaths, obj: dict[str, Any]
     if "by_signature" not in obj or not isinstance(obj.get("by_signature"), dict):
         obj["by_signature"] = {}
     write_json(project_paths.preference_candidates_path, obj)
-

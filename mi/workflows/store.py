@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .paths import GlobalPaths, ProjectPaths
-from .storage import ensure_dir, now_rfc3339, read_json, write_json
+from ..core.paths import GlobalPaths, ProjectPaths
+from ..core.storage import ensure_dir, now_rfc3339, read_json, write_json
 
 
 WORKFLOW_IR_VERSION = "v1"

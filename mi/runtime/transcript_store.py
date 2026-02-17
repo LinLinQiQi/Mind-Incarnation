@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .storage import atomic_write_text, ensure_dir
+from ..core.storage import atomic_write_text, ensure_dir
 
 
 def write_transcript_header(path: Path, meta: dict[str, Any]) -> None:
@@ -17,4 +17,3 @@ def append_transcript_line(path: Path, record: dict[str, Any]) -> None:
     ensure_dir(path.parent)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, sort_keys=True) + "\n")
-

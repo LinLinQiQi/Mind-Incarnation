@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .config import (
+from .core.config import (
     config_for_display,
     init_config,
     load_config,
@@ -18,17 +18,16 @@ from .config import (
     apply_config_template,
     rollback_config,
 )
-from .mindspec import MindSpecStore
-from .mindspec_runtime import sanitize_mindspec_base_for_runtime
-from .prompts import compile_mindspec_prompt, edit_workflow_prompt, mine_claims_prompt, values_claim_patch_prompt
-from .runner import run_autopilot
-from .paths import GlobalPaths, ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
-from .inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
-from .transcript import last_agent_message_from_transcript, tail_transcript_lines, resolve_transcript_path
-from .redact import redact_text
-from .provider_factory import make_hands_functions, make_mind_provider
-from .gc import archive_project_transcripts
-from .storage import append_jsonl, iter_jsonl, now_rfc3339
+from .mindspec import MindSpecStore, sanitize_mindspec_base_for_runtime
+from .runtime.prompts import compile_mindspec_prompt, edit_workflow_prompt, mine_claims_prompt, values_claim_patch_prompt
+from .runtime.runner import run_autopilot
+from .core.paths import GlobalPaths, ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
+from .runtime.inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
+from .runtime.transcript import last_agent_message_from_transcript, tail_transcript_lines, resolve_transcript_path
+from .core.redact import redact_text
+from .providers.provider_factory import make_hands_functions, make_mind_provider
+from .runtime.gc import archive_project_transcripts
+from .core.storage import append_jsonl, iter_jsonl, now_rfc3339
 from .thoughtdb import ThoughtDbStore, claim_signature
 from .workflows import (
     WorkflowStore,
@@ -39,13 +38,13 @@ from .workflows import (
     normalize_workflow,
     apply_global_overrides,
 )
-from .hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
-from .memory_ingest import thoughtdb_node_item
-from .memory_service import MemoryService
-from .evidence import EvidenceWriter, new_run_id
-from .values import write_values_set_event, existing_values_claims, apply_values_claim_patch
-from .thought_context import build_decide_next_thoughtdb_context
-from .why import (
+from .workflows.hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
+from .memory.ingest import thoughtdb_node_item
+from .memory.service import MemoryService
+from .runtime.evidence import EvidenceWriter, new_run_id
+from .thoughtdb.values import write_values_set_event, existing_values_claims, apply_values_claim_patch
+from .thoughtdb.context import build_decide_next_thoughtdb_context
+from .thoughtdb.why import (
     find_evidence_event,
     query_from_evidence_event,
     collect_candidate_claims,

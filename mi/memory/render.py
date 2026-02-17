@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .memory_text import truncate
-from .memory_types import MemoryItem
+from .text import truncate
+from .types import MemoryItem
 
 
 def render_recall_context(*, items: list[MemoryItem], max_chars: int) -> tuple[list[dict[str, Any]], str]:
@@ -41,4 +41,3 @@ def render_recall_context(*, items: list[MemoryItem], max_chars: int) -> tuple[l
             }
         )
     return rendered, "\n".join(lines).strip() + "\n"
-

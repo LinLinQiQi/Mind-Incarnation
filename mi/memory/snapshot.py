@@ -4,9 +4,9 @@ import secrets
 import time
 from typing import Any
 
-from .memory_text import truncate
-from .memory_types import MemoryItem
-from .storage import now_rfc3339
+from .text import truncate
+from .types import MemoryItem
+from ..core.storage import now_rfc3339
 
 
 def _safe_list_str(items: Any, *, limit: int) -> list[str]:
@@ -203,4 +203,3 @@ def snapshot_item_from_event(ev: dict[str, Any]) -> MemoryItem | None:
         tags=[str(x) for x in tags if str(x).strip()] if isinstance(tags, list) else ["snapshot"],
         source_refs=[x for x in refs if isinstance(x, dict)] if isinstance(refs, list) else [],
     )
-

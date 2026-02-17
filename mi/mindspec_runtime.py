@@ -1,30 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+"""Back-compat wrapper for legacy imports.
 
+Public API lives in `mi.mindspec.runtime`.
+"""
 
-def sanitize_mindspec_base_for_runtime(base: dict[str, Any] | None) -> dict[str, Any]:
-    """Return a sanitized MindSpec base for runtime Mind prompts.
+from .mindspec.runtime import sanitize_mindspec_base_for_runtime
 
-    Goal: prevent value text duplication/contradiction.
+__all__ = ["sanitize_mindspec_base_for_runtime"]
 
-    - Canonical values/preferences live in Thought DB preference/goal Claims.
-    - `values_text` / `values_summary` remain useful for humans and `mi init`, but
-      should not steer runtime decisions once claims exist.
-    - Operational defaults (e.g., ask_when_uncertain/refactor_intent) are also treated
-      as canonical Thought DB preference claims; avoid duplicating them in prompts.
-    """
-
-    if not isinstance(base, dict):
-        return {}
-
-    out: dict[str, Any] = dict(base)
-
-    # Remove value text from runtime prompts so the model relies on Thought DB context.
-    out["values_text"] = ""
-    out["values_summary"] = []
-
-    # Defaults are derived from canonical Thought DB claims at runtime.
-    out["defaults"] = {}
-
-    return out

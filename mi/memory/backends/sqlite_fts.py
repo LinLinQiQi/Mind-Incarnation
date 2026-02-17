@@ -5,10 +5,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..memory_text import tokenize_query
-from ..memory_types import MemoryGroup, MemoryItem
-from ..paths import GlobalPaths
-from ..storage import ensure_dir
+from ..text import tokenize_query
+from ..types import MemoryGroup, MemoryItem
+from ...core.paths import GlobalPaths
+from ...core.storage import ensure_dir
 
 
 def _json_dumps(obj: Any) -> str:

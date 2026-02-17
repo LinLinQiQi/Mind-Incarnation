@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from .config import resolve_api_key
+from ..core.config import resolve_api_key
 from .llm import MiLlm
 from .mind_anthropic import AnthropicMindProvider
 from .mind_openai_compat import OpenAICompatibleMindProvider

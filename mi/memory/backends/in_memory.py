@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..memory_text import tokenize_query
-from ..memory_types import MemoryGroup, MemoryItem
+from ..text import tokenize_query
+from ..types import MemoryGroup, MemoryItem
 
 
 def _lower_haystack(it: MemoryItem) -> str:

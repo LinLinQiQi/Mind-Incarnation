@@ -6,8 +6,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .paths import GlobalPaths, ProjectPaths, default_home_dir, project_identity
-from .storage import append_jsonl, now_rfc3339, read_json, write_json, iter_jsonl
+from ..core.paths import GlobalPaths, ProjectPaths, default_home_dir, project_identity
+from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339, read_json, write_json
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

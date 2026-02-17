@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .storage import append_jsonl, now_rfc3339
+from ..core.storage import append_jsonl, now_rfc3339
 
 
 def new_run_id(prefix: str = "run") -> str:
@@ -42,4 +42,3 @@ class EvidenceWriter:
 
         append_jsonl(self.path, obj)
         return obj
-

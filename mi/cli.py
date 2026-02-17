@@ -1,109 +1,11 @@
+from __future__ import annotations
+
 import argparse
-import difflib
-import json
 import os
-import sys
 from pathlib import Path
-from typing import Any
 
-from . import __version__
-from .core.config import (
-    config_for_display,
-    init_config,
-    load_config,
-    config_path,
-    validate_config,
-    list_config_templates,
-    get_config_template,
-    apply_config_template,
-    rollback_config,
-)
-from .mindspec import MindSpecStore, sanitize_mindspec_base_for_runtime
-from .runtime.prompts import compile_mindspec_prompt, edit_workflow_prompt, mine_claims_prompt, values_claim_patch_prompt
-from .runtime.runner import run_autopilot
-from .core.paths import GlobalPaths, ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
-from .runtime.inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
-from .runtime.transcript import last_agent_message_from_transcript, tail_transcript_lines, resolve_transcript_path
-from .core.redact import redact_text
-from .providers.provider_factory import make_hands_functions, make_mind_provider
-from .runtime.gc import archive_project_transcripts
-from .core.storage import append_jsonl, iter_jsonl, now_rfc3339
-from .thoughtdb import ThoughtDbStore, claim_signature
-from .workflows import (
-    WorkflowStore,
-    GlobalWorkflowStore,
-    WorkflowRegistry,
-    new_workflow_id,
-    render_workflow_markdown,
-    normalize_workflow,
-    apply_global_overrides,
-)
-from .workflows.hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
-from .memory.ingest import thoughtdb_node_item
-from .memory.service import MemoryService
-from .runtime.evidence import EvidenceWriter, new_run_id
-from .thoughtdb.values import write_values_set_event, existing_values_claims, apply_values_claim_patch
-from .thoughtdb.values import (
-    VALUES_BASE_TAG,
-    VALUES_RAW_TAG,
-    VALUES_SUMMARY_TAG,
-    upsert_raw_values_claim,
-    upsert_values_summary_node,
-)
-from .thoughtdb.context import build_decide_next_thoughtdb_context
-from .thoughtdb.why import (
-    find_evidence_event,
-    query_from_evidence_event,
-    collect_candidate_claims,
-    run_why_trace,
-    default_as_of_ts,
-)
-from .thoughtdb.operational_defaults import (
-    ensure_operational_defaults_claims_current,
-    resolve_operational_defaults,
-    ask_when_uncertain_claim_text,
-    refactor_intent_claim_text,
-)
-from .thoughtdb.pins import ASK_WHEN_UNCERTAIN_TAG, REFACTOR_INTENT_TAG
-
-
-def _read_stdin_text() -> str:
-    data = sys.stdin.read()
-    return data.strip("\n")
-
-
-def _read_user_line(question: str) -> str:
-    print(question.strip(), file=sys.stderr)
-    print("> ", end="", file=sys.stderr, flush=True)
-    return sys.stdin.readline().strip()
-
-
-def _unified_diff(a: str, b: str, *, fromfile: str, tofile: str, limit_lines: int = 400) -> str:
-    diff = list(
-        difflib.unified_diff(
-            a.splitlines(True),
-            b.splitlines(True),
-            fromfile=fromfile,
-            tofile=tofile,
-        )
-    )
-    if len(diff) > limit_lines:
-        diff = diff[:limit_lines] + ["... (diff truncated)\n"]
-    return "".join(diff).rstrip() + "\n" if diff else ""
-
-
-def _resolve_project_root_from_args(store: MindSpecStore, cd_arg: str) -> Path:
-    """Resolve an effective project root for CLI handlers.
-
-    - If `--cd` is omitted, MI may infer git toplevel (see `resolve_cli_project_root`).
-    - Print a short stderr note when inference changes the root away from cwd.
-    """
-
-    root, reason = resolve_cli_project_root(store.home_dir, cd_arg, cwd=Path.cwd())
-    cwd = Path.cwd().resolve()
-    if reason != "arg" and root != cwd:
-        print(f"[mi] using inferred project_root={root} (reason={reason}, cwd={cwd})", file=sys.stderr)
-    return root
+from .core.config import load_config
+from .core.paths import default_home_dir
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -555,10 +457,9 @@ def main(argv: list[str] | None = None) -> int:
     p_gct.add_argument("--json", action="store_true", help="Print result as JSON.")
 
     args = parser.parse_args(argv)
-
-    store = MindSpecStore(home_dir=args.home)
-    cfg = load_config(store.home_dir)
+    home_dir = Path(str(args.home)).expanduser().resolve() if args.home else default_home_dir()
+    cfg = load_config(home_dir)
 
     from .cli_dispatch import dispatch
 
-    return dispatch(args=args, store=store, cfg=cfg)
+    return dispatch(args=args, home_dir=home_dir, cfg=cfg)

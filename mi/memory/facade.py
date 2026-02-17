@@ -30,8 +30,8 @@ class CrossProjectRecallConfig:
     triggers: dict[str, bool]
 
     @classmethod
-    def from_mindspec_base(cls, base: dict[str, Any]) -> CrossProjectRecallConfig:
-        cfg = base.get("cross_project_recall") if isinstance(base.get("cross_project_recall"), dict) else {}
+    def from_runtime_config(cls, runtime_cfg: dict[str, Any]) -> CrossProjectRecallConfig:
+        cfg = runtime_cfg.get("cross_project_recall") if isinstance(runtime_cfg.get("cross_project_recall"), dict) else {}
         enabled = bool(cfg.get("enabled", True))
 
         triggers = cfg.get("triggers") if isinstance(cfg.get("triggers"), dict) else {}
@@ -60,7 +60,7 @@ class CrossProjectRecallConfig:
         if not include_kinds:
             include_kinds = {"snapshot", "workflow", "claim"}
 
-        exclude_current_project = bool(cfg.get("exclude_current_project", True))
+        exclude_current_project = bool(cfg.get("exclude_current_project", False))
         prefer_current_project = bool(cfg.get("prefer_current_project", True))
 
         return cls(
@@ -102,10 +102,10 @@ class MemoryFacade:
     "materialized view" mechanics here so memory backends can evolve.
     """
 
-    def __init__(self, *, home_dir: Path, project_paths: ProjectPaths, mindspec_base: dict[str, Any]) -> None:
+    def __init__(self, *, home_dir: Path, project_paths: ProjectPaths, runtime_cfg: dict[str, Any]) -> None:
         self._home_dir = Path(home_dir).expanduser().resolve()
         self._project_paths = project_paths
-        self._recall_cfg = CrossProjectRecallConfig.from_mindspec_base(mindspec_base if isinstance(mindspec_base, dict) else {})
+        self._recall_cfg = CrossProjectRecallConfig.from_runtime_config(runtime_cfg if isinstance(runtime_cfg, dict) else {})
         self._mem = MemoryService(self._home_dir)
         self._last_recall_key = ""
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import json
 import sys
@@ -77,7 +79,7 @@ class TestValuesAndSettingsCli(unittest.TestCase):
 
             pp = ProjectPaths(home_dir=home, project_root=project_root)
             tdb = ThoughtDbStore(home_dir=home, project_paths=pp)
-            op = resolve_operational_defaults(tdb=tdb, mindspec_base={}, as_of_ts=now_rfc3339())
+            op = resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339())
             self.assertFalse(op.ask_when_uncertain)
 
             # Project override: set ask_when_uncertain=ask (should win for this project).
@@ -105,7 +107,7 @@ class TestValuesAndSettingsCli(unittest.TestCase):
             parsed = json.loads(out2)
             self.assertTrue(parsed.get("ok"))
 
-            op2 = resolve_operational_defaults(tdb=tdb, mindspec_base={}, as_of_ts=now_rfc3339())
+            op2 = resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339())
             self.assertTrue(op2.ask_when_uncertain)
 
             # Sanity: project store now contains a tagged override claim.
@@ -120,4 +122,3 @@ class TestValuesAndSettingsCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

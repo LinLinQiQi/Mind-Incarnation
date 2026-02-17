@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,7 +18,7 @@ class TestValuesAndThoughtContext(unittest.TestCase):
             rec = write_values_set_event(
                 home_dir=home,
                 values_text="Prefer minimal questions; stop on no tests.",
-                compiled_mindspec={"values_summary": ["x"]},
+                compiled_values={"values_summary": ["x"]},
                 notes="t",
             )
             ev_id = str(rec.get("event_id") or "")

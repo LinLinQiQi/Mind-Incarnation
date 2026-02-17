@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import difflib
 import json
@@ -18,10 +20,9 @@ from .core.config import (
     apply_config_template,
     rollback_config,
 )
-from .mindspec import MindSpecStore, sanitize_mindspec_base_for_runtime
-from .runtime.prompts import compile_mindspec_prompt, edit_workflow_prompt, mine_claims_prompt, values_claim_patch_prompt
+from .runtime.prompts import compile_values_prompt, edit_workflow_prompt, mine_claims_prompt, values_claim_patch_prompt
 from .runtime.runner import run_autopilot
-from .core.paths import GlobalPaths, ProjectPaths, default_home_dir, project_index_path, resolve_cli_project_root
+from .core.paths import GlobalPaths, ProjectPaths, project_index_path, resolve_cli_project_root
 from .runtime.inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
 from .runtime.transcript import last_agent_message_from_transcript, tail_transcript_lines, resolve_transcript_path
 from .core.redact import redact_text
@@ -65,6 +66,7 @@ from .thoughtdb.operational_defaults import (
     refactor_intent_claim_text,
 )
 from .thoughtdb.pins import ASK_WHEN_UNCERTAIN_TAG, REFACTOR_INTENT_TAG
+from .project.overlay_store import load_project_overlay, write_project_overlay
 
 
 def _read_stdin_text() -> str:
@@ -92,14 +94,14 @@ def _unified_diff(a: str, b: str, *, fromfile: str, tofile: str, limit_lines: in
     return "".join(diff).rstrip() + "\n" if diff else ""
 
 
-def _resolve_project_root_from_args(store: MindSpecStore, cd_arg: str) -> Path:
+def _resolve_project_root_from_args(home_dir: Path, cd_arg: str) -> Path:
     """Resolve an effective project root for CLI handlers.
 
     - If `--cd` is omitted, MI may infer git toplevel (see `resolve_cli_project_root`).
     - Print a short stderr note when inference changes the root away from cwd.
     """
 
-    root, reason = resolve_cli_project_root(store.home_dir, cd_arg, cwd=Path.cwd())
+    root, reason = resolve_cli_project_root(home_dir, cd_arg, cwd=Path.cwd())
     cwd = Path.cwd().resolve()
     if reason != "arg" and root != cwd:
         print(f"[mi] using inferred project_root={root} (reason={reason}, cwd={cwd})", file=sys.stderr)
@@ -108,11 +110,11 @@ def _resolve_project_root_from_args(store: MindSpecStore, cd_arg: str) -> Path:
 
 
 
-def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, Any]) -> int:
+def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -> int:
     def _make_global_tdb() -> ThoughtDbStore:
         # Use a dummy ProjectPaths id to avoid accidentally creating a project mapping during global operations.
-        dummy_pp = ProjectPaths(home_dir=store.home_dir, project_root=Path("."), _project_id="__global__")
-        return ThoughtDbStore(home_dir=store.home_dir, project_paths=dummy_pp)
+        dummy_pp = ProjectPaths(home_dir=home_dir, project_root=Path("."), _project_id="__global__")
+        return ThoughtDbStore(home_dir=home_dir, project_paths=dummy_pp)
 
     def _do_values_set(
         *,
@@ -133,40 +135,34 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         compiled: dict[str, Any] | None = None
         compiled_from_model = False
 
-        # Keep a local template for compilation (knobs). Values/defaults are canonical in Thought DB.
-        base_template = store.load_base()
-        base_template["values_text"] = values
-        base_template["values_summary"] = []
-
         if not no_compile:
             # Run compile in an isolated directory to avoid accidental project context bleed.
-            scratch = store.home_dir / "tmp" / "compile_mindspec"
+            scratch = home_dir / "tmp" / "compile_values"
             scratch.mkdir(parents=True, exist_ok=True)
-            transcripts_dir = store.home_dir / "mindspec" / "transcripts"
+            gp = GlobalPaths(home_dir=home_dir)
+            transcripts_dir = gp.global_dir / "transcripts"
 
             llm = make_mind_provider(cfg, project_root=scratch, transcripts_dir=transcripts_dir)
-            prompt = compile_mindspec_prompt(values_text=values, base_template=base_template)
+            prompt = compile_values_prompt(values_text=values)
             try:
-                out = llm.call(schema_filename="compile_mindspec.json", prompt=prompt, tag="compile_mindspec").obj
+                out = llm.call(schema_filename="compile_values.json", prompt=prompt, tag="compile_values").obj
                 compiled = out if isinstance(out, dict) else None
                 compiled_from_model = bool(compiled)
             except Exception as e:
                 compiled = None
-                print(f"compile_mindspec failed; falling back. error={e}", file=sys.stderr)
+                print(f"compile_values failed; falling back. error={e}", file=sys.stderr)
 
-        # Even when compilation fails, we still record the raw values + a structured template
-        # into the values_set event payload for provenance/audit.
-        base_after = compiled if isinstance(compiled, dict) else dict(base_template)
+        compiled_values = compiled if isinstance(compiled, dict) else {}
 
         if show or dry_run:
-            vs = base_after.get("values_summary") or []
+            vs = compiled_values.get("values_summary") or []
             if isinstance(vs, list) and any(str(x).strip() for x in vs):
                 print("values_summary:")
                 for x in vs:
                     xs = str(x).strip()
                     if xs:
                         print(f"- {xs}")
-            dp = base_after.get("decision_procedure") or {}
+            dp = compiled_values.get("decision_procedure") or {}
             if isinstance(dp, dict):
                 summary = str(dp.get("summary") or "").strip()
                 mermaid = str(dp.get("mermaid") or "").strip()
@@ -176,13 +172,13 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                     print("\ndecision_procedure.mermaid:\n" + mermaid)
 
         if dry_run:
-            return {"ok": True, "dry_run": True, "compiled": base_after, "compiled_from_model": compiled_from_model}
+            return {"ok": True, "dry_run": True, "compiled": compiled_values, "compiled_from_model": compiled_from_model}
 
         # Record values changes into a global EvidenceLog so Claims can cite stable event_id provenance.
         values_ev = write_values_set_event(
-            home_dir=store.home_dir,
+            home_dir=home_dir,
             values_text=values,
-            compiled_mindspec=base_after,
+            compiled_values=compiled_values,
             notes=str(notes or "").strip(),
         )
         values_event_id = str(values_ev.get("event_id") or "").strip()
@@ -199,12 +195,12 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         )
         summary_id = ""
         if compiled_from_model:
-            summary_id = upsert_values_summary_node(tdb=tdb, compiled_mindspec=base_after, values_event_id=values_event_id)
+            summary_id = upsert_values_summary_node(tdb=tdb, compiled_values=compiled_values, values_event_id=values_event_id)
         try:
             defaults_seed = ensure_operational_defaults_claims_current(
-                home_dir=store.home_dir,
+                home_dir=home_dir,
                 tdb=tdb,
-                mindspec_base=base_after,
+                desired_defaults=None,
                 mode="seed_missing",
                 event_notes=str(notes or "").strip() or "values_set",
                 claim_notes_prefix="seed_on_values_set",
@@ -253,7 +249,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
 
             prompt2 = values_claim_patch_prompt(
                 values_text=values,
-                compiled_mindspec=base_after,
+                compiled_values=compiled_values,
                 existing_values_claims=existing,
                 allowed_event_ids=[values_event_id],
                 allowed_retract_claim_ids=retractable_ids,
@@ -261,7 +257,8 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
             )
             patch_obj = llm.call(schema_filename="values_claim_patch.json", prompt=prompt2, tag="values_claim_patch").obj
 
-            tcfg = base_after.get("thought_db") if isinstance(base_after.get("thought_db"), dict) else {}
+            runtime_cfg = cfg.get("runtime") if isinstance(cfg.get("runtime"), dict) else {}
+            tcfg = runtime_cfg.get("thought_db") if isinstance(runtime_cfg.get("thought_db"), dict) else {}
             try:
                 min_conf = float(tcfg.get("min_confidence", 0.9) or 0.9)
             except Exception:
@@ -307,10 +304,10 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
 
     if args.cmd == "config":
         if args.config_cmd == "path":
-            print(str(config_path(store.home_dir)))
+            print(str(config_path(home_dir)))
             return 0
         if args.config_cmd == "init":
-            path = init_config(store.home_dir, force=bool(args.force))
+            path = init_config(home_dir, force=bool(args.force))
             print(f"Wrote config to {path}")
             return 0
         if args.config_cmd == "show":
@@ -334,7 +331,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
             return 0
         if args.config_cmd == "apply-template":
             try:
-                res = apply_config_template(store.home_dir, name=str(args.name))
+                res = apply_config_template(home_dir, name=str(args.name))
             except Exception as e:
                 print(f"apply-template failed: {e}", file=sys.stderr)
                 return 2
@@ -344,7 +341,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
             return 0
         if args.config_cmd == "rollback":
             try:
-                res = rollback_config(store.home_dir)
+                res = rollback_config(home_dir)
             except Exception as e:
                 print(f"rollback failed: {e}", file=sys.stderr)
                 return 2
@@ -522,12 +519,12 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         if args.settings_cmd == "show":
             cd = str(getattr(args, "cd", "") or "").strip()
             if cd:
-                project_root = _resolve_project_root_from_args(store, cd)
-                pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+                project_root = _resolve_project_root_from_args(home_dir, cd)
+                pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
             else:
-                pp = ProjectPaths(home_dir=store.home_dir, project_root=Path("."), _project_id="__global__")
-            tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
-            op = resolve_operational_defaults(tdb=tdb, mindspec_base={}, as_of_ts=now_rfc3339())
+                pp = ProjectPaths(home_dir=home_dir, project_root=Path("."), _project_id="__global__")
+            tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+            op = resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339())
             out = op.to_dict()
             if bool(getattr(args, "json", False)):
                 print(json.dumps(out, indent=2, sort_keys=True))
@@ -548,7 +545,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
 
             if scope == "global":
                 tdb = _make_global_tdb()
-                cur = resolve_operational_defaults(tdb=tdb, mindspec_base={}, as_of_ts=now_rfc3339())
+                cur = resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339())
                 desired_ask = cur.ask_when_uncertain
                 desired_ref = cur.refactor_intent or "behavior_preserving"
                 if ask_s:
@@ -562,9 +559,9 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                     return 0
 
                 res = ensure_operational_defaults_claims_current(
-                    home_dir=store.home_dir,
+                    home_dir=home_dir,
                     tdb=tdb,
-                    mindspec_base={"defaults": desired},
+                    desired_defaults=desired,
                     mode="sync",
                     event_notes="mi settings set",
                     claim_notes_prefix="user_set",
@@ -573,9 +570,9 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                 return 0
 
             # Project-scoped overrides: write setting claims into the project store (append-only).
-            project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
-            pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
-            tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+            pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+            tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
             evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
             ev = evw.append(
                 {
@@ -672,8 +669,8 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
 
     if args.cmd == "run":
         hands_exec, hands_resume = make_hands_functions(cfg)
-        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
-        project_paths = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
         llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=project_paths.transcripts_dir)
         hands_provider = ""
         hands_cfg = cfg.get("hands") if isinstance(cfg.get("hands"), dict) else {}
@@ -684,7 +681,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         result = run_autopilot(
             task=args.task,
             project_root=str(project_root),
-            home_dir=args.home,
+            home_dir=str(home_dir),
             max_batches=args.max_batches,
             hands_exec=hands_exec,
             hands_resume=hands_resume,
@@ -698,8 +695,8 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         return 0 if result.status == "done" else 1
 
     if args.cmd == "last":
-        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
 
         bundle = load_last_batch_bundle(pp.evidence_log_path)
         codex_input = bundle.get("codex_input") if isinstance(bundle.get("codex_input"), dict) else None
@@ -875,8 +872,8 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         return 0
 
     if args.cmd == "evidence":
-        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         if args.evidence_cmd == "tail":
             if args.raw:
                 for line in tail_raw_lines(pp.evidence_log_path, args.lines):
@@ -888,8 +885,8 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
             return 0
 
     if args.cmd == "transcript":
-        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         if args.tr_cmd == "show":
             if args.path:
                 tp = Path(args.path).expanduser()
@@ -935,7 +932,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
 
     if args.cmd == "memory":
         if args.mem_cmd == "index":
-            mem = MemoryService(store.home_dir)
+            mem = MemoryService(home_dir)
             if args.mi_cmd == "status":
                 st = mem.status()
                 if args.json:
@@ -989,12 +986,12 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                 return 0
 
     if args.cmd == "project":
-        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
-        overlay = store.load_project_overlay(project_root)
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+        overlay = load_project_overlay(home_dir=home_dir, project_root=project_root)
 
         identity_key = str(overlay.get("identity_key") or "").strip()
-        idx_path = project_index_path(store.home_dir)
+        idx_path = project_index_path(home_dir)
         idx_mapped = ""
         if identity_key:
             try:
@@ -1057,8 +1054,8 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
 
     if args.cmd == "gc":
         if args.gc_cmd == "transcripts":
-            project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
-            pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+            project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+            pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
             res = archive_project_transcripts(
                 transcripts_dir=pp.transcripts_dir,
                 keep_hands=int(args.keep_hands),
@@ -1080,14 +1077,13 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
             return 0
 
     if args.cmd == "claim":
-        project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
-        loaded2 = store.load(project_root)
-        overlay2 = loaded2.project_overlay if isinstance(loaded2.project_overlay, dict) else {}
+        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+        overlay2 = load_project_overlay(home_dir=home_dir, project_root=project_root)
         if not isinstance(overlay2, dict):
             overlay2 = {}
 
-        tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
 
         def _view_for_scope(scope: str) -> object:
             sc = str(scope or "project").strip()
@@ -1528,7 +1524,8 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
 
         if args.claim_cmd == "mine":
             # On-demand mining uses the Mind provider (same as other CLI model calls).
-            tcfg = loaded2.base.get("thought_db") if isinstance(loaded2.base.get("thought_db"), dict) else {}
+            runtime_cfg = cfg.get("runtime") if isinstance(cfg.get("runtime"), dict) else {}
+            tcfg = runtime_cfg.get("thought_db") if isinstance(runtime_cfg.get("thought_db"), dict) else {}
             try:
                 min_conf = float(tcfg.get("min_confidence", 0.9) or 0.9)
             except Exception:
@@ -1579,7 +1576,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
             prompt = mine_claims_prompt(
                 task=str("(manual claim mine) " + (seg.get("task_hint") if isinstance(seg, dict) else "")).strip(),
                 hands_provider=str(cfg.get("hands", {}).get("provider") or ""),
-                mindspec_base=sanitize_mindspec_base_for_runtime(loaded2.base if isinstance(getattr(loaded2, "base", None), dict) else {}),
+                mindspec_base=runtime_cfg,
                 project_overlay=overlay2,
                 thought_db_context=tdb_ctx_obj,
                 segment_evidence=seg_records,
@@ -1628,9 +1625,9 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         return 2
 
     if args.cmd == "node":
-        project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
-        tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
 
         def _iter_effective_nodes(*, include_inactive: bool, include_aliases: bool) -> list[dict[str, Any]]:
             proj = tdb.load_view(scope="project")
@@ -1842,7 +1839,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
             # Derived: index the node for text recall (best-effort; no hard dependency).
             try:
                 nodes_path = (
-                    GlobalPaths(home_dir=store.home_dir).thoughtdb_global_nodes_path
+                    GlobalPaths(home_dir=home_dir).thoughtdb_global_nodes_path
                     if scope == "global"
                     else pp.thoughtdb_nodes_path
                 )
@@ -1860,7 +1857,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                     nodes_path=nodes_path,
                     source_refs=refs,
                 )
-                MemoryService(store.home_dir).upsert_items([it])
+                MemoryService(home_dir).upsert_items([it])
             except Exception:
                 pass
 
@@ -1906,9 +1903,9 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         return 2
 
     if args.cmd == "edge":
-        project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
-        tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
 
         def _iter_edges_for_scope(scope: str) -> list[dict[str, Any]]:
             v = tdb.load_view(scope=scope)
@@ -2048,12 +2045,12 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         return 2
 
     if args.cmd == "why":
-        project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
 
         # Providers/stores.
-        tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
-        mem = MemoryService(store.home_dir)
+        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+        mem = MemoryService(home_dir)
         mind = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
 
         top_k = int(getattr(args, "top_k", 12) or 12)
@@ -2264,17 +2261,19 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         return 2
 
     if args.cmd == "workflow":
-        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
-        loaded2 = store.load(project_root)
-        overlay2 = loaded2.project_overlay if isinstance(loaded2.project_overlay, dict) else {}
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+        overlay2 = load_project_overlay(home_dir=home_dir, project_root=project_root)
         if not isinstance(overlay2, dict):
             overlay2 = {}
 
         wf_store = WorkflowStore(pp)
-        wf_global = GlobalWorkflowStore(GlobalPaths(home_dir=store.home_dir))
+        wf_global = GlobalWorkflowStore(GlobalPaths(home_dir=home_dir))
         wf_reg = WorkflowRegistry(project_store=wf_store, global_store=wf_global)
-        tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+
+        runtime_cfg = cfg.get("runtime") if isinstance(cfg.get("runtime"), dict) else {}
+        wf_cfg = runtime_cfg.get("workflows") if isinstance(runtime_cfg.get("workflows"), dict) else {}
 
         def _effective_enabled_workflows() -> list[dict[str, Any]]:
             eff = wf_reg.enabled_workflows_effective(overlay=overlay2)
@@ -2282,7 +2281,6 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
             return [{k: v for k, v in w.items() if k != "_mi_scope"} for w in eff if isinstance(w, dict)]
 
         def _auto_sync_hosts() -> None:
-            wf_cfg = loaded2.base.get("workflows") if isinstance(loaded2.base.get("workflows"), dict) else {}
             if not bool(wf_cfg.get("auto_sync_on_change", True)):
                 return
             res = sync_hosts_from_overlay(overlay=overlay2, project_id=pp.project_id, workflows=_effective_enabled_workflows())
@@ -2394,7 +2392,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                     ov = {}
                     overlay2["global_workflow_overrides"] = ov
                 ov[wid] = {"enabled": bool(enabled_target)}
-                store.write_project_overlay(project_root, overlay2)
+                write_project_overlay(home_dir=home_dir, project_root=project_root, overlay=overlay2)
                 _auto_sync_hosts()
                 print(f"{wid} project_override_enabled={str(bool(enabled_target)).lower()}")
                 return 0
@@ -2435,7 +2433,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                     overlay2["global_workflow_overrides"] = ov
                 if wid in ov:
                     del ov[wid]
-                    store.write_project_overlay(project_root, overlay2)
+                    write_project_overlay(home_dir=home_dir, project_root=project_root, overlay=overlay2)
                 _auto_sync_hosts()
                 print(f"cleared override for {wid}")
                 return 0
@@ -2479,7 +2477,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                 )
                 tdb_ctx_obj = tdb_ctx.to_prompt_obj()
                 prompt = edit_workflow_prompt(
-                    mindspec_base=sanitize_mindspec_base_for_runtime(loaded2.base if isinstance(getattr(loaded2, "base", None), dict) else {}),
+                    mindspec_base=runtime_cfg,
                     project_overlay=overlay2,
                     thought_db_context=tdb_ctx_obj,
                     workflow=w0,
@@ -2587,7 +2585,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                         # If there is no diff against global, clear any prior override.
                         if wid in ov:
                             del ov[wid]
-                    store.write_project_overlay(project_root, overlay2)
+                    write_project_overlay(home_dir=home_dir, project_root=project_root, overlay=overlay2)
                     _auto_sync_hosts()
                     return 0
 
@@ -2617,17 +2615,16 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
         return 2
 
     if args.cmd == "host":
-        project_root = _resolve_project_root_from_args(store, str(args.cd or ""))
-        loaded2 = store.load(project_root)
-        overlay2 = loaded2.project_overlay if isinstance(loaded2.project_overlay, dict) else {}
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        overlay2 = load_project_overlay(home_dir=home_dir, project_root=project_root)
         if not isinstance(overlay2, dict):
             overlay2 = {}
         hb = overlay2.get("host_bindings")
         bindings = hb if isinstance(hb, list) else []
 
-        pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         wf_store = WorkflowStore(pp)
-        wf_global = GlobalWorkflowStore(GlobalPaths(home_dir=store.home_dir))
+        wf_global = GlobalWorkflowStore(GlobalPaths(home_dir=home_dir))
         wf_reg = WorkflowRegistry(project_store=wf_store, global_store=wf_global)
 
         def _sync_hosts() -> dict[str, Any]:
@@ -2679,7 +2676,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                     out.append(b)
             out.append(new_binding)
             overlay2["host_bindings"] = out
-            store.write_project_overlay(project_root, overlay2)
+            write_project_overlay(home_dir=home_dir, project_root=project_root, overlay=overlay2)
 
             res = _sync_hosts()
             if bool(args.host_cmd) and not bool(res.get("ok", True)):
@@ -2700,7 +2697,7 @@ def dispatch(*, args: argparse.Namespace, store: MindSpecStore, cfg: dict[str, A
                 if isinstance(b, dict):
                     out.append(b)
             overlay2["host_bindings"] = out
-            store.write_project_overlay(project_root, overlay2)
+            write_project_overlay(home_dir=home_dir, project_root=project_root, overlay=overlay2)
 
             # Best-effort cleanup for the removed host binding.
             parsed_old = parse_host_bindings(old_overlay)

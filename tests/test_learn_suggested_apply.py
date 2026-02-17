@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import json
 import sys
@@ -7,8 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mi.cli import main as mi_main
-from mi.mindspec import MindSpecStore
+from mi.core.config import config_path, default_config
 from mi.core.paths import ProjectPaths
+from mi.core.storage import write_json
 from mi.providers.codex_runner import CodexRunResult
 from mi.runtime.runner import run_autopilot
 from mi.thoughtdb import ThoughtDbStore
@@ -70,11 +73,9 @@ def _mk_result(*, thread_id: str, last_message: str, command: str = "") -> Codex
 class TestLearnSuggestedApply(unittest.TestCase):
     def test_auto_learn_false_records_suggestion_and_does_not_write_learned(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("violation_response", {})
-            base["violation_response"]["auto_learn"] = False
-            store.write_base(base)
+            cfg = default_config()
+            cfg["runtime"]["violation_response"]["auto_learn"] = False
+            write_json(config_path(Path(home)), cfg)
 
             fake_hands = _FakeHands([_mk_result(thread_id="t1", last_message="All done.", command="ls")])
             fake_llm = _FakeLlm(
@@ -171,11 +172,9 @@ class TestLearnSuggestedApply(unittest.TestCase):
 
     def test_auto_learn_true_writes_learned_and_logs_applied_ids(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("violation_response", {})
-            base["violation_response"]["auto_learn"] = True
-            store.write_base(base)
+            cfg = default_config()
+            cfg["runtime"]["violation_response"]["auto_learn"] = True
+            write_json(config_path(Path(home)), cfg)
 
             fake_hands = _FakeHands([_mk_result(thread_id="t2", last_message="All done.", command="ls")])
             fake_llm = _FakeLlm(

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import unittest
 
 from mi.providers.codex_runner import _should_interrupt_command

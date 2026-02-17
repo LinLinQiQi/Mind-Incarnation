@@ -120,13 +120,12 @@ def collect_canonical_pref_goal_claims(
 
 def build_light_injection(
     *,
-    mindspec_base: dict[str, Any],
     tdb: ThoughtDbStore,
     as_of_ts: str,
 ) -> str:
     """Build MI "light injection" for Hands from canonical Thought DB claims."""
 
-    op = resolve_operational_defaults(tdb=tdb, mindspec_base=mindspec_base, as_of_ts=as_of_ts)
+    op = resolve_operational_defaults(tdb=tdb, as_of_ts=as_of_ts)
     refactor_intent = str(op.refactor_intent or "behavior_preserving").strip() or "behavior_preserving"
     ask_when_uncertain = bool(op.ask_when_uncertain)
 

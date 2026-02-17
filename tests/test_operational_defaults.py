@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,7 +67,7 @@ class TestOperationalDefaults(unittest.TestCase):
                 notes="t",
             )
 
-            op = resolve_operational_defaults(tdb=tdb, mindspec_base={}, as_of_ts=now_rfc3339())
+            op = resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339())
             self.assertFalse(op.ask_when_uncertain)
             self.assertEqual(op.ask_when_uncertain_source.get("scope"), "project")
             self.assertEqual(op.ask_when_uncertain_source.get("claim_id"), p_ask)
@@ -87,8 +89,7 @@ class TestOperationalDefaults(unittest.TestCase):
             ev_id = str(rec.get("event_id") or "").strip()
             self.assertTrue(ev_id.startswith("ev_"))
 
-            base = {"defaults": {"refactor_intent": "behavior_preserving", "ask_when_uncertain": True}}
-            out = ensure_operational_defaults_claims_current(home_dir=home, tdb=tdb, mindspec_base=base, mode="sync")
+            out = ensure_operational_defaults_claims_current(home_dir=home, tdb=tdb, desired_defaults=desired, mode="sync")
             self.assertTrue(bool(out.get("ok", False)))
             self.assertTrue(bool(out.get("changed", False)))
             self.assertEqual(str(out.get("event_id") or "").strip(), ev_id)
@@ -115,7 +116,7 @@ class TestOperationalDefaults(unittest.TestCase):
                 self.assertIn(ev_id, evs)
 
             # Second call should be a no-op (idempotent).
-            out2 = ensure_operational_defaults_claims_current(home_dir=home, tdb=tdb, mindspec_base=base, mode="sync")
+            out2 = ensure_operational_defaults_claims_current(home_dir=home, tdb=tdb, desired_defaults=desired, mode="sync")
             self.assertTrue(bool(out2.get("ok", False)))
             self.assertFalse(bool(out2.get("changed", True)))
 

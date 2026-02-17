@@ -15,6 +15,9 @@ DEFAULTS_EVENT_KIND = "mi_defaults_set"
 _ASK_PREFIX = "MI setting: ask_when_uncertain ="
 _REF_PREFIX = "MI setting: refactor_intent ="
 
+DEFAULT_REFACTOR_INTENT = "behavior_preserving"
+DEFAULT_ASK_WHEN_UNCERTAIN = True
+
 
 def _norm(text: str) -> str:
     return " ".join((text or "").strip().split())
@@ -103,18 +106,12 @@ class OperationalDefaults:
 def resolve_operational_defaults(
     *,
     tdb: ThoughtDbStore,
-    mindspec_base: dict[str, Any] | None,
     as_of_ts: str,
 ) -> OperationalDefaults:
     """Resolve operational defaults from canonical Thought DB claims (project overrides global)."""
 
-    base = mindspec_base if isinstance(mindspec_base, dict) else {}
-    defaults = base.get("defaults") if isinstance(base.get("defaults"), dict) else {}
-
-    fb_ref = str(defaults.get("refactor_intent") or "behavior_preserving").strip()
-    if fb_ref not in ("behavior_preserving", "behavior_changing"):
-        fb_ref = "behavior_preserving"
-    fb_ask = bool(defaults.get("ask_when_uncertain", True))
+    fb_ref = DEFAULT_REFACTOR_INTENT
+    fb_ask = bool(DEFAULT_ASK_WHEN_UNCERTAIN)
 
     v_proj = tdb.load_view(scope="project")
     v_glob = tdb.load_view(scope="global")
@@ -169,7 +166,7 @@ def ensure_operational_defaults_claims_current(
     *,
     home_dir: Path,
     tdb: ThoughtDbStore,
-    mindspec_base: dict[str, Any] | None,
+    desired_defaults: dict[str, Any] | None,
     mode: str,
     event_notes: str = "",
     claim_notes_prefix: str = "auto_migrate",
@@ -178,16 +175,15 @@ def ensure_operational_defaults_claims_current(
 
     mode:
     - "seed_missing": create claims only when no tagged claim exists yet
-    - "sync": keep claims in sync with MindSpec base.defaults (supersede on change)
+    - "sync": keep claims in sync with desired_defaults (supersede on change)
     """
 
-    base = mindspec_base if isinstance(mindspec_base, dict) else {}
-    defaults = base.get("defaults") if isinstance(base.get("defaults"), dict) else {}
+    defaults = desired_defaults if isinstance(desired_defaults, dict) else {}
 
-    desired_ref = str(defaults.get("refactor_intent") or "behavior_preserving").strip()
+    desired_ref = str(defaults.get("refactor_intent") or DEFAULT_REFACTOR_INTENT).strip()
     if desired_ref not in ("behavior_preserving", "behavior_changing"):
-        desired_ref = "behavior_preserving"
-    desired_ask = bool(defaults.get("ask_when_uncertain", True))
+        desired_ref = DEFAULT_REFACTOR_INTENT
+    desired_ask = bool(defaults.get("ask_when_uncertain", DEFAULT_ASK_WHEN_UNCERTAIN))
 
     desired = {
         "refactor_intent": desired_ref,

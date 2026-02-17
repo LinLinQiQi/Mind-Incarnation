@@ -8,11 +8,11 @@ def _to_json(obj: Any) -> str:
     return json.dumps(obj, indent=2, sort_keys=True)
 
 
-def compile_mindspec_prompt(*, values_text: str, base_template: dict[str, Any]) -> str:
+def compile_values_prompt(*, values_text: str) -> str:
     return "\n".join(
         [
             "You are MI (Mind Incarnation).",
-            "Compile user values/preferences into a structured MindSpec (V1).",
+            "Compile user values/preferences into a compact structured summary (V1).",
             "",
             "Hard constraints (must respect in your decision procedure):",
             "- MI sits above Hands (execution agent; V1 default: Codex CLI) and only controls input + reads output.",
@@ -31,10 +31,7 @@ def compile_mindspec_prompt(*, values_text: str, base_template: dict[str, Any]) 
             "User values/preferences text (verbatim):",
             values_text.strip(),
             "",
-            "Base template (fill and adjust as needed; keep unspecified parts at defaults):",
-            _to_json(base_template),
-            "",
-            "Now output the compiled MindSpec JSON.",
+            "Now output the compiled values JSON.",
         ]
     ).strip() + "\n"
 
@@ -42,7 +39,7 @@ def compile_mindspec_prompt(*, values_text: str, base_template: dict[str, Any]) 
 def values_claim_patch_prompt(
     *,
     values_text: str,
-    compiled_mindspec: dict[str, Any],
+    compiled_values: dict[str, Any],
     existing_values_claims: list[dict[str, Any]],
     allowed_event_ids: list[str],
     allowed_retract_claim_ids: list[str],
@@ -88,8 +85,8 @@ def values_claim_patch_prompt(
             "values_text (verbatim):",
             (values_text or "").strip(),
             "",
-            "compiled_mindspec (structured, best-effort; may be empty):",
-            _to_json(compiled_mindspec if isinstance(compiled_mindspec, dict) else {}),
+            "compiled_values (structured, best-effort; may be empty):",
+            _to_json(compiled_values if isinstance(compiled_values, dict) else {}),
             "",
             "existing_values_claims (active canonical, compact):",
             _to_json(existing_values_claims if isinstance(existing_values_claims, list) else []),

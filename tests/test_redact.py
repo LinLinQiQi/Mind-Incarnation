@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import unittest
 
 from mi.core.redact import redact_text

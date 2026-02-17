@@ -15,7 +15,10 @@ def config_path(home_dir: Path) -> Path:
 
 
 def default_config() -> dict[str, Any]:
-    # Keep this minimal and editable by hand; values/preferences live in MindSpec.
+    # Keep this editable by hand.
+    #
+    # Canonical values/preferences live in Thought DB (claims/nodes).
+    # Runtime "knobs" (budgets, feature switches) live here under `runtime`.
     return {
         "version": "v1",
         "mind": {
@@ -60,6 +63,67 @@ def default_config() -> dict[str, Any]:
                 # Must contain a capturing group for the id.
                 "thread_id_regex": "",
                 "env": {},
+            },
+        },
+        "runtime": {
+            "verification": {
+                "no_tests_policy": "ask_once_per_project_then_remember",
+            },
+            "external_actions": {
+                "network_policy": "values_judged",
+                "install_policy": "values_judged",
+            },
+            "interrupt": {
+                "mode": "off",
+                "signal_sequence": ["SIGINT", "SIGTERM", "SIGKILL"],
+                "escalation_ms": [2000, 5000],
+            },
+            "transparency": {
+                "store_raw_transcript": True,
+                "store_evidence_log": True,
+                "ui_expandable_transcript": True,
+            },
+            "workflows": {
+                "auto_mine": True,
+                "auto_enable": True,
+                "min_occurrences": 2,
+                "allow_single_if_high_benefit": True,
+                "auto_sync_on_change": True,
+            },
+            "cross_project_recall": {
+                "enabled": True,
+                "top_k": 3,
+                "max_chars": 1800,
+                "include_kinds": ["snapshot", "workflow", "claim", "node"],
+                # Default: recall within current project is allowed (and preferred).
+                "exclude_current_project": False,
+                "prefer_current_project": True,
+                "triggers": {
+                    "run_start": True,
+                    "before_ask_user": True,
+                    "risk_signal": True,
+                },
+            },
+            "preference_mining": {
+                "auto_mine": True,
+                "min_occurrences": 2,
+                "allow_single_if_high_benefit": True,
+                "min_confidence": 0.75,
+                "max_suggestions": 3,
+            },
+            "thought_db": {
+                "enabled": True,
+                "auto_mine": True,
+                "min_confidence": 0.9,
+                "max_claims_per_checkpoint": 6,
+                "auto_materialize_nodes": True,
+            },
+            "violation_response": {
+                "auto_learn": True,
+                "prompt_user_on_high_risk": True,
+                "prompt_user_risk_severities": ["high", "critical"],
+                "prompt_user_risk_categories": [],
+                "prompt_user_respect_should_ask_user": True,
             },
         },
     }

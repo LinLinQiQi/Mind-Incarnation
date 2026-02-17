@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 import json
 import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from mi.mindspec import MindSpecStore
+from mi.core.config import config_path, default_config
 from mi.core.paths import ProjectPaths
+from mi.core.storage import write_json
 from mi.providers.codex_runner import CodexRunResult
 from mi.runtime.runner import run_autopilot
 
@@ -52,15 +55,13 @@ def _mk_done_result(*, thread_id: str) -> CodexRunResult:
 class TestWorkflowMiningAndTrigger(unittest.TestCase):
     def test_mine_solidify_then_trigger(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("workflows", {})
-            base["workflows"]["auto_mine"] = True
-            base["workflows"]["auto_enable"] = True
-            base["workflows"]["min_occurrences"] = 2
-            base["workflows"]["allow_single_if_high_benefit"] = True
-            base["workflows"]["auto_sync_on_change"] = True
-            store.write_base(base)
+            cfg = default_config()
+            cfg["runtime"]["workflows"]["auto_mine"] = True
+            cfg["runtime"]["workflows"]["auto_enable"] = True
+            cfg["runtime"]["workflows"]["min_occurrences"] = 2
+            cfg["runtime"]["workflows"]["allow_single_if_high_benefit"] = True
+            cfg["runtime"]["workflows"]["auto_sync_on_change"] = True
+            write_json(config_path(Path(home)), cfg)
 
             # Run 1: mine a candidate (count=1), but do not solidify yet.
             fake_hands_1 = _FakeHands([_mk_done_result(thread_id="t1")])

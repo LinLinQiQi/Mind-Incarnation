@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MI CompileValues",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "values_summary",
+    "decision_procedure"
+  ],
+  "properties": {
+    "version": { "type": "string", "enum": ["v1"] },
+    "values_summary": { "type": "array", "items": { "type": "string" } },
+    "decision_procedure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "mermaid"],
+      "properties": {
+        "summary": { "type": "string" },
+        "mermaid": { "type": "string" }
+      }
+    }
+  }
+}
+

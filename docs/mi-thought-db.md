@@ -242,7 +242,7 @@ Global (shared across projects):
 ### Memory Index (V1)
 
 - Claims are indexed as `kind=claim` (active, canonical only).
-- Cross-project recall can include claims only when `MindSpec.cross_project_recall.include_kinds` contains `"claim"` (default is conservative and may omit it).
+- Cross-project recall can include claims only when `config.runtime.cross_project_recall.include_kinds` contains `"claim"` (default is conservative and may omit it).
 
 V1 can still be "text-only recall" for most flows; the Thought DB is an extension implemented as:
 

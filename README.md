@@ -204,14 +204,14 @@ Note: `learned_changes` suggestions are always recorded in EvidenceLog (`kind=le
 
 Experimental: preference mining
 
-- If `MindSpec.preference_mining.auto_mine=true` (default), MI may call `mine_preferences` at LLM-judged checkpoints during `mi run` (including at run end) and may emit `kind=learn_suggested` after repeated occurrences (see `docs/mi-v1-spec.md`).
+- If `config.runtime.preference_mining.auto_mine=true` (default), MI may call `mine_preferences` at LLM-judged checkpoints during `mi run` (including at run end) and may emit `kind=learn_suggested` after repeated occurrences (see `docs/mi-v1-spec.md`).
 
 Experimental: Thought DB (atomic Claims + Nodes)
 
 MI can maintain an append-only "Thought DB" of atomic reusable `Claim`s (fact/preference/assumption/goal), with provenance that cites **EvidenceLog `event_id` only**.
 
-- If `MindSpec.thought_db.auto_mine=true` (default), MI may call `mine_claims` at checkpoints during `mi run` and records `kind=claim_mining`.
-- If `MindSpec.thought_db.auto_materialize_nodes=true` (default), MI may also materialize `Decision` / `Action` / `Summary` nodes at checkpoints (deterministic; no extra model calls) and records `kind=node_materialized`.
+- If `config.runtime.thought_db.auto_mine=true` (default), MI may call `mine_claims` at checkpoints during `mi run` and records `kind=claim_mining`.
+- If `config.runtime.thought_db.auto_materialize_nodes=true` (default), MI may also materialize `Decision` / `Action` / `Summary` nodes at checkpoints (deterministic; no extra model calls) and records `kind=node_materialized`.
 - Memory index: Thought DB `claim` / `node` items are also indexable for text recall. Default `cross_project_recall.include_kinds` is Thought-DB-first (`snapshot` / `workflow` / `claim` / `node`).
 - Claims are stored per project (and optionally global) and can be managed via CLI:
 
@@ -258,7 +258,7 @@ In `mi run`:
 
 - If an enabled workflow matches the task (`trigger.mode=task_contains`), MI injects it into the first batch input.
 - If a workflow is active, MI maintains a best-effort step cursor in `ProjectOverlay.workflow_run` (does not force step-by-step reporting).
-- If `MindSpec.workflows.auto_mine=true` (default), MI may call `suggest_workflow` at LLM-judged checkpoints during `mi run` (including at run end) and may solidify a repeated workflow.
+- If `config.runtime.workflows.auto_mine=true` (default), MI may call `suggest_workflow` at LLM-judged checkpoints during `mi run` (including at run end) and may solidify a repeated workflow.
 
 Create/edit workflows:
 

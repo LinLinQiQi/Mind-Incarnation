@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import unittest
 
 from mi.providers.llm import _extract_json

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import json
 import sys
@@ -6,8 +8,9 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+from mi.core.config import config_path, default_config
 from mi.core.paths import GlobalPaths, ProjectPaths
-from mi.core.storage import iter_jsonl
+from mi.core.storage import iter_jsonl, write_json
 from mi.memory.service import MemoryService
 from mi.memory.types import MemoryItem
 from mi.mindspec import MindSpecStore
@@ -15,6 +18,7 @@ from mi.providers.codex_runner import CodexRunResult
 from mi.providers.mind_errors import MindCallError
 from mi.runtime.runner import run_autopilot
 from mi.thoughtdb import ThoughtDbStore
+from mi.thoughtdb.operational_defaults import ensure_operational_defaults_claims_current
 from mi.thoughtdb.values import write_values_set_event
 
 
@@ -92,7 +96,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             rec = write_values_set_event(
                 home_dir=Path(home),
                 values_text=str(base.get("values_text") or ""),
-                compiled_mindspec=base,
+                compiled_values=base,
                 notes="test",
             )
             ev_id = str(rec.get("event_id") or "").strip()
@@ -159,13 +163,11 @@ class TestRunnerIntegrationFake(unittest.TestCase):
     def test_checkpoint_materializes_thoughtdb_nodes_without_extra_mind_calls(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             # Disable claim mining to keep this test focused (node materialization is deterministic).
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("thought_db", {})
-            base["thought_db"]["enabled"] = True
-            base["thought_db"]["auto_mine"] = False
-            base["thought_db"]["auto_materialize_nodes"] = True
-            store.write_base(base)
+            cfg = default_config()
+            cfg["runtime"]["thought_db"]["enabled"] = True
+            cfg["runtime"]["thought_db"]["auto_mine"] = False
+            cfg["runtime"]["thought_db"]["auto_materialize_nodes"] = True
+            write_json(config_path(Path(home)), cfg)
 
             fake_hands = _FakeHands([_mk_result(thread_id="t_nodes", last_message="All done.", command="ls")])
             fake_llm = _FakeLlm(
@@ -240,16 +242,13 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             cur_pid = pp.project_id
 
             # Force a single-item recall so ordering is observable.
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("cross_project_recall", {})
-            base["cross_project_recall"]["enabled"] = True
-            base["cross_project_recall"]["top_k"] = 1
-            base["cross_project_recall"]["exclude_current_project"] = False
-            base["cross_project_recall"]["prefer_current_project"] = True
-            base["cross_project_recall"].setdefault("triggers", {})
-            base["cross_project_recall"]["triggers"]["run_start"] = True
-            store.write_base(base)
+            cfg = default_config()
+            cfg["runtime"]["cross_project_recall"]["enabled"] = True
+            cfg["runtime"]["cross_project_recall"]["top_k"] = 1
+            cfg["runtime"]["cross_project_recall"]["exclude_current_project"] = False
+            cfg["runtime"]["cross_project_recall"]["prefer_current_project"] = True
+            cfg["runtime"]["cross_project_recall"]["triggers"]["run_start"] = True
+            write_json(config_path(Path(home)), cfg)
 
             mem = MemoryService(Path(home))
             mem.upsert_items(
@@ -419,11 +418,9 @@ class TestRunnerIntegrationFake(unittest.TestCase):
     def test_cross_project_recall_risk_signal_writes_evidence_event(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             # Avoid interactive prompting in this test.
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("violation_response", {})
-            base["violation_response"]["prompt_user_on_high_risk"] = False
-            store.write_base(base)
+            cfg = default_config()
+            cfg["runtime"]["violation_response"]["prompt_user_on_high_risk"] = False
+            write_json(config_path(Path(home)), cfg)
 
             # Seed a snapshot that should match the risk_signal query ("push: git push origin main").
             mem = MemoryService(Path(home))
@@ -728,11 +725,14 @@ class TestRunnerIntegrationFake(unittest.TestCase):
 
     def test_loop_guard_blocks_when_repeating_and_ask_when_uncertain_false(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("defaults", {})
-            base["defaults"]["ask_when_uncertain"] = False
-            store.write_base(base)
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            ensure_operational_defaults_claims_current(
+                home_dir=Path(home),
+                tdb=tdb,
+                desired_defaults={"refactor_intent": "behavior_preserving", "ask_when_uncertain": False},
+                mode="sync",
+            )
 
             fake_hands = _FakeHands(
                 [
@@ -811,13 +811,11 @@ class TestRunnerIntegrationFake(unittest.TestCase):
 
     def test_risk_prompt_triggers_only_for_configured_severities(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("violation_response", {})
-            base["violation_response"]["prompt_user_on_high_risk"] = True
-            base["violation_response"]["prompt_user_risk_severities"] = ["high"]
-            base["violation_response"]["prompt_user_respect_should_ask_user"] = True
-            store.write_base(base)
+            cfg = default_config()
+            cfg["runtime"]["violation_response"]["prompt_user_on_high_risk"] = True
+            cfg["runtime"]["violation_response"]["prompt_user_risk_severities"] = ["high"]
+            cfg["runtime"]["violation_response"]["prompt_user_respect_should_ask_user"] = True
+            write_json(config_path(Path(home)), cfg)
 
             fake_hands = _FakeHands(
                 [
@@ -876,13 +874,11 @@ class TestRunnerIntegrationFake(unittest.TestCase):
 
     def test_risk_prompt_skips_when_severity_not_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("violation_response", {})
-            base["violation_response"]["prompt_user_on_high_risk"] = True
-            base["violation_response"]["prompt_user_risk_severities"] = ["high", "critical"]
-            base["violation_response"]["prompt_user_respect_should_ask_user"] = True
-            store.write_base(base)
+            cfg = default_config()
+            cfg["runtime"]["violation_response"]["prompt_user_on_high_risk"] = True
+            cfg["runtime"]["violation_response"]["prompt_user_risk_severities"] = ["high", "critical"]
+            cfg["runtime"]["violation_response"]["prompt_user_respect_should_ask_user"] = True
+            write_json(config_path(Path(home)), cfg)
 
             fake_hands = _FakeHands(
                 [
@@ -1014,11 +1010,14 @@ class TestRunnerIntegrationFake(unittest.TestCase):
 
     def test_mind_error_decide_next_blocks_when_ask_when_uncertain_false(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("defaults", {})
-            base["defaults"]["ask_when_uncertain"] = False
-            store.write_base(base)
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            ensure_operational_defaults_claims_current(
+                home_dir=Path(home),
+                tdb=tdb,
+                desired_defaults={"refactor_intent": "behavior_preserving", "ask_when_uncertain": False},
+                mode="sync",
+            )
 
             fake_hands = _FakeHands([_mk_result(thread_id="t6", last_message="Still working.")])
             fake_llm = _FakeLlm(
@@ -1067,11 +1066,9 @@ class TestRunnerIntegrationFake(unittest.TestCase):
 
     def test_mind_error_risk_judge_falls_back_and_logs_risk_event(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("violation_response", {})
-            base["violation_response"]["prompt_user_on_high_risk"] = False
-            store.write_base(base)
+            cfg = default_config()
+            cfg["runtime"]["violation_response"]["prompt_user_on_high_risk"] = False
+            write_json(config_path(Path(home)), cfg)
 
             fake_hands = _FakeHands(
                 [
@@ -1143,11 +1140,14 @@ class TestRunnerIntegrationFake(unittest.TestCase):
 
     def test_mind_circuit_opens_and_skips_further_mind_calls(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base.setdefault("defaults", {})
-            base["defaults"]["ask_when_uncertain"] = False
-            store.write_base(base)
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            ensure_operational_defaults_claims_current(
+                home_dir=Path(home),
+                tdb=tdb,
+                desired_defaults={"refactor_intent": "behavior_preserving", "ask_when_uncertain": False},
+                mode="sync",
+            )
 
             fake_hands = _FakeHands([_mk_result(thread_id="t8", last_message="Should I proceed?")])
             fake_llm = _FakeLlm(

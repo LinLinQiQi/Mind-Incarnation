@@ -25,14 +25,14 @@ def write_values_set_event(
     *,
     home_dir: Path,
     values_text: str,
-    compiled_mindspec: dict[str, Any] | None,
+    compiled_values: dict[str, Any] | None,
     notes: str = "",
 ) -> dict[str, Any]:
     """Append a global ledger event for a values update and return the record (with event_id)."""
 
     payload: dict[str, Any] = {
         "values_text": str(values_text or ""),
-        "compiled_mindspec": compiled_mindspec if isinstance(compiled_mindspec, dict) else {},
+        "compiled_values": compiled_values if isinstance(compiled_values, dict) else {},
         "notes": str(notes or "").strip(),
     }
     return append_global_event(home_dir=home_dir, kind="values_set", payload=payload)
@@ -206,7 +206,7 @@ def upsert_raw_values_claim(
 def upsert_values_summary_node(
     *,
     tdb: ThoughtDbStore,
-    compiled_mindspec: dict[str, Any],
+    compiled_values: dict[str, Any],
     values_event_id: str,
     visibility: str = "global",
 ) -> str:
@@ -217,16 +217,16 @@ def upsert_values_summary_node(
     """
 
     ev_id = str(values_event_id or "").strip()
-    if not ev_id or not isinstance(compiled_mindspec, dict):
+    if not ev_id or not isinstance(compiled_values, dict):
         return ""
 
     vis = str(visibility or "global").strip()
     if vis not in ("private", "project", "global"):
         vis = "global"
 
-    vs = compiled_mindspec.get("values_summary") if isinstance(compiled_mindspec.get("values_summary"), list) else []
+    vs = compiled_values.get("values_summary") if isinstance(compiled_values.get("values_summary"), list) else []
     vs2 = [str(x).strip() for x in vs if str(x).strip()][:20]
-    dp = compiled_mindspec.get("decision_procedure") if isinstance(compiled_mindspec.get("decision_procedure"), dict) else {}
+    dp = compiled_values.get("decision_procedure") if isinstance(compiled_values.get("decision_procedure"), dict) else {}
     dp_summary = str(dp.get("summary") or "").strip() if isinstance(dp, dict) else ""
     dp_mermaid = str(dp.get("mermaid") or "").strip() if isinstance(dp, dict) else ""
 

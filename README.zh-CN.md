@@ -204,14 +204,14 @@ mi claim retract <claim_id> --cd /path/to/your/project --scope project
 
 实验性：偏好预测（preference mining）
 
-- 如果 `MindSpec.preference_mining.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `mine_preferences`，并在重复出现时输出 `kind=learn_suggested`（详见 `docs/mi-v1-spec.md`）。
+- 如果 `config.runtime.preference_mining.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `mine_preferences`，并在重复出现时输出 `kind=learn_suggested`（详见 `docs/mi-v1-spec.md`）。
 
 实验性：Thought DB（原子 Claim + Node）
 
 MI 可以维护一个追加写（append-only）的“Thought DB”，把可复用的原子 `Claim`（fact/preference/assumption/goal）沉淀下来，并且 provenance 只引用 **EvidenceLog 的 `event_id`**（便于审计和追溯）。
 
-- 如果 `MindSpec.thought_db.auto_mine=true`（默认），MI 会在 `mi run` 的 checkpoint 边界调用 `mine_claims`，并记录 `kind=claim_mining`。
-- 如果 `MindSpec.thought_db.auto_materialize_nodes=true`（默认），MI 也会在 checkpoint 边界把 `Decision` / `Action` / `Summary` 节点落盘（确定性；不增加额外模型调用），并记录 `kind=node_materialized`。
+- 如果 `config.runtime.thought_db.auto_mine=true`（默认），MI 会在 `mi run` 的 checkpoint 边界调用 `mine_claims`，并记录 `kind=claim_mining`。
+- 如果 `config.runtime.thought_db.auto_materialize_nodes=true`（默认），MI 也会在 checkpoint 边界把 `Decision` / `Action` / `Summary` 节点落盘（确定性；不增加额外模型调用），并记录 `kind=node_materialized`。
 - 记忆索引（memory index）：Thought DB 的 `claim` / `node` 都可以被索引用于文本召回。默认 `cross_project_recall.include_kinds` 是 Thought-DB-first（`snapshot` / `workflow` / `claim` / `node`）。
 - Claim/Edge 存储在项目级（以及可选的全局）目录中，可用 CLI 管理：
 
@@ -258,7 +258,7 @@ Workflow 是可复用流程，可以是**项目级（project-scoped）**或**全
 
 - 如果某个已启用 workflow 命中任务（`trigger.mode=task_contains`），MI 会把它注入到第一个 batch 的输入里。
 - 当 workflow 处于 active 状态时，MI 会在 `ProjectOverlay.workflow_run` 中维护一个 best-effort 的 step 指针（不会强制 step-by-step 汇报）。
-- 如果 `MindSpec.workflows.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `suggest_workflow`，并在重复出现时固化为 workflow。
+- 如果 `config.runtime.workflows.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `suggest_workflow`，并在重复出现时固化为 workflow。
 
 创建/编辑 workflow：
 

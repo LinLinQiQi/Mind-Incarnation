@@ -52,7 +52,7 @@ Non-goals for V1:
 
 ```mermaid
 flowchart TD
-  U[User task + values prompt] --> S[Load MindSpec + ProjectOverlay + Thought DB]
+  U[User task + values prompt] --> S[Load RuntimeConfig + ProjectOverlay + Thought DB]
   S --> I[Build light injection + task input]
   I --> C[Run Hands (free execution)]
   C --> T[Capture raw transcript + optional repo observation]
@@ -102,7 +102,7 @@ Thought DB context (always-on, deterministic, V1):
   - `pref_goal_claims`: other preference/goal claims (project first, then global), including pinned operational default claims (e.g., tags `mi:setting:ask_when_uncertain`, `mi:setting:refactor_intent`, `mi:testless_verification_strategy`)
   - `query_claims`: token-ranked active claims from project + global (excluding the above)
   - `edges`: a small set of reasoning/evolution edges among included claim ids
-- This context is passed to the `decide_next` prompt as `thought_db_context` and should be treated as canonical when deciding (including over `MindSpec.values_text` and any legacy learned text when conflicts arise).
+- This context is passed to the `decide_next` prompt as `thought_db_context` and should be treated as canonical when deciding (including over any raw values prompt text (`values:raw`) and any legacy learned text when conflicts arise).
 
 Loop/stuck guard (deterministic, V1):
 
@@ -209,12 +209,13 @@ Implementation: MI records a `check_plan` after each batch. To reduce latency/co
 
 MI uses the following internal prompts (all should return strict JSON):
 
-1) `compile_mindspec` (implemented)
-   - Input: user values/preferences prompt
-   - Output: `MindSpec` base with:
+1) `compile_values` (implemented; used by `mi init` / `mi values set`)
+   - Input: user values/preferences prompt text (`values_text`)
+   - Output: `compiled_values` with:
      - `values_summary` (concise)
      - `decision_procedure` (`summary` + Mermaid flowchart)
-     - concrete default knobs (interrupt/violation response/etc.)
+   - Notes:
+     - `compiled_values` is stored for provenance + human inspection. Runtime decisions rely on canonical Thought DB claims/nodes.
 
 2) `extract_evidence` (implemented)
    - Input: batch input MI sent to Hands, Hands provider hint (e.g., `codex|cli`), machine-extracted batch summary (incl. transcript event observation), and repo observation
@@ -265,7 +266,7 @@ MI uses the following internal prompts (all should return strict JSON):
    - Output: a minimal support set of `claim_id`s + short explanation + confidence. MI may materialize `depends_on(event_id -> claim_id)` edges when the target is an EvidenceLog `event_id`.
 
 14) `values_claim_patch` (implemented; on-demand; values -> Thought DB)
-   - Input: `values_text` + compiled MindSpec base + existing global values claims + allowed `event_id` list + allowed retract claim ids
+   - Input: `values_text` + `compiled_values` + existing global values claims + allowed `event_id` list + allowed retract claim ids
    - Output: a small patch of global preference/goal Claims (plus optional supersedes/same_as edges) and a list of old claim_ids to retract. Used by `mi init` / `mi values set` (explicit user action) to keep values canonical as Thought DB claims (tagged `values:base`), citing a `values_set` event_id for provenance.
 
 Planned (not required for V1 loop to function; can be added incrementally):
@@ -275,42 +276,34 @@ Planned (not required for V1 loop to function; can be added incrementally):
 
 ## Data Models (Minimal Schemas)
 
-### MindSpec (layered)
+### RuntimeConfig + ProjectOverlay (prompt context; historical name: "MindSpec")
 
-MindSpec is the merge of:
+In V1 code and schemas, the runtime knobs object passed into Mind prompts is historically named `mindspec_base`.
+It is **not** canonical for values/preferences (those live in Thought DB).
 
-- `base` (configuration knobs; **not** canonical for values or operational defaults)
-- `project_overlay` (project-specific defaults/state; may include derived mirrors of canonical preferences, e.g., a testless verification strategy)
+Prompt context is the merge of:
+
+- `runtime` (from `<home>/config.json`): operational knobs/budgets/feature switches
+- `project_overlay` (project-specific state under `projects/<project_id>/overlay.json`; may include derived mirrors of canonical preferences, e.g., a testless verification strategy)
 
 Canonical values/preferences are stored in Thought DB as preference/goal Claims (see "Thought DB context" and "Thought DB (Claims + Nodes)").
 Operational defaults (e.g., `ask_when_uncertain`, `refactor_intent`) are also stored canonically as Thought DB preference Claims tagged `mi:setting:*`.
 
 Notes (V1):
 
-- MI still uses a "compiled MindSpec" JSON shape as an **intermediate** (model output) for `mi values set` / `mi init`.
+- MI uses a `compiled_values` JSON shape (model output from `compile_values`) as an **intermediate** for `mi values set` / `mi init`.
 - `values_text` is persisted canonically as a raw values preference Claim tagged `values:raw` (audit) and is also present in the global `values_set` evidence event payload.
 - `values_summary` + `decision_procedure` are persisted canonically as a global Summary node tagged `values:summary` when compilation succeeds.
 - These compiled fields are excluded from runtime Mind prompts (sanitized) so the model relies on Thought DB claims instead of duplicating/contradicting value text.
 
 Runtime prompt hygiene (V1):
 
-- For runtime Mind prompt-pack calls, MI **sanitizes** `MindSpec.base` by redacting `values_text` / `values_summary` and clearing `defaults`, so the model relies on the canonical Thought DB context (Claims) for values/preferences and operational defaults.
+- Runtime Mind prompt-pack calls do not include raw values text, `values_summary`, or operational defaults. The model relies on canonical Thought DB context (Claims/Nodes) for values/preferences and defaults.
 
 Minimal shape:
 
 ```json
 {
-  "version": "v1",
-  "values_text": "string",
-  "values_summary": ["string"],
-  "decision_procedure": {
-    "summary": "string",
-    "mermaid": "string"
-  },
-  "defaults": {
-    "refactor_intent": "behavior_preserving",
-    "ask_when_uncertain": true
-  },
   "verification": {
     "no_tests_policy": "ask_once_per_project_then_remember"
   },
@@ -888,12 +881,15 @@ Notes:
 Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home ...`).
 
 - Global:
-  - `mindspec/base.json`
-  - `mindspec/learned.jsonl` (legacy; ignored by current MI versions)
+  - `config.json` (Mind/Hands providers + runtime knobs)
+  - `backups/config.json.<ts>.bak` + `backups/config.last_backup` (created by `mi config apply-template`; rollback uses the marker)
   - `global/evidence.jsonl` (global EvidenceLog for values + operational defaults lifecycle; provides stable `event_id` provenance for global preference/goal Claims)
+  - `global/transcripts/mind/*.jsonl` (optional; used for Mind calls outside a project, e.g., `mi values set`)
   - `thoughtdb/global/claims.jsonl` (global Claims)
   - `thoughtdb/global/edges.jsonl` (global Edges)
   - `thoughtdb/global/nodes.jsonl` (global Nodes)
+  - `mindspec/base.json` (legacy; not used by current MI versions)
+  - `mindspec/learned.jsonl` (legacy; ignored by current MI versions)
 - Project index (stable identity -> project_id mapping):
   - `projects/index.json`
 - Per project (keyed by a resolved `project_id`):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -82,6 +82,13 @@ class ThoughtDbView:
     superseded_ids: set[str]
     retracted_ids: set[str]
     retracted_node_ids: set[str]
+    # Lightweight indices to avoid repeatedly scanning large dicts in hot paths.
+    claims_by_tag: dict[str, set[str]] = field(default_factory=dict)
+    nodes_by_tag: dict[str, set[str]] = field(default_factory=dict)
+    edges_by_from: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    edges_by_to: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    claim_ids_by_asserted_ts_desc: list[str] = field(default_factory=list)
+    node_ids_by_asserted_ts_desc: list[str] = field(default_factory=list)
 
     def resolve_id(self, claim_id: str) -> str:
         return _follow_redirects(claim_id, self.redirects_same_as)
@@ -176,6 +183,26 @@ class ThoughtDbStore:
         self._home_dir = Path(home_dir).expanduser().resolve()
         self._project_paths = project_paths
         self._gp = GlobalPaths(home_dir=self._home_dir)
+        self._view_cache: dict[str, tuple[ThoughtDbView, tuple[tuple[int, int], tuple[int, int], tuple[int, int]]]] = {}
+
+    @property
+    def home_dir(self) -> Path:
+        return self._home_dir
+
+    def _scope_metas(self, scope: str) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+        def meta(p: Path) -> tuple[int, int]:
+            try:
+                st = p.stat()
+            except FileNotFoundError:
+                return 0, 0
+            except Exception:
+                return 0, 0
+            return int(getattr(st, "st_size", 0) or 0), int(getattr(st, "st_mtime_ns", 0) or 0)
+
+        sc = (scope or "project").strip()
+        if sc not in ("project", "global"):
+            sc = "project"
+        return meta(self._claims_path(sc)), meta(self._edges_path(sc)), meta(self._nodes_path(sc))
 
     def _claims_path(self, scope: str) -> Path:
         if scope == "global":
@@ -208,11 +235,17 @@ class ThoughtDbStore:
         if sc not in ("project", "global"):
             sc = "project"
 
+        metas = self._scope_metas(sc)
+        cached = self._view_cache.get(sc)
+        if cached and cached[1] == metas:
+            return cached[0]
+
         claims_path = self._claims_path(sc)
         edges_path = self._edges_path(sc)
         nodes_path = self._nodes_path(sc)
 
         claims_by_id: dict[str, dict[str, Any]] = {}
+        claims_by_tag: dict[str, set[str]] = {}
         retracted: set[str] = set()
 
         for obj in iter_jsonl(claims_path):
@@ -223,12 +256,18 @@ class ThoughtDbStore:
                 cid = str(obj.get("claim_id") or "").strip()
                 if cid:
                     claims_by_id[cid] = obj
+                    tags = obj.get("tags") if isinstance(obj.get("tags"), list) else []
+                    for t in tags:
+                        ts = str(t or "").strip()
+                        if ts:
+                            claims_by_tag.setdefault(ts, set()).add(cid)
             elif k == "claim_retract":
                 cid = str(obj.get("claim_id") or "").strip()
                 if cid:
                     retracted.add(cid)
 
         nodes_by_id: dict[str, dict[str, Any]] = {}
+        nodes_by_tag: dict[str, set[str]] = {}
         retracted_nodes: set[str] = set()
         for obj in iter_jsonl(nodes_path):
             if not isinstance(obj, dict):
@@ -238,12 +277,19 @@ class ThoughtDbStore:
                 nid = str(obj.get("node_id") or "").strip()
                 if nid:
                     nodes_by_id[nid] = obj
+                    tags = obj.get("tags") if isinstance(obj.get("tags"), list) else []
+                    for t in tags:
+                        ts = str(t or "").strip()
+                        if ts:
+                            nodes_by_tag.setdefault(ts, set()).add(nid)
             elif k == "node_retract":
                 nid = str(obj.get("node_id") or "").strip()
                 if nid:
                     retracted_nodes.add(nid)
 
         edges: list[dict[str, Any]] = []
+        edges_by_from: dict[str, list[dict[str, Any]]] = {}
+        edges_by_to: dict[str, list[dict[str, Any]]] = {}
         redirects: dict[str, str] = {}
         superseded: set[str] = set()
         for obj in iter_jsonl(edges_path):
@@ -255,23 +301,50 @@ class ThoughtDbStore:
             et = str(obj.get("edge_type") or "").strip()
             frm = str(obj.get("from_id") or "").strip()
             to = str(obj.get("to_id") or "").strip()
+            if frm:
+                edges_by_from.setdefault(frm, []).append(obj)
+            if to:
+                edges_by_to.setdefault(to, []).append(obj)
             if et == "same_as" and frm and to:
                 redirects[frm] = to
             if et == "supersedes" and frm and to:
                 superseded.add(frm)
 
         pid = self._project_id_for_scope(sc)
-        return ThoughtDbView(
+        # Precompute time-sorted ids for common retrieval patterns.
+        claim_ts: list[tuple[str, str]] = []
+        for cid, c in claims_by_id.items():
+            if not isinstance(c, dict):
+                continue
+            claim_ts.append((str(c.get("asserted_ts") or "").strip(), cid))
+        claim_ts.sort(key=lambda x: x[0], reverse=True)
+
+        node_ts: list[tuple[str, str]] = []
+        for nid, n in nodes_by_id.items():
+            if not isinstance(n, dict):
+                continue
+            node_ts.append((str(n.get("asserted_ts") or "").strip(), nid))
+        node_ts.sort(key=lambda x: x[0], reverse=True)
+
+        view = ThoughtDbView(
             scope=sc,
             project_id=pid,
             claims_by_id=claims_by_id,
             nodes_by_id=nodes_by_id,
             edges=edges,
+            claims_by_tag=claims_by_tag,
+            nodes_by_tag=nodes_by_tag,
+            edges_by_from=edges_by_from,
+            edges_by_to=edges_by_to,
+            claim_ids_by_asserted_ts_desc=[cid for _ts, cid in claim_ts if cid],
+            node_ids_by_asserted_ts_desc=[nid for _ts, nid in node_ts if nid],
             redirects_same_as=redirects,
             superseded_ids=superseded,
             retracted_ids=retracted,
             retracted_node_ids=retracted_nodes,
         )
+        self._view_cache[sc] = (view, metas)
+        return view
 
     def existing_signatures(self, *, scope: str) -> set[str]:
         v = self.load_view(scope=scope)

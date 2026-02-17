@@ -102,8 +102,11 @@ Thought DB context (always-on, deterministic, V1):
   - `nodes`: recent active canonical Thought DB nodes (`Decision` / `Action` / `Summary`), including the latest global values summary node (when present)
   - `values_claims`: active global preference/goal claims tagged `values:base` (canonical values)
   - `pref_goal_claims`: other preference/goal claims (project first, then global), including pinned operational default claims (e.g., tags `mi:setting:ask_when_uncertain`, `mi:setting:refactor_intent`, `mi:testless_verification_strategy`)
-  - `query_claims`: token-ranked active claims from project + global (excluding the above)
-  - `edges`: a small set of reasoning/provenance edges among included claim/node ids (and recent EvidenceLog `event_id`s for provenance)
+  - `query_claims`: query-seeded active claims (excluding the above), retrieved deterministically using:
+    - Memory text index (FTS) as a **candidate generator** (scoped to current project + global), using the compacted query tokens, and
+    - a conservative fallback token scan when memory search is unavailable/insufficient.
+    - Then a 1-hop edge expansion may add direct neighbor claims/nodes (`depends_on/supports/contradicts/derived_from/mentions/supersedes/same_as`) within the remaining budgets (active + valid only).
+  - `edges`: a small set of reasoning/provenance edges adjacent to included claim/node ids (and recent EvidenceLog `event_id`s for provenance)
 - This context is passed to the `decide_next` prompt as `thought_db_context` and should be treated as canonical when deciding (including over any raw values prompt text (`values:raw`) and any legacy learned text when conflicts arise).
 
 Loop/stuck guard (deterministic, V1):

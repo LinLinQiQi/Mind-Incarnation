@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ..memory.service import MemoryService
 from ..memory.text import tokenize_query, truncate
 from .store import ThoughtDbStore, ThoughtDbView
 from .values import VALUES_BASE_TAG, VALUES_RAW_TAG, VALUES_SUMMARY_TAG
 from .pins import PINNED_PREF_GOAL_TAGS
+from .retrieval import seed_ids_from_memory, expand_one_hop
 
 
 def _safe_list_str(items: Any, *, limit: int) -> list[str]:
@@ -148,6 +150,7 @@ def build_decide_next_thoughtdb_context(
     task: str,
     hands_last_message: str,
     recent_evidence: list[dict[str, Any]],
+    mem: MemoryService | None = None,
     max_nodes: int = 6,
     max_values_claims: int = 8,
     max_pref_goal_claims: int = 8,
@@ -156,75 +159,117 @@ def build_decide_next_thoughtdb_context(
 ) -> ThoughtDbContext:
     """Build a compact Thought DB context for decide_next (always-on, small budget)."""
 
+    t = str(as_of_ts or "").strip()
     q = _collect_query_text(task=task, hands_last_message=hands_last_message, recent_evidence=recent_evidence)
     tokens = tokenize_query(q, max_tokens=18)
+    q_compact = " ".join(tokens).strip()
 
     v_proj = tdb.load_view(scope="project")
     v_glob = tdb.load_view(scope="global")
+
+    seeds = None
+    seed_notes = ""
+    if q_compact and isinstance(mem, MemoryService):
+        seeds = seed_ids_from_memory(mem=mem, query_compact=q_compact, project_id=v_proj.project_id, candidate_k=50)
+        seed_notes = seeds.notes
+
+    def _claim_active_and_valid(view: ThoughtDbView, claim_id: str) -> bool:
+        cid = str(claim_id or "").strip()
+        if not cid:
+            return False
+        if cid in view.redirects_same_as:
+            return False
+        if view.claim_status(cid) != "active":
+            return False
+        c = view.claims_by_id.get(cid)
+        if not isinstance(c, dict):
+            return False
+        if t:
+            vf = c.get("valid_from")
+            vt = c.get("valid_to")
+            if isinstance(vf, str) and vf.strip() and vf.strip() > t:
+                return False
+            if isinstance(vt, str) and vt.strip() and t >= vt.strip():
+                return False
+        return True
+
+    def _node_active(view: ThoughtDbView, node_id: str) -> bool:
+        nid = str(node_id or "").strip()
+        if not nid:
+            return False
+        if nid in view.redirects_same_as:
+            return False
+        return view.node_status(nid) == "active"
 
     # Nodes: include a small set of recent/high-signal Decision/Action/Summary nodes so
     # decide_next can benefit from past decisions/steps without replaying the full transcript.
     nodes: list[dict[str, Any]] = []
     max_nodes_total = max(0, int(max_nodes))
+    included_node_ids: set[str] = set()
 
-    def _add_node(n: dict[str, Any], *, view: ThoughtDbView) -> None:
+    def _add_node_by_id(nid: str, *, view: ThoughtDbView) -> None:
         nonlocal nodes
         if len(nodes) >= max_nodes_total:
             return
+        n = view.nodes_by_id.get(nid)
+        if not isinstance(n, dict):
+            return
         nodes.append(_compact_node(n, view=view))
-
-    included_node_ids: set[str] = set()
+        included_node_ids.add(nid)
 
     # Always include the latest global values summary node (if present).
-    best_vs: dict[str, Any] | None = None
-    best_ts = ""
-    for n in v_glob.iter_nodes(include_inactive=False, include_aliases=False):
+    best_vs_id = ""
+    best_vs_ts = ""
+    for nid in sorted(v_glob.nodes_by_tag.get(VALUES_SUMMARY_TAG, set())):
+        if not _node_active(v_glob, nid):
+            continue
+        n = v_glob.nodes_by_id.get(nid)
         if not isinstance(n, dict):
             continue
         if str(n.get("node_type") or "").strip() != "summary":
             continue
-        tags = n.get("tags") if isinstance(n.get("tags"), list) else []
-        tagset = {str(x).strip() for x in tags if str(x).strip()}
-        if VALUES_SUMMARY_TAG not in tagset:
-            continue
         ts = str(n.get("asserted_ts") or "").strip()
-        if ts >= best_ts:
-            best_vs = n
-            best_ts = ts
-
-    if isinstance(best_vs, dict) and max_nodes_total > 0:
-        nid = str(best_vs.get("node_id") or "").strip()
-        if nid:
-            _add_node(best_vs, view=v_glob)
-            included_node_ids.add(nid)
+        if ts >= best_vs_ts:
+            best_vs_id = nid
+            best_vs_ts = ts
+    if best_vs_id and max_nodes_total > 0:
+        _add_node_by_id(best_vs_id, view=v_glob)
 
     # Include a few most recent project nodes (best-effort).
-    max_recent_project_nodes = 3
-    proj_nodes: list[tuple[str, dict[str, Any]]] = []
-    for n in v_proj.iter_nodes(include_inactive=False, include_aliases=False):
-        if not isinstance(n, dict):
-            continue
-        nid = str(n.get("node_id") or "").strip()
-        if not nid or nid in included_node_ids:
-            continue
-        ts = str(n.get("asserted_ts") or "").strip()
-        proj_nodes.append((ts, n))
-    proj_nodes.sort(key=lambda x: x[0], reverse=True)
-    for _ts, n in proj_nodes:
-        if len(nodes) >= max_nodes_total:
+    max_recent_project_nodes = min(3, max(0, max_nodes_total - len(nodes)))
+    recent_added = 0
+    for nid in v_proj.node_ids_by_asserted_ts_desc:
+        if recent_added >= max_recent_project_nodes:
             break
-        if len(included_node_ids) >= max_recent_project_nodes + (1 if best_vs else 0):
-            break
-        nid = str(n.get("node_id") or "").strip()
-        if not nid or nid in included_node_ids:
+        if nid in included_node_ids:
             continue
-        _add_node(n, view=v_proj)
-        included_node_ids.add(nid)
+        if not _node_active(v_proj, nid):
+            continue
+        _add_node_by_id(nid, view=v_proj)
+        recent_added += 1
 
-    # Fill remaining node budget with query-ranked nodes (project first, then global).
-    if tokens and len(nodes) < max_nodes_total:
-        scored_nodes: list[tuple[int, str, str, dict[str, Any], ThoughtDbView]] = []
-        for view, scope in ((v_proj, "project"), (v_glob, "global")):
+    # Query-ranked nodes: prefer Memory FTS seeds; fall back to token scanning.
+    if len(nodes) < max_nodes_total and seeds:
+        for nid in seeds.project_node_ids:
+            if len(nodes) >= max_nodes_total:
+                break
+            if nid in included_node_ids:
+                continue
+            if not _node_active(v_proj, nid):
+                continue
+            _add_node_by_id(nid, view=v_proj)
+        for nid in seeds.global_node_ids:
+            if len(nodes) >= max_nodes_total:
+                break
+            if nid in included_node_ids:
+                continue
+            if not _node_active(v_glob, nid):
+                continue
+            _add_node_by_id(nid, view=v_glob)
+
+    if len(nodes) < max_nodes_total and tokens:
+        scored_nodes: list[tuple[int, int, str, str, ThoughtDbView]] = []
+        for view, scope_rank in ((v_proj, 0), (v_glob, 1)):
             for n in view.iter_nodes(include_inactive=False, include_aliases=False):
                 if not isinstance(n, dict):
                     continue
@@ -239,156 +284,225 @@ def build_decide_next_thoughtdb_context(
                 if score <= 0:
                     continue
                 ts = str(n.get("asserted_ts") or "").strip()
-                scored_nodes.append((score, scope, ts, n, view))
+                scored_nodes.append((score, scope_rank, ts, nid, view))
 
-        scored_nodes.sort(
-            key=lambda x: (
-                -int(x[0]),
-                0 if x[1] == "project" else 1,
-                str(x[2] or ""),
-            ),
-            reverse=False,
-        )
+        scored_nodes.sort(key=lambda x: str(x[2] or ""), reverse=True)
+        scored_nodes.sort(key=lambda x: int(x[1]), reverse=False)
+        scored_nodes.sort(key=lambda x: -int(x[0]), reverse=False)
 
-        for _score, _scope, _ts, n, view in scored_nodes:
+        for _score, _rank, _ts, nid, view in scored_nodes:
             if len(nodes) >= max_nodes_total:
                 break
-            nid = str(n.get("node_id") or "").strip()
-            if not nid or nid in included_node_ids:
+            if nid in included_node_ids:
                 continue
-            _add_node(n, view=view)
-            included_node_ids.add(nid)
+            if not _node_active(view, nid):
+                continue
+            _add_node_by_id(nid, view=view)
 
-    # Values claims: always include a small set of active global preference/goal claims tagged as values:base.
-    values: list[dict[str, Any]] = []
-    values_raw: list[dict[str, Any]] = []
-    for c in v_glob.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
-        if not isinstance(c, dict):
+    # Values claims: active global preference/goal claims tagged as values:base.
+    values_claims: list[dict[str, Any]] = []
+    values_ids: set[str] = set()
+    vals: list[tuple[str, str]] = []  # (asserted_ts, claim_id)
+    for cid in v_glob.claims_by_tag.get(VALUES_BASE_TAG, set()):
+        if not _claim_active_and_valid(v_glob, cid):
             continue
-        tags = c.get("tags") if isinstance(c.get("tags"), list) else []
-        tagset = {str(x).strip() for x in tags if str(x).strip()}
-        if VALUES_BASE_TAG not in tagset:
+        c = v_glob.claims_by_id.get(cid)
+        if not isinstance(c, dict):
             continue
         ct = str(c.get("claim_type") or "").strip()
         if ct not in ("preference", "goal"):
             continue
-        values_raw.append(c)
+        vals.append((str(c.get("asserted_ts") or "").strip(), cid))
+    vals.sort(key=lambda x: x[0], reverse=True)
+    for _ts, cid in vals[: max(0, int(max_values_claims))]:
+        c = v_glob.claims_by_id.get(cid)
+        if not isinstance(c, dict):
+            continue
+        values_claims.append(_compact_claim(c, view=v_glob))
+        values_ids.add(cid)
 
-    # Sort by asserted_ts descending (RFC3339 string compare is ok for Zulu timestamps).
-    values_raw.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
-    for c in values_raw[: max(0, int(max_values_claims))]:
-        values.append(_compact_claim(c, view=v_glob))
-
-    values_ids = {str(c.get("claim_id") or "").strip() for c in values if isinstance(c, dict)}
-
-    # Canonical preference/goal claims beyond values:base: always include a small set so decisions
-    # do not depend on free-form learned text or query token luck.
-    pinned_raw: list[tuple[int, str, dict[str, Any], ThoughtDbView]] = []
+    # Canonical preference/goal claims beyond values:base.
+    pref_goal_claims: list[dict[str, Any]] = []
+    pref_goal_ids: set[str] = set()
     pinned_ids: set[str] = set()
+
     if PINNED_PREF_GOAL_TAGS:
+        pinned: list[tuple[int, str, str, ThoughtDbView]] = []
         for view, scope_rank in ((v_proj, 0), (v_glob, 1)):
-            for c in view.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
-                if not isinstance(c, dict):
-                    continue
-                ct = str(c.get("claim_type") or "").strip()
-                if ct not in ("preference", "goal"):
-                    continue
-                tags = c.get("tags") if isinstance(c.get("tags"), list) else []
-                tagset = {str(x).strip() for x in tags if str(x).strip()}
-                if not (tagset & PINNED_PREF_GOAL_TAGS):
-                    continue
-                cid = str(c.get("claim_id") or "").strip()
-                if not cid or cid in values_ids or cid in pinned_ids:
-                    continue
-                pinned_ids.add(cid)
-                pinned_raw.append((scope_rank, str(c.get("asserted_ts") or ""), c, view))
+            for tag in PINNED_PREF_GOAL_TAGS:
+                for cid in view.claims_by_tag.get(tag, set()):
+                    if cid in pinned_ids or cid in values_ids:
+                        continue
+                    if not _claim_active_and_valid(view, cid):
+                        continue
+                    c = view.claims_by_id.get(cid)
+                    if not isinstance(c, dict):
+                        continue
+                    ct = str(c.get("claim_type") or "").strip()
+                    if ct not in ("preference", "goal"):
+                        continue
+                    pinned_ids.add(cid)
+                    pinned.append((scope_rank, str(c.get("asserted_ts") or "").strip(), cid, view))
+        pinned.sort(key=lambda x: str(x[1] or ""), reverse=True)
+        pinned.sort(key=lambda x: int(x[0]), reverse=False)
+        for _rank, _ts, cid, view in pinned:
+            if len(pref_goal_claims) >= max(0, int(max_pref_goal_claims)):
+                break
+            c = view.claims_by_id.get(cid)
+            if not isinstance(c, dict):
+                continue
+            pref_goal_claims.append(_compact_claim(c, view=view))
+            pref_goal_ids.add(cid)
 
-    # Prefer project scope over global; newest-first within scope.
-    pinned_raw.sort(key=lambda x: str(x[1] or ""), reverse=True)
-    pinned_raw.sort(key=lambda x: int(x[0]), reverse=False)
-
-    pref_goal_raw: list[tuple[int, str, dict[str, Any], ThoughtDbView]] = []
-    for view, scope_rank in ((v_proj, 0), (v_glob, 1)):
-        for c in view.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
+    # Fill remaining pref/goal budget with recent preferences/goals (project first, then global).
+    for view in (v_proj, v_glob):
+        if len(pref_goal_claims) >= max(0, int(max_pref_goal_claims)):
+            break
+        for cid in view.claim_ids_by_asserted_ts_desc:
+            if len(pref_goal_claims) >= max(0, int(max_pref_goal_claims)):
+                break
+            if cid in values_ids or cid in pinned_ids or cid in pref_goal_ids:
+                continue
+            if not _claim_active_and_valid(view, cid):
+                continue
+            c = view.claims_by_id.get(cid)
             if not isinstance(c, dict):
                 continue
             ct = str(c.get("claim_type") or "").strip()
             if ct not in ("preference", "goal"):
                 continue
-            cid = str(c.get("claim_id") or "").strip()
-            if not cid or cid in values_ids or cid in pinned_ids:
-                continue
             tags = c.get("tags") if isinstance(c.get("tags"), list) else []
             tagset = {str(x).strip() for x in tags if str(x).strip()}
-            if VALUES_BASE_TAG in tagset:
+            if VALUES_BASE_TAG in tagset or VALUES_RAW_TAG in tagset:
                 continue
-            if VALUES_RAW_TAG in tagset:
+            pref_goal_claims.append(_compact_claim(c, view=view))
+            pref_goal_ids.add(cid)
+
+    # Query-ranked claims: prefer Memory FTS seeds; fall back to token scanning.
+    query_claims: list[dict[str, Any]] = []
+    included_claim_ids: set[str] = set(values_ids) | set(pref_goal_ids)
+
+    if seeds:
+        cands: list[tuple[int, str, str, ThoughtDbView]] = []
+        for cid in seeds.project_claim_ids:
+            if cid in included_claim_ids:
                 continue
-            pref_goal_raw.append((scope_rank, str(c.get("asserted_ts") or ""), c, view))
-
-    # Sort newest-first within scope; prefer project scope over global.
-    pref_goal_raw.sort(key=lambda x: str(x[1] or ""), reverse=True)
-    pref_goal_raw.sort(key=lambda x: int(x[0]), reverse=False)
-    pref_goal_claims: list[dict[str, Any]] = []
-    for _rank, _ts, c, view in pinned_raw:
-        if len(pref_goal_claims) >= max(0, int(max_pref_goal_claims)):
-            break
-        pref_goal_claims.append(_compact_claim(c, view=view))
-    for _rank, _ts, c, view in pref_goal_raw:
-        if len(pref_goal_claims) >= max(0, int(max_pref_goal_claims)):
-            break
-        pref_goal_claims.append(_compact_claim(c, view=view))
-
-    pref_goal_ids = {str(c.get("claim_id") or "").strip() for c in pref_goal_claims if isinstance(c, dict)}
-
-    # Query-ranked claims from project+global (excluding values already included).
-    scored: list[tuple[int, str, dict[str, Any], ThoughtDbView]] = []
-    for view, scope in ((v_proj, "project"), (v_glob, "global")):
-        for c in view.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
+            if not _claim_active_and_valid(v_proj, cid):
+                continue
+            c = v_proj.claims_by_id.get(cid)
             if not isinstance(c, dict):
                 continue
-            cid = str(c.get("claim_id") or "").strip()
-            if not cid or cid in values_ids or cid in pref_goal_ids:
+            tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+            tagset = {str(x).strip() for x in tags if str(x).strip()}
+            if VALUES_RAW_TAG in tagset:
+                continue
+            cands.append((0, str(c.get("asserted_ts") or "").strip(), cid, v_proj))
+        for cid in seeds.global_claim_ids:
+            if cid in included_claim_ids:
+                continue
+            if not _claim_active_and_valid(v_glob, cid):
+                continue
+            c = v_glob.claims_by_id.get(cid)
+            if not isinstance(c, dict):
                 continue
             tags = c.get("tags") if isinstance(c.get("tags"), list) else []
             tagset = {str(x).strip() for x in tags if str(x).strip()}
             if VALUES_RAW_TAG in tagset:
                 continue
-            text = str(c.get("text") or "").strip()
-            if not text:
+            cands.append((1, str(c.get("asserted_ts") or "").strip(), cid, v_glob))
+        cands.sort(key=lambda x: str(x[1] or ""), reverse=True)
+        cands.sort(key=lambda x: int(x[0]), reverse=False)
+        for _rank, _ts, cid, view in cands:
+            if len(query_claims) >= max(0, int(max_query_claims)):
+                break
+            if cid in included_claim_ids:
                 continue
-            score = _score_tokens(tokens, text=text)
-            if score <= 0:
+            c = view.claims_by_id.get(cid)
+            if not isinstance(c, dict):
                 continue
-            # Small boost for preferences/goals to keep the context value-driven.
-            ct = str(c.get("claim_type") or "").strip()
-            if ct in ("preference", "goal"):
-                score += 1
-            scored.append((score, scope, c, view))
+            query_claims.append(_compact_claim(c, view=view))
+            included_claim_ids.add(cid)
 
-    # Sort by score desc, then scope preference (project before global), then asserted_ts desc.
-    scored.sort(
-        key=lambda x: (
-            -int(x[0]),
-            0 if x[1] == "project" else 1,
-            str(x[2].get("asserted_ts") or ""),
-        ),
-        reverse=False,
-    )
+    # Token-based fallback (or filler when memory seeds are insufficient).
+    if len(query_claims) < max(0, int(max_query_claims)) and tokens:
+        scored: list[tuple[int, int, str, str, ThoughtDbView]] = []
+        for view, scope_rank in ((v_proj, 0), (v_glob, 1)):
+            for c in view.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=t):
+                if not isinstance(c, dict):
+                    continue
+                cid = str(c.get("claim_id") or "").strip()
+                if not cid or cid in included_claim_ids:
+                    continue
+                tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+                tagset = {str(x).strip() for x in tags if str(x).strip()}
+                if VALUES_RAW_TAG in tagset:
+                    continue
+                text = str(c.get("text") or "").strip()
+                if not text:
+                    continue
+                score = _score_tokens(tokens, text=text)
+                if score <= 0:
+                    continue
+                ct = str(c.get("claim_type") or "").strip()
+                if ct in ("preference", "goal"):
+                    score += 1
+                scored.append((score, scope_rank, str(c.get("asserted_ts") or "").strip(), cid, view))
 
-    query_claims: list[dict[str, Any]] = []
-    included_ids: set[str] = set(values_ids) | set(pref_goal_ids)
-    for score, _scope, c, view in scored[: max(0, int(max_query_claims)) * 3]:
-        cid = str(c.get("claim_id") or "").strip()
-        if not cid or cid in included_ids:
-            continue
-        included_ids.add(cid)
-        query_claims.append(_compact_claim(c, view=view))
-        if len(query_claims) >= max(0, int(max_query_claims)):
-            break
+        scored.sort(key=lambda x: str(x[2] or ""), reverse=True)
+        scored.sort(key=lambda x: int(x[1]), reverse=False)
+        scored.sort(key=lambda x: -int(x[0]), reverse=False)
 
-    # Include selected node ids for edge filtering.
-    included_ids |= set(included_node_ids)
+        for _score, _rank, _ts, cid, view in scored:
+            if len(query_claims) >= max(0, int(max_query_claims)):
+                break
+            if cid in included_claim_ids:
+                continue
+            c = view.claims_by_id.get(cid)
+            if not isinstance(c, dict):
+                continue
+            query_claims.append(_compact_claim(c, view=view))
+            included_claim_ids.add(cid)
+
+    # One-hop edge expansion: pull in direct neighbors (claims/nodes) within remaining budgets.
+    expand_notes = ""
+    rem_claims = max(0, int(max_query_claims) - len(query_claims))
+    rem_nodes = max(0, int(max_nodes_total) - len(nodes))
+    if rem_claims > 0 or rem_nodes > 0:
+        seed_ids = set(included_node_ids) | set(included_claim_ids)
+        exp = expand_one_hop(
+            v_proj=v_proj,
+            v_glob=v_glob,
+            seed_ids=seed_ids,
+            as_of_ts=t,
+            max_new_claims=rem_claims,
+            max_new_nodes=rem_nodes,
+            edge_types={"depends_on", "supports", "contradicts", "derived_from", "mentions", "supersedes", "same_as"},
+        )
+        expand_notes = exp.notes
+        for cid in exp.claim_ids:
+            if len(query_claims) >= max(0, int(max_query_claims)):
+                break
+            if cid in included_claim_ids:
+                continue
+            view = v_proj if cid in v_proj.claims_by_id else v_glob
+            if not _claim_active_and_valid(view, cid):
+                continue
+            c = view.claims_by_id.get(cid)
+            if not isinstance(c, dict):
+                continue
+            query_claims.append(_compact_claim(c, view=view))
+            included_claim_ids.add(cid)
+        for nid in exp.node_ids:
+            if len(nodes) >= max_nodes_total:
+                break
+            if nid in included_node_ids:
+                continue
+            view = v_proj if nid in v_proj.nodes_by_id else v_glob
+            if not _node_active(view, nid):
+                continue
+            _add_node_by_id(nid, view=view)
+
+    included_ids: set[str] = set(included_claim_ids) | set(included_node_ids)
 
     # Allow edges that reference recent EvidenceLog event_ids for provenance (`derived_from`, etc.).
     recent_event_ids: set[str] = set()
@@ -402,51 +516,53 @@ def build_decide_next_thoughtdb_context(
             break
     edge_allow_ids = set(included_ids) | set(recent_event_ids)
 
-    # Edges among included claims/nodes (small budget). Prefer "reasoning/provenance" edges.
+    # Edges among included claims/nodes (small budget).
     edge_types = {"depends_on", "supports", "contradicts", "derived_from", "mentions", "supersedes", "same_as"}
     edges: list[dict[str, Any]] = []
     seen_edges: set[str] = set()
 
-    def add_edges_from_view(view: ThoughtDbView, *, scope: str) -> None:
+    def _add_edges_from_view(view: ThoughtDbView) -> None:
         nonlocal edges
-        for e in view.edges:
+        for nid in sorted(edge_allow_ids):
             if len(edges) >= max(0, int(max_edges)):
-                break
-            if not isinstance(e, dict):
-                continue
-            if str(e.get("kind") or "").strip() != "edge":
-                continue
-            et = str(e.get("edge_type") or "").strip()
-            if et not in edge_types:
-                continue
-            frm = str(e.get("from_id") or "").strip()
-            to = str(e.get("to_id") or "").strip()
-            if not frm or not to:
-                continue
-
-            # Keep only edges among included ids (claims+nodes) and recent evidence event_ids.
-            if frm not in edge_allow_ids or to not in edge_allow_ids:
-                continue
-            key = f"{scope}:{et}:{frm}->{to}"
-            if key in seen_edges:
-                continue
-            seen_edges.add(key)
-            edges.append(_compact_edge(e, scope=scope))
+                return
+            adjacent = []
+            adjacent.extend([x for x in (view.edges_by_from.get(nid) or []) if isinstance(x, dict)])
+            adjacent.extend([x for x in (view.edges_by_to.get(nid) or []) if isinstance(x, dict)])
+            for e in adjacent:
+                if len(edges) >= max(0, int(max_edges)):
+                    return
+                if str(e.get("kind") or "").strip() != "edge":
+                    continue
+                et = str(e.get("edge_type") or "").strip()
+                if et not in edge_types:
+                    continue
+                frm = str(e.get("from_id") or "").strip()
+                to = str(e.get("to_id") or "").strip()
+                if not frm or not to:
+                    continue
+                if frm not in edge_allow_ids or to not in edge_allow_ids:
+                    continue
+                key = f"{view.scope}:{et}:{frm}->{to}"
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
+                edges.append(_compact_edge(e, scope=view.scope))
 
     # Prefer project edges first, then global.
-    add_edges_from_view(v_proj, scope="project")
-    add_edges_from_view(v_glob, scope="global")
+    _add_edges_from_view(v_proj)
+    _add_edges_from_view(v_glob)
 
     notes = (
-        f"tokens={len(tokens)} nodes={len(nodes)} values_claims={len(values)} pref_goal_claims={len(pref_goal_claims)} "
+        f"tokens={len(tokens)} nodes={len(nodes)} values_claims={len(values_claims)} pref_goal_claims={len(pref_goal_claims)} "
         f"query_claims={len(query_claims)} edges={len(edges)} budgets(values={max_values_claims} pref_goal={max_pref_goal_claims} "
-        f"query={max_query_claims} nodes={max_nodes} edges={max_edges})"
+        f"query={max_query_claims} nodes={max_nodes} edges={max_edges}) seed={seed_notes or '(none)'} expand={expand_notes or '(none)'}"
     )
     return ThoughtDbContext(
-        as_of_ts=as_of_ts,
+        as_of_ts=t,
         query=q,
         nodes=nodes,
-        values_claims=values,
+        values_claims=values_claims,
         pref_goal_claims=pref_goal_claims,
         query_claims=query_claims,
         edges=edges,

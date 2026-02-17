@@ -473,6 +473,7 @@ def run_autopilot(
     wf_global_store = GlobalWorkflowStore(GlobalPaths(home_dir=home))
     wf_registry = WorkflowRegistry(project_store=wf_store, global_store=wf_global_store)
     mem = MemoryFacade(home_dir=home, project_paths=project_paths, runtime_cfg=runtime_cfg)
+    mem.ensure_structured_ingested()
     tdb = ThoughtDbStore(home_dir=home, project_paths=project_paths)
     evw = EvidenceWriter(path=project_paths.evidence_log_path, run_id=new_run_id("run"))
 
@@ -1371,6 +1372,7 @@ def run_autopilot(
             task=task,
             hands_last_message="",
             recent_evidence=seg_evidence[-8:],
+            mem=mem.service,
         )
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = suggest_workflow_prompt(
@@ -1557,6 +1559,7 @@ def run_autopilot(
             task=task,
             hands_last_message="",
             recent_evidence=seg_evidence[-8:],
+            mem=mem.service,
         )
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = mine_preferences_prompt(
@@ -1748,6 +1751,7 @@ def run_autopilot(
             task=task,
             hands_last_message="",
             recent_evidence=seg_evidence[-8:],
+            mem=mem.service,
         )
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = mine_claims_prompt(
@@ -2157,6 +2161,7 @@ def run_autopilot(
             task=task,
             hands_last_message="",
             recent_evidence=segment_records[-8:],
+            mem=mem.service,
         )
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = checkpoint_decide_prompt(
@@ -2488,6 +2493,7 @@ def run_autopilot(
             task=task,
             hands_last_message=codex_last,
             recent_evidence=evidence_window,
+            mem=mem.service,
         )
         tdb_ctx_batch_obj = tdb_ctx_batch.to_prompt_obj()
 
@@ -2996,6 +3002,7 @@ def run_autopilot(
                 task=task,
                 hands_last_message=codex_last,
                 recent_evidence=evidence_window,
+                mem=mem.service,
             )
             tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
             checks_prompt2 = plan_min_checks_prompt(
@@ -3054,6 +3061,7 @@ def run_autopilot(
                 task=task,
                 hands_last_message=codex_last,
                 recent_evidence=evidence_window,
+                mem=mem.service,
             )
             tdb_ctx_tls_obj = tdb_ctx_tls.to_prompt_obj()
             checks_prompt_tls = plan_min_checks_prompt(
@@ -3134,6 +3142,7 @@ def run_autopilot(
             task=task,
             hands_last_message=codex_last,
             recent_evidence=evidence_window,
+            mem=mem.service,
         )
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         tdb_ctx_summary = {
@@ -3303,6 +3312,7 @@ def run_autopilot(
                     task=task,
                     hands_last_message=q,
                     recent_evidence=evidence_window,
+                    mem=mem.service,
                 )
                 tdb_ctx_aa_obj = tdb_ctx_aa.to_prompt_obj()
                 aa_prompt2 = auto_answer_to_codex_prompt(
@@ -3391,6 +3401,7 @@ def run_autopilot(
                     task=task,
                     hands_last_message=q,
                     recent_evidence=evidence_window,
+                    mem=mem.service,
                 )
                 tdb_ctx_aa2_obj = tdb_ctx_aa2.to_prompt_obj()
                 aa_prompt3 = auto_answer_to_codex_prompt(
@@ -3497,6 +3508,7 @@ def run_autopilot(
                 task=task,
                 hands_last_message=codex_last,
                 recent_evidence=evidence_window,
+                mem=mem.service,
             )
             tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
             tdb_ctx2_summary = {

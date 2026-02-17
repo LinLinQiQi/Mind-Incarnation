@@ -109,6 +109,21 @@ class MemoryFacade:
         self._recall_cfg = CrossProjectRecallConfig.from_runtime_config(runtime_cfg if isinstance(runtime_cfg, dict) else {})
         self._mem = MemoryService(self._home_dir)
         self._last_recall_key = ""
+        self._structured_ingested = False
+
+    @property
+    def service(self) -> MemoryService:
+        return self._mem
+
+    def ensure_structured_ingested(self) -> None:
+        """Ingest structured sources into the index once per MI run (best-effort)."""
+        if self._structured_ingested:
+            return
+        try:
+            self._mem.ingest_structured()
+        except Exception:
+            pass
+        self._structured_ingested = True
 
     def maybe_cross_project_recall(self, *, batch_id: str, reason: str, query: str, thread_id: str) -> RecallOutcome | None:
         if not self._recall_cfg.should_trigger(reason):
@@ -130,7 +145,7 @@ class MemoryFacade:
         self._last_recall_key = key
 
         # Ingest small structured stores (workflows/claims) before querying.
-        self._mem.ingest_structured()
+        self.ensure_structured_ingested()
 
         exclude_pid = self._project_paths.project_id if self._recall_cfg.exclude_current_project else ""
         # Fetch more candidates and re-rank to prefer current project/global items.

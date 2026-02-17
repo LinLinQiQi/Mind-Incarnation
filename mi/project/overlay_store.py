@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any
 
 from ..core.paths import ProjectPaths, project_identity
-from ..core.storage import read_json, write_json
+from ..core.storage import read_json_best_effort, write_json_atomic
 
 
-def load_project_overlay(*, home_dir: Path, project_root: Path) -> dict[str, Any]:
+def load_project_overlay(*, home_dir: Path, project_root: Path, warnings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Load (and forward-fill) the per-project overlay.json store.
 
     Overlay is project-scoped state (hands thread id, workflow cursor, host bindings, etc.).
@@ -15,7 +15,7 @@ def load_project_overlay(*, home_dir: Path, project_root: Path) -> dict[str, Any
     """
 
     project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
-    overlay = read_json(project_paths.overlay_path, default=None)
+    overlay = read_json_best_effort(project_paths.overlay_path, default=None, label="overlay", warnings=warnings)
     changed = False
     if overlay is None:
         overlay = {}
@@ -168,10 +168,10 @@ def load_project_overlay(*, home_dir: Path, project_root: Path) -> dict[str, Any
                 changed = True
 
     if changed:
-        write_json(project_paths.overlay_path, overlay)
+        write_json_atomic(project_paths.overlay_path, overlay)
     return overlay
 
 
 def write_project_overlay(*, home_dir: Path, project_root: Path, overlay: dict[str, Any]) -> None:
     project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
-    write_json(project_paths.overlay_path, overlay if isinstance(overlay, dict) else {})
+    write_json_atomic(project_paths.overlay_path, overlay if isinstance(overlay, dict) else {})

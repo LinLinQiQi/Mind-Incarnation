@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..core.storage import ensure_dir, now_rfc3339, read_json, write_json
+from ..core.storage import ensure_dir, now_rfc3339, read_json_best_effort, write_json_atomic
 from .store import render_workflow_markdown
 
 
@@ -109,13 +109,18 @@ def _manifest_path(binding: HostBinding) -> Path:
     return binding.generated_root / "manifest.json"
 
 
-def _load_manifest(binding: HostBinding) -> dict[str, Any]:
-    obj = read_json(_manifest_path(binding), default=None)
+def _load_manifest(binding: HostBinding, *, warnings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    obj = read_json_best_effort(
+        _manifest_path(binding),
+        default=None,
+        label=f"host_manifest:{binding.host}",
+        warnings=warnings,
+    )
     return obj if isinstance(obj, dict) else {}
 
 
 def _write_manifest(binding: HostBinding, obj: dict[str, Any]) -> None:
-    write_json(_manifest_path(binding), obj)
+    write_json_atomic(_manifest_path(binding), obj)
 
 
 def _safe_unlink(path: Path) -> None:
@@ -404,7 +409,13 @@ def _register_openclaw_skills(
     }
 
 
-def sync_host_binding(*, binding: HostBinding, project_id: str, workflows: list[dict[str, Any]]) -> dict[str, Any]:
+def sync_host_binding(
+    *,
+    binding: HostBinding,
+    project_id: str,
+    workflows: list[dict[str, Any]],
+    warnings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Write derived workflow artifacts into the host workspace (generated dir + optional registration)."""
 
     if not binding.enabled:
@@ -418,7 +429,7 @@ def sync_host_binding(*, binding: HostBinding, project_id: str, workflows: list[
     ensure_dir(workflows_dir)
 
     # Remove stale files from the previous run (only within generated dir).
-    prev = _load_manifest(binding)
+    prev = _load_manifest(binding, warnings=warnings)
     prev_files = prev.get("files") if isinstance(prev.get("files"), list) else []
     prev_paths: list[Path] = []
     for fp in prev_files:
@@ -539,10 +550,16 @@ def sync_host_binding(*, binding: HostBinding, project_id: str, workflows: list[
     }
 
 
-def sync_hosts_from_overlay(*, overlay: dict[str, Any], project_id: str, workflows: list[dict[str, Any]]) -> dict[str, Any]:
+def sync_hosts_from_overlay(
+    *,
+    overlay: dict[str, Any],
+    project_id: str,
+    workflows: list[dict[str, Any]],
+    warnings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     bindings = parse_host_bindings(overlay if isinstance(overlay, dict) else {})
     results: list[dict[str, Any]] = []
     for b in bindings:
-        results.append(sync_host_binding(binding=b, project_id=project_id, workflows=workflows))
+        results.append(sync_host_binding(binding=b, project_id=project_id, workflows=workflows, warnings=warnings))
     ok = all(bool(r.get("ok", False)) for r in results) if results else True
     return {"ok": ok, "results": results}

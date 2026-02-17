@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.paths import GlobalPaths, ProjectPaths
-from ..core.storage import ensure_dir, now_rfc3339, read_json, write_json
+from ..core.storage import ensure_dir, now_rfc3339, read_json, read_json_best_effort, write_json, write_json_atomic
 
 
 WORKFLOW_IR_VERSION = "v1"
@@ -439,8 +439,8 @@ def render_workflow_markdown(workflow: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def load_workflow_candidates(project_paths: ProjectPaths) -> dict[str, Any]:
-    obj = read_json(project_paths.workflow_candidates_path, default=None)
+def load_workflow_candidates(project_paths: ProjectPaths, *, warnings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    obj = read_json_best_effort(project_paths.workflow_candidates_path, default=None, label="workflow_candidates", warnings=warnings)
     if not isinstance(obj, dict):
         return {"version": "v1", "by_signature": {}}
     if "by_signature" not in obj or not isinstance(obj.get("by_signature"), dict):
@@ -457,4 +457,4 @@ def write_workflow_candidates(project_paths: ProjectPaths, obj: dict[str, Any]) 
         obj["version"] = "v1"
     if "by_signature" not in obj or not isinstance(obj.get("by_signature"), dict):
         obj["by_signature"] = {}
-    write_json(project_paths.workflow_candidates_path, obj)
+    write_json_atomic(project_paths.workflow_candidates_path, obj)

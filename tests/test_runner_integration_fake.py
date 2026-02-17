@@ -10,7 +10,7 @@ from pathlib import Path
 
 from mi.core.config import config_path, default_config
 from mi.core.paths import GlobalPaths, ProjectPaths
-from mi.core.storage import iter_jsonl, write_json
+from mi.core.storage import ensure_dir, iter_jsonl, write_json
 from mi.memory.service import MemoryService
 from mi.memory.types import MemoryItem
 from mi.providers.codex_runner import CodexRunResult
@@ -84,6 +84,66 @@ def _mk_result(*, thread_id: str, last_message: str, command: str = "") -> Codex
 
 
 class TestRunnerIntegrationFake(unittest.TestCase):
+    def test_run_records_state_corrupt_when_overlay_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            ensure_dir(pp.project_dir)
+            pp.overlay_path.write_text("{", encoding="utf-8")
+
+            fake_hands = _FakeHands([_mk_result(thread_id="t_corrupt", last_message="All done.", command="ls")])
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {
+                            "facts": ["ran ls"],
+                            "actions": [{"kind": "command", "detail": "ls"}],
+                            "results": ["ok"],
+                            "unknowns": [],
+                            "risk_signals": [],
+                        },
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="do something",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+            self.assertEqual(result.status, "done")
+
+            items = [x for x in iter_jsonl(result.evidence_log_path) if isinstance(x, dict) and x.get("kind") == "state_corrupt"]
+            self.assertTrue(items)
+            rec = items[0]
+            details = rec.get("items") if isinstance(rec.get("items"), list) else []
+            self.assertTrue(any(isinstance(it, dict) and it.get("label") == "overlay" for it in details))
+
     def test_run_does_not_auto_derive_values_claims(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             # Simulate a prior values_set event existing (e.g., from `mi init`) without derived claims.

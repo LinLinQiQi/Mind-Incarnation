@@ -21,7 +21,7 @@ from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
-from ..core.storage import append_jsonl, ensure_dir, now_rfc3339, read_json, write_json
+from ..core.storage import append_jsonl, ensure_dir, now_rfc3339, read_json_best_effort, write_json_atomic
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
 from ..workflows import (
     WorkflowStore,
@@ -420,6 +420,7 @@ def run_autopilot(
     home = Path(home_dir).expanduser().resolve() if home_dir else default_home_dir()
     cfg = load_config(home)
     runtime_cfg = cfg.get("runtime") if isinstance(cfg.get("runtime"), dict) else {}
+    state_warnings: list[dict[str, Any]] = []
 
     def _mindspec_base_runtime() -> dict[str, Any]:
         """Runtime knobs context for Mind prompts.
@@ -437,7 +438,7 @@ def run_autopilot(
 
     def _refresh_overlay_refs() -> None:
         nonlocal overlay, hands_state, workflow_run
-        overlay = load_project_overlay(home_dir=home, project_root=project_path)
+        overlay = load_project_overlay(home_dir=home, project_root=project_path, warnings=state_warnings)
         if not isinstance(overlay, dict):
             overlay = {}
         hs = overlay.get("hands_state")
@@ -638,6 +639,22 @@ def run_autopilot(
 
     checkpoint_enabled = bool(wf_auto_mine or pref_auto_mine or tdb_auto_mine)
 
+    def _flush_state_warnings(*, batch_id: str = "b0.state_recovery") -> None:
+        if not state_warnings:
+            return
+        tid = str(thread_id or hands_state.get("thread_id") or "").strip()
+        items = list(state_warnings)
+        state_warnings.clear()
+        evw.append(
+            {
+                "kind": "state_corrupt",
+                "batch_id": str(batch_id or "b0.state_recovery"),
+                "ts": now_rfc3339(),
+                "thread_id": tid,
+                "items": items,
+            }
+        )
+
     segment_max_records = 40
     segment_state: dict[str, Any] = {}
     segment_records: list[dict[str, Any]] = []
@@ -661,7 +678,12 @@ def run_autopilot(
         }
 
     def _load_segment_state(*, thread_hint: str) -> dict[str, Any] | None:
-        obj = read_json(project_paths.segment_state_path, default=None)
+        obj = read_json_best_effort(
+            project_paths.segment_state_path,
+            default=None,
+            label="segment_state",
+            warnings=state_warnings,
+        )
         if not isinstance(obj, dict):
             return None
         if str(obj.get("version") or "") != "v1":
@@ -687,7 +709,7 @@ def run_autopilot(
             recs2 = segment_state.get("records")
             if isinstance(recs2, list) and len(recs2) > segment_max_records:
                 segment_state["records"] = recs2[-segment_max_records:]
-            write_json(project_paths.segment_state_path, segment_state)
+            write_json_atomic(project_paths.segment_state_path, segment_state)
         except Exception:
             return
 
@@ -715,6 +737,7 @@ def run_autopilot(
             segment_records.append(evidence_window[-1])
             segment_records[:] = segment_records[-segment_max_records:]
         _persist_segment_state()
+        _flush_state_warnings()
 
     intr = runtime_cfg.get("interrupt") if isinstance(runtime_cfg.get("interrupt"), dict) else {}
     intr_mode = str(intr.get("mode") or "off")
@@ -1423,7 +1446,7 @@ def run_autopilot(
         except Exception:
             conf_f = 0.0
 
-        candidates = load_workflow_candidates(project_paths)
+        candidates = load_workflow_candidates(project_paths, warnings=state_warnings)
         by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
         entry = by_sig.get(signature)
         if not isinstance(entry, dict):
@@ -1453,6 +1476,7 @@ def run_autopilot(
         by_sig[signature] = entry
         candidates["by_signature"] = by_sig
         write_workflow_candidates(project_paths, candidates)
+        _flush_state_warnings()
 
         existing_wid = str(entry.get("workflow_id") or "").strip()
         if existing_wid:
@@ -1510,7 +1534,12 @@ def run_autopilot(
         if auto_sync:
             effective = wf_registry.enabled_workflows_effective(overlay=overlay)
             effective = [{k: v for k, v in w.items() if k != "_mi_scope"} for w in effective if isinstance(w, dict)]
-            sync_obj = sync_hosts_from_overlay(overlay=overlay, project_id=project_paths.project_id, workflows=effective)
+            sync_obj = sync_hosts_from_overlay(
+                overlay=overlay,
+                project_id=project_paths.project_id,
+                workflows=effective,
+                warnings=state_warnings,
+            )
             evw.append(
                 {
                     "kind": "host_sync",
@@ -1521,6 +1550,7 @@ def run_autopilot(
                     "sync": sync_obj,
                 }
             )
+            _flush_state_warnings()
 
     def _mine_preferences_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
         nonlocal overlay
@@ -1597,7 +1627,7 @@ def run_autopilot(
         if not isinstance(sugs, list) or not sugs:
             return
 
-        candidates = load_preference_candidates(project_paths)
+        candidates = load_preference_candidates(project_paths, warnings=state_warnings)
         by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
 
         # Evidence provenance for preference claims (best-effort): cite recent segment events.
@@ -1717,6 +1747,7 @@ def run_autopilot(
 
         candidates["by_signature"] = by_sig
         write_preference_candidates(project_paths, candidates)
+        _flush_state_warnings()
 
     def _mine_claims_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
         """Mine high-signal atomic Claims into Thought DB (checkpoint-only; best-effort)."""
@@ -3679,6 +3710,9 @@ def run_autopilot(
         tdb.flush_snapshots_best_effort()
     except Exception:
         pass
+
+    # Best-effort: record any recovered/corrupt state files that were quarantined during this run.
+    _flush_state_warnings()
 
     return AutopilotResult(
         status=status,

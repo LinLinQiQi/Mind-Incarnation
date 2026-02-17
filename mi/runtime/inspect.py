@@ -55,6 +55,16 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
     detail = ""
     if kind in ("codex_input", "hands_input"):
         detail = _truncate(str(obj.get("input") or "").strip().replace("\n", "\\n"), limit)
+    elif kind == "state_corrupt":
+        items = obj.get("items") if isinstance(obj.get("items"), list) else []
+        labels: list[str] = []
+        for it in items:
+            if isinstance(it, dict):
+                lab = str(it.get("label") or "").strip()
+                if lab:
+                    labels.append(lab)
+        label_s = ",".join(sorted(set(labels))[:6])
+        detail = f"n={len(items)}" + (f" labels={label_s}" if label_s else "")
     elif kind == "decide_next":
         st = str(obj.get("status") or "")
         na = str(obj.get("next_action") or "")

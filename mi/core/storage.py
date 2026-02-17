@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -58,3 +59,86 @@ def atomic_write_json(path: Path, obj: Any) -> None:
     """Write JSON to `path` atomically (best-effort, no fsync)."""
 
     atomic_write_text(path, json.dumps(obj, indent=2, sort_keys=True) + "\n")
+
+
+def write_json_atomic(path: Path, obj: Any) -> None:
+    """Write JSON via atomic replace (preferred for MI-owned state)."""
+
+    atomic_write_json(path, obj)
+
+
+def _filename_safe_ts(ts: str) -> str:
+    # RFC3339 -> filename-safe stamp (YYYYMMDDTHHMMSSZ)
+    return str(ts or "").replace("-", "").replace(":", "")
+
+
+def _quarantine_corrupt_file(path: Path) -> tuple[str, str]:
+    """Best-effort quarantine: rename `path` to `path.corrupt.<ts>[.<n>]`.
+
+    Returns (quarantined_to, error). If quarantine fails, quarantined_to is "".
+    """
+
+    p = Path(path).expanduser().resolve()
+    stamp = _filename_safe_ts(now_rfc3339())
+    base = Path(str(p) + f".corrupt.{stamp}")
+    dest = base
+    for i in range(1, 100):
+        if not dest.exists():
+            break
+        dest = Path(str(base) + f".{i}")
+    try:
+        p.rename(dest)
+        return str(dest), ""
+    except Exception as e:
+        return "", f"{type(e).__name__}: {e}"
+
+
+def read_json_best_effort(
+    path: Path,
+    default: Any = None,
+    *,
+    label: str = "",
+    warnings: list[dict[str, Any]] | None = None,
+) -> Any:
+    """Read JSON but tolerate corruption by quarantining and returning default.
+
+    This is intended for MI-owned *state* files (overlay/segment_state/candidates/manifest).
+    It is NOT used for user-authored config by default.
+    """
+
+    p = Path(path).expanduser().resolve()
+    try:
+        data = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return default
+    except Exception as e:
+        quarantined_to, qerr = _quarantine_corrupt_file(p)
+        item = {
+            "path": str(p),
+            "label": (str(label or "").strip() or p.name),
+            "error": f"{type(e).__name__}: {e}",
+            "quarantined_to": quarantined_to,
+            "quarantine_error": qerr,
+            "used_default": True,
+        }
+        if warnings is not None:
+            warnings.append(item)
+        print(f"[mi] state read failed; quarantined and continued. label={item['label']} path={item['path']}", file=sys.stderr)
+        return default
+
+    try:
+        return json.loads(data)
+    except Exception as e:
+        quarantined_to, qerr = _quarantine_corrupt_file(p)
+        item = {
+            "path": str(p),
+            "label": (str(label or "").strip() or p.name),
+            "error": f"{type(e).__name__}: {e}",
+            "quarantined_to": quarantined_to,
+            "quarantine_error": qerr,
+            "used_default": True,
+        }
+        if warnings is not None:
+            warnings.append(item)
+        print(f"[mi] state JSON corrupt; quarantined and continued. label={item['label']} path={item['path']}", file=sys.stderr)
+        return default

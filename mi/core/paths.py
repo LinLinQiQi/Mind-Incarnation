@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .storage import ensure_dir, now_rfc3339, read_json, write_json
+from .storage import ensure_dir, now_rfc3339, read_json_best_effort, write_json_atomic
 
 
 def default_home_dir() -> Path:
@@ -33,7 +33,7 @@ def project_index_path(home_dir: Path) -> Path:
 
 
 def _load_project_index(home_dir: Path) -> dict[str, str]:
-    obj = read_json(project_index_path(home_dir), default=None)
+    obj = read_json_best_effort(project_index_path(home_dir), default=None, label="project_index")
     if not isinstance(obj, dict):
         return {}
     # Preferred shape: {"version": "...", "by_identity": {...}}
@@ -59,7 +59,7 @@ def _load_project_index(home_dir: Path) -> dict[str, str]:
 def _write_project_index(home_dir: Path, mapping: dict[str, str]) -> None:
     path = project_index_path(home_dir)
     ensure_dir(path.parent)
-    write_json(path, {"version": "v1", "by_identity": dict(mapping)})
+    write_json_atomic(path, {"version": "v1", "by_identity": dict(mapping)})
 
 
 def _normalize_git_remote(url: str) -> str:
@@ -189,7 +189,7 @@ def _scan_for_existing_project_id(home_dir: Path, *, identity_key: str, root_pat
             overlay_path = d / "overlay.json"
             if not overlay_path.is_file():
                 continue
-            overlay = read_json(overlay_path, default=None)
+            overlay = read_json_best_effort(overlay_path, default=None, label="overlay")
             if not isinstance(overlay, dict):
                 continue
             if str(overlay.get("identity_key") or "").strip() == identity_key:
@@ -206,7 +206,7 @@ def _scan_for_existing_project_id(home_dir: Path, *, identity_key: str, root_pat
             overlay_path = d / "overlay.json"
             if not overlay_path.is_file():
                 continue
-            overlay = read_json(overlay_path, default=None)
+            overlay = read_json_best_effort(overlay_path, default=None, label="overlay")
             if not isinstance(overlay, dict):
                 continue
             if str(overlay.get("root_path") or "").strip() == root_path:
@@ -463,10 +463,7 @@ def load_project_selection(home_dir: Path) -> dict[str, object]:
     """Load the project selection registry (best-effort; never raises)."""
 
     path = project_selection_path(home_dir)
-    try:
-        obj = read_json(path, default=None)
-    except Exception:
-        obj = None
+    obj = read_json_best_effort(path, default=None, label="project_selection")
     if not isinstance(obj, dict):
         return _default_project_selection_obj()
 
@@ -487,8 +484,7 @@ def write_project_selection(home_dir: Path, obj: dict[str, object]) -> None:
     """Write the selection registry (best-effort)."""
 
     path = project_selection_path(home_dir)
-    ensure_dir(path.parent)
-    write_json(path, obj)
+    write_json_atomic(path, obj)
 
 
 def _selection_entry_for_root(home_dir: Path, project_root: Path) -> dict[str, object]:

@@ -473,6 +473,7 @@ Minimal shape:
 `evidence.jsonl` is append-only and may contain multiple record kinds:
 
 - `hands_input` (exact MI input + light injection sent to Hands for the batch; older logs may use `codex_input`)
+- `state_corrupt` (internal: an MI-owned JSON state file was unreadable/corrupt; MI quarantined it as `*.corrupt.<ts>` and continued with defaults; best-effort)
 - `defaults_claim_sync` (internal: ensured operational defaults exist as canonical global Thought DB preference Claims tagged `mi:setting:*`; records the seed/sync outcome for audit)
 - `EvidenceItem` (extracted summary per batch; includes a Mind transcript pointer for `extract_evidence`)
 - `mind_error` (a Mind prompt-pack call failed; includes schema/tag + error + best-effort transcript pointer)
@@ -932,6 +933,8 @@ Transcript archiving (optional): `mi gc transcripts` can gzip older transcripts 
 ```
 
 Thought DB compaction (optional): `mi gc thoughtdb` archives Thought DB JSONL files into `thoughtdb/archive/<ts>/` as `.gz`, then rewrites compacted JSONL files (still append-only from that point onward). It also deletes `view.snapshot.json` and rebuilds it on the next load.
+
+Crash-safe state (V1): MI writes MI-owned JSON state files using atomic replace (to avoid partial writes). If an MI-owned state file is unreadable/corrupt (e.g., JSON parse error), MI quarantines it as `*.corrupt.<ts>` and continues with defaults (best-effort). `mi run` records a `kind=state_corrupt` EvidenceLog record when this happens.
 
 ## CLI Usage (V1)
 

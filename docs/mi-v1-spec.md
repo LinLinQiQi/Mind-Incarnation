@@ -266,7 +266,7 @@ MI uses the following internal prompts (all should return strict JSON):
 
 14) `values_claim_patch` (implemented; on-demand; values -> Thought DB)
    - Input: `values_text` + compiled MindSpec base + existing global values claims + allowed `event_id` list + allowed retract claim ids
-   - Output: a small patch of global preference/goal Claims (plus optional supersedes/same_as edges) and a list of old claim_ids to retract. Used by `mi init` (and by `mi run` auto-migration when needed) to keep values canonical as Thought DB claims (tagged `values:base`), citing a `values_set` event_id for provenance.
+   - Output: a small patch of global preference/goal Claims (plus optional supersedes/same_as edges) and a list of old claim_ids to retract. Used by `mi init` / `mi values set` (explicit user action) to keep values canonical as Thought DB claims (tagged `values:base`), citing a `values_set` event_id for provenance.
 
 Planned (not required for V1 loop to function; can be added incrementally):
 
@@ -279,10 +279,18 @@ Planned (not required for V1 loop to function; can be added incrementally):
 
 MindSpec is the merge of:
 
-- `base` (user-authored values prompt + configuration knobs; not canonical at runtime for values or operational defaults)
+- `base` (configuration knobs; **not** canonical for values or operational defaults)
 - `project_overlay` (project-specific defaults/state; may include derived mirrors of canonical preferences, e.g., a testless verification strategy)
 
 Canonical values/preferences are stored in Thought DB as preference/goal Claims (see "Thought DB context" and "Thought DB (Claims + Nodes)").
+Operational defaults (e.g., `ask_when_uncertain`, `refactor_intent`) are also stored canonically as Thought DB preference Claims tagged `mi:setting:*`.
+
+Notes (V1):
+
+- MI still uses a "compiled MindSpec" JSON shape as an **intermediate** (model output) for `mi values set` / `mi init`.
+- `values_text` is persisted canonically as a raw values preference Claim tagged `values:raw` (audit) and is also present in the global `values_set` evidence event payload.
+- `values_summary` + `decision_procedure` are persisted canonically as a global Summary node tagged `values:summary` when compilation succeeds.
+- These compiled fields are excluded from runtime Mind prompts (sanitized) so the model relies on Thought DB claims instead of duplicating/contradicting value text.
 
 Runtime prompt hygiene (V1):
 
@@ -467,7 +475,7 @@ Minimal shape:
 `evidence.jsonl` is append-only and may contain multiple record kinds:
 
 - `hands_input` (exact MI input + light injection sent to Hands for the batch; older logs may use `codex_input`)
-- `defaults_claim_sync` (internal: ensured operational defaults are canonical global Thought DB preference Claims tagged `mi:setting:*`; records the sync outcome for audit)
+- `defaults_claim_sync` (internal: ensured operational defaults exist as canonical global Thought DB preference Claims tagged `mi:setting:*`; records the seed/sync outcome for audit)
 - `EvidenceItem` (extracted summary per batch; includes a Mind transcript pointer for `extract_evidence`)
 - `mind_error` (a Mind prompt-pack call failed; includes schema/tag + error + best-effort transcript pointer)
 - `mind_circuit` (Mind circuit breaker state change; V1 emits `state="open"` when it stops attempting further Mind calls)
@@ -494,6 +502,7 @@ Minimal shape:
 - `claim_retract` (user-driven append-only claim retraction via CLI)
 - `claim_supersede` (user-driven append-only claim update via CLI; implemented as new claim + supersedes edge)
 - `claim_same_as` (user-driven append-only claim de-duplication via CLI; implemented as same_as edge)
+- `settings_set` (user-driven operational settings change written by `mi settings set --scope project ...`; used for provenance of project-scoped setting claims)
 - `node_create` (user-driven append-only Thought DB node creation via CLI; Decision/Action/Summary)
 - `node_retract` (user-driven append-only Thought DB node retraction via CLI)
 - `edge_create` (user-driven append-only Thought DB edge creation via CLI)
@@ -846,6 +855,11 @@ V1 scope (implemented):
 - Append-only Claim + Edge stores (project + global)
 - Append-only Node store (project + global) for `Decision` / `Action` / `Summary` nodes
 - `source_refs` cite **EvidenceLog `event_id` only** (no direct references to external logs)
+- Values in Thought DB (canonical):
+  - Global EvidenceLog event `kind=values_set` (provenance anchor)
+  - Raw values preference Claim tagged `values:raw` (audit; excluded from runtime injection/recall)
+  - Derived preference/goal Claims tagged `values:base` (runtime; injected into Hands)
+  - Global Summary node tagged `values:summary` (human-facing; optional; append-only)
 - Checkpoint-only, high-threshold claim mining during `mi run` (no user prompts)
 - Deterministic checkpoint materialization of `Decision` / `Action` / `Summary` nodes during `mi run` (no extra model calls; best-effort; append-only)
 - Basic CLI management via `mi claim ...`, `mi node ...`, and `mi edge ...`
@@ -969,24 +983,34 @@ Notes:
 - If your CLI can output JSON events (e.g., "stream-json"/"json"), MI will parse them (best-effort) to improve evidence extraction, last-message detection, and session id extraction.
 - `thread_id_regex` is a fallback only: it extracts an id from raw text if no JSON session id is available.
 
-Initialize/compile MindSpec:
+Set values (canonical: Thought DB):
 
 ```bash
-mi --home ~/.mind-incarnation init --values "..."
+mi --home ~/.mind-incarnation values set --text "..."
+mi --home ~/.mind-incarnation init --values "..."  # legacy alias
+mi --home ~/.mind-incarnation values show
 ```
 
-Common init flags:
+Common value flags (`mi init` / `mi values set`):
 
 - `--show`: print `values_summary` and `decision_procedure` after compiling
-- `--dry-run`: compile and print, but do not write `mindspec/base.json`
-- `--no-compile`: skip model compilation and write defaults + `values_text` only
+- `--dry-run`: compile and print, but do not write Thought DB
+- `--no-compile`: skip model compilation and record `values_set` + raw values only (no derived values claims)
 - `--no-values-claims`: skip migrating values into global Thought DB preference/goal Claims
 
 Notes:
 
-- `mi init` appends a global EvidenceLog `values_set` event under `global/evidence.jsonl` (so global value claims can cite stable `event_id` provenance).
-- Unless `--no-compile` or `--no-values-claims` is set, `mi init` also calls `values_claim_patch` and applies it into `thoughtdb/global/*` as preference/goal Claims tagged `values:base`.
-- `mi run` may append a global EvidenceLog `mi_defaults_set` event under `global/evidence.jsonl` when syncing operational defaults (e.g., `ask_when_uncertain` / `refactor_intent`) into canonical global Thought DB preference Claims tagged `mi:setting:*`.
+- `mi init` / `mi values set` appends a global EvidenceLog `values_set` event under `global/evidence.jsonl` so global value claims can cite stable `event_id` provenance.
+- It also writes a raw values preference Claim tagged `values:raw` (audit). When compilation succeeds (i.e., not `--no-compile`), it also writes a global Summary node tagged `values:summary` (human-facing).
+- Unless `--no-compile` or `--no-values-claims` is set, it calls `values_claim_patch` and applies it into `thoughtdb/global/*` as preference/goal Claims tagged `values:base`.
+- `mi run` may append a global EvidenceLog `mi_defaults_set` event under `global/evidence.jsonl` when seeding missing operational defaults into canonical global Thought DB preference Claims tagged `mi:setting:*` (it does not continuously sync from MindSpec defaults).
+- Use `mi settings ...` to inspect/update operational settings:
+
+```bash
+mi --home ~/.mind-incarnation settings show --cd <project_root>
+mi --home ~/.mind-incarnation settings set --ask-when-uncertain ask --refactor-intent behavior_preserving
+mi --home ~/.mind-incarnation settings set --scope project --cd <project_root> --ask-when-uncertain proceed
+```
 
 Run batch autopilot:
 

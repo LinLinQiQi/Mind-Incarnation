@@ -8,6 +8,7 @@ from .text import truncate
 from .types import MemoryGroup, MemoryItem
 from ..core.paths import GlobalPaths, ProjectPaths
 from ..core.storage import iter_jsonl, now_rfc3339, read_json
+from ..thoughtdb.values import VALUES_RAW_TAG
 from ..workflows import render_workflow_markdown
 
 
@@ -66,6 +67,11 @@ def _active_claim_items_for_paths(*, claims_path: Path, edges_path: Path, scope:
         ct = str(c.get("claim_type") or "").strip()
         text = str(c.get("text") or "").strip()
         if not text:
+            continue
+        # Raw values prompts are stored for audit; don't surface them via cross-project recall.
+        tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+        tagset = {str(x).strip() for x in tags if str(x).strip()}
+        if VALUES_RAW_TAG in tagset:
             continue
 
         ts = str(c.get("asserted_ts") or "").strip() or now_rfc3339()

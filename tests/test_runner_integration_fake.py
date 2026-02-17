@@ -81,14 +81,14 @@ def _mk_result(*, thread_id: str, last_message: str, command: str = "") -> Codex
 
 
 class TestRunnerIntegrationFake(unittest.TestCase):
-    def test_values_claim_migration_reuses_last_values_set_event_id(self) -> None:
+    def test_run_does_not_auto_migrate_values_claims_from_mindspec(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             store = MindSpecStore(home_dir=home)
             base = store.load_base()
             base["values_text"] = "Prefer minimal questions; avoid unnecessary prompts."
             store.write_base(base)
 
-            # Simulate `mi init` recording a global values_set event but not writing value claims yet.
+            # Simulate a prior values_set event existing (e.g., from `mi init`) without derived claims.
             rec = write_values_set_event(
                 home_dir=Path(home),
                 values_text=str(base.get("values_text") or ""),
@@ -101,29 +101,6 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             fake_hands = _FakeHands([_mk_result(thread_id="t_vals", last_message="All done.", command="ls")])
             fake_llm = _FakeLlm(
                 {
-                    # Values migration during run start (must cite the existing values_set event_id).
-                    "values_claim_patch.json": [
-                        {
-                            "claims": [
-                                {
-                                    "local_id": "c1",
-                                    "claim_type": "preference",
-                                    "text": "Prefer minimal questions; avoid unnecessary prompts.",
-                                    "scope": "global",
-                                    "visibility": "global",
-                                    "valid_from": None,
-                                    "valid_to": None,
-                                    "confidence": 0.95,
-                                    "source_event_ids": [],
-                                    "tags": [],
-                                    "notes": "",
-                                }
-                            ],
-                            "edges": [],
-                            "retract_claim_ids": [],
-                            "notes": "",
-                        }
-                    ],
                     "extract_evidence.json": [
                         {
                             "facts": ["ran ls"],
@@ -169,23 +146,15 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             )
             self.assertEqual(result.status, "done")
 
-            # Global ledger should NOT get a duplicate values_set event during auto-migration.
+            # Global ledger should NOT get a duplicate values_set event.
             gp = GlobalPaths(home_dir=Path(home))
             values_set = [x for x in iter_jsonl(gp.global_evidence_log_path) if isinstance(x, dict) and x.get("kind") == "values_set"]
             self.assertEqual(len(values_set), 1)
             self.assertEqual(str(values_set[0].get("event_id") or "").strip(), ev_id)
 
-            # Project EvidenceLog should record the migration and reference the reused values_event_id.
-            found = False
-            for obj in iter_jsonl(result.evidence_log_path):
-                if not isinstance(obj, dict):
-                    continue
-                if obj.get("kind") != "values_claim_patch":
-                    continue
-                self.assertEqual(str(obj.get("values_event_id") or "").strip(), ev_id)
-                found = True
-                break
-            self.assertTrue(found)
+            # Project EvidenceLog should NOT record a values migration (run no longer auto-migrates).
+            found = any(isinstance(obj, dict) and obj.get("kind") == "values_claim_patch" for obj in iter_jsonl(result.evidence_log_path))
+            self.assertFalse(found)
 
     def test_checkpoint_materializes_thoughtdb_nodes_without_extra_mind_calls(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:

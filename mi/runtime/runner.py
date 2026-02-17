@@ -20,7 +20,6 @@ from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_check
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
-from .prompts import values_claim_patch_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from ..core.storage import append_jsonl, ensure_dir, now_rfc3339, read_json, write_json
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
@@ -38,11 +37,9 @@ from ..workflows.hosts import sync_hosts_from_overlay
 from ..memory.facade import MemoryFacade
 from ..memory.ingest import thoughtdb_node_item
 from .evidence import EvidenceWriter, new_run_id
-from ..thoughtdb.global_ledger import iter_global_events
 from ..thoughtdb.context import build_decide_next_thoughtdb_context
 from .injection import build_light_injection
 from ..thoughtdb import ThoughtDbStore, claim_signature
-from ..thoughtdb.values import apply_values_claim_patch, existing_values_claims, write_values_set_event
 from ..thoughtdb.operational_defaults import ensure_operational_defaults_claims_current, resolve_operational_defaults
 from ..thoughtdb.pins import TESTLESS_STRATEGY_TAG
 
@@ -1142,119 +1139,6 @@ def run_autopilot(
         _segment_add(rec)
         _persist_segment_state()
 
-    def _ensure_values_claims_current() -> None:
-        """Ensure canonical values exist as global Thought DB preference/goal Claims.
-
-        Strict Thought DB mode treats values/preferences claims as canonical. To reduce user burden,
-        MI will auto-migrate `mindspec/base.json.values_text` into global values claims when:
-        - no values claims exist yet, or
-        - the last recorded global values_set text differs from current values_text.
-        """
-
-        values_text = str((loaded.base.get("values_text") or "") if isinstance(loaded.base, dict) else "").strip()
-        if not values_text:
-            return
-
-        # Detect whether values claims already exist.
-        existing0 = existing_values_claims(tdb=tdb, limit=2)
-
-        # Compare to last global values_set event payload (best-effort).
-        last_text = ""
-        last_event_id = ""
-        for ev in iter_global_events(home_dir=home):
-            if not isinstance(ev, dict):
-                continue
-            if str(ev.get("kind") or "").strip() != "values_set":
-                continue
-            payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
-            last_text = str(payload.get("values_text") or "")
-            last_event_id = str(ev.get("event_id") or "").strip()
-
-        if existing0 and last_text.strip() == values_text:
-            return
-
-        # Prefer reusing the last values_set event_id when it matches current values_text.
-        # This avoids spamming global/evidence.jsonl when claims are missing but values were
-        # already recorded by `mi init` (e.g., init --no-compile).
-        values_event_id = last_event_id if (last_text.strip() == values_text and last_event_id) else ""
-        if not values_event_id:
-            values_ev = write_values_set_event(
-                home_dir=home,
-                values_text=values_text,
-                compiled_mindspec=loaded.base if isinstance(loaded.base, dict) else {},
-                notes="auto_migrate_on_run",
-            )
-            values_event_id = str(values_ev.get("event_id") or "").strip()
-        if not values_event_id:
-            return
-
-        existing = existing_values_claims(tdb=tdb, limit=120)
-        retractable_ids = [str(c.get("claim_id") or "").strip() for c in existing if isinstance(c, dict) and str(c.get("claim_id") or "").strip()]
-
-        prompt = values_claim_patch_prompt(
-            values_text=values_text,
-            compiled_mindspec=loaded.base if isinstance(loaded.base, dict) else {},
-            existing_values_claims=existing,
-            allowed_event_ids=[values_event_id],
-            allowed_retract_claim_ids=retractable_ids,
-            notes="auto migrate values -> Thought DB claims during mi run",
-        )
-        patch_obj, mind_ref, state = _mind_call(
-            schema_filename="values_claim_patch.json",
-            prompt=prompt,
-            tag="values_claim_patch:auto",
-            batch_id="b0.values_claim_patch",
-        )
-
-        ok = False
-        applied: dict[str, Any] = {"written": [], "linked_existing": [], "written_edges": [], "skipped": []}
-        retracted: list[str] = []
-        err = ""
-        if patch_obj is None:
-            err = "mind_error" if state == "error" else "mind_circuit_open"
-        else:
-            tcfg = loaded.base.get("thought_db") if isinstance(loaded.base.get("thought_db"), dict) else {}
-            try:
-                min_conf = float(tcfg.get("min_confidence", 0.9) or 0.9)
-            except Exception:
-                min_conf = 0.9
-            try:
-                base_max = int(tcfg.get("max_claims_per_checkpoint", 6) or 6)
-            except Exception:
-                base_max = 6
-            max_claims = max(8, min(20, base_max * 2))
-
-            try:
-                res = apply_values_claim_patch(
-                    tdb=tdb,
-                    patch_obj=patch_obj if isinstance(patch_obj, dict) else {},
-                    values_event_id=values_event_id,
-                    min_confidence=min_conf,
-                    max_claims=max_claims,
-                )
-                ok = bool(res.ok)
-                applied = res.applied if isinstance(res.applied, dict) else applied
-                retracted = list(res.retracted or [])
-            except Exception as e:
-                err = f"{type(e).__name__}: {e}"
-
-        # Record for audit in the project EvidenceLog.
-        evw.append(
-            {
-                "kind": "values_claim_patch",
-                "batch_id": "b0.values_claim_patch",
-                "ts": now_rfc3339(),
-                "thread_id": "",
-                "state": state,
-                "mind_transcript_ref": mind_ref,
-                "values_event_id": values_event_id,
-                "ok": ok,
-                "error": _truncate(err, 600),
-                "applied": applied,
-                "retracted": retracted,
-            }
-        )
-
     _TLS_PREFIX = "When this project has no tests, use this verification strategy:"
 
     def _testless_strategy_claim_text(strategy: str) -> str:
@@ -1422,11 +1306,18 @@ def run_autopilot(
         )
 
     # Canonical operational defaults (ask_when_uncertain/refactor_intent) live as global Thought DB preference claims.
-    # Keep them in sync with MindSpec base.defaults for now; runtime logic reads from claims.
+    # In strict Thought DB mode, MindSpec.base.defaults is non-canonical; we only seed missing claims.
     try:
-        defaults_sync = ensure_operational_defaults_claims_current(home_dir=home, tdb=tdb, mindspec_base=loaded.base, mode="sync")
+        defaults_sync = ensure_operational_defaults_claims_current(
+            home_dir=home,
+            tdb=tdb,
+            mindspec_base=loaded.base,
+            mode="seed_missing",
+            event_notes="auto_seed_on_run",
+            claim_notes_prefix="auto_seed",
+        )
     except Exception as e:
-        defaults_sync = {"ok": False, "changed": False, "mode": "sync", "event_id": "", "error": f"{type(e).__name__}: {e}"}
+        defaults_sync = {"ok": False, "changed": False, "mode": "seed_missing", "event_id": "", "error": f"{type(e).__name__}: {e}"}
 
     evw.append(
         {
@@ -1438,7 +1329,6 @@ def run_autopilot(
         }
     )
 
-    _ensure_values_claims_current()
     _ensure_testless_strategy_claim_current()
 
     # Seed one conservative recall at run start so later Mind calls can use it without bothering the user.

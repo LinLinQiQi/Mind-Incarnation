@@ -10,6 +10,8 @@ from .store import ThoughtDbStore, ThoughtDbView
 
 
 VALUES_BASE_TAG = "values:base"
+VALUES_RAW_TAG = "values:raw"
+VALUES_SUMMARY_TAG = "values:summary"
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -81,6 +83,224 @@ def existing_values_claims(*, tdb: ThoughtDbStore, limit: int = 40) -> list[dict
         if len(out) >= lim:
             break
     return out
+
+
+def _find_latest_raw_values_claim(*, tdb: ThoughtDbStore, as_of_ts: str) -> dict[str, Any] | None:
+    """Find the newest active canonical raw values claim (best-effort)."""
+
+    v = tdb.load_view(scope="global")
+    best: dict[str, Any] | None = None
+    best_ts = ""
+    for c in v.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
+        if not isinstance(c, dict):
+            continue
+        ct = str(c.get("claim_type") or "").strip()
+        if ct != "preference":
+            continue
+        tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+        tagset = {str(x).strip() for x in tags if str(x).strip()}
+        if VALUES_RAW_TAG not in tagset:
+            continue
+        ts = str(c.get("asserted_ts") or "").strip()
+        if ts >= best_ts:
+            best = c
+            best_ts = ts
+    return best
+
+
+def upsert_raw_values_claim(
+    *,
+    tdb: ThoughtDbStore,
+    values_text: str,
+    values_event_id: str,
+    visibility: str = "global",
+    notes: str = "",
+) -> str:
+    """Create/update the global raw values claim (append-only; best-effort).
+
+    This stores the user's raw values prompt text inside Thought DB for audit and future
+    reconstruction, while runtime behavior relies on derived canonical values claims
+    (tagged `values:base`).
+
+    - Writes a new claim only if the text is new (deduped by signature).
+    - When a different prior raw claim exists, adds a `supersedes` edge (old -> new).
+    """
+
+    ev_id = str(values_event_id or "").strip()
+    text = str(values_text or "").rstrip()
+    if not text.strip() or not ev_id:
+        return ""
+
+    vis = str(visibility or "global").strip()
+    if vis not in ("private", "project", "global"):
+        vis = "global"
+
+    as_of = now_rfc3339()
+    existing = _find_latest_raw_values_claim(tdb=tdb, as_of_ts=as_of)
+    existing_id = str(existing.get("claim_id") or "").strip() if isinstance(existing, dict) else ""
+    existing_text = str(existing.get("text") or "").rstrip() if isinstance(existing, dict) else ""
+
+    # Dedupe by signature (idempotent).
+    sig_map = tdb.existing_signature_map(scope="global")
+    from .store import claim_signature  # local import to avoid circulars
+
+    sig = claim_signature(claim_type="preference", scope="global", project_id="", text=text.strip())
+    if sig and sig in sig_map:
+        cid0 = str(sig_map[sig])
+        if existing_id and existing_id != cid0 and ev_id:
+            try:
+                tdb.append_edge(
+                    edge_type="supersedes",
+                    from_id=existing_id,
+                    to_id=cid0,
+                    scope="global",
+                    visibility=vis,
+                    source_event_ids=[ev_id],
+                    notes="raw values dedupe",
+                )
+            except Exception:
+                pass
+        return cid0
+
+    # No-op if existing claim already matches.
+    if existing_id and existing_text.strip() == text.strip():
+        return existing_id
+
+    tag_ev = f"values_set:{ev_id}"
+    tags = [VALUES_RAW_TAG, "mi:values", tag_ev]
+    note = str(notes or "").strip() or "raw values prompt text"
+
+    try:
+        cid = tdb.append_claim_create(
+            claim_type="preference",
+            text=text.strip(),
+            scope="global",
+            visibility=vis,
+            valid_from=None,
+            valid_to=None,
+            tags=tags,
+            source_event_ids=[ev_id],
+            confidence=1.0,
+            notes=note,
+        )
+    except Exception:
+        return ""
+
+    if existing_id and ev_id:
+        try:
+            tdb.append_edge(
+                edge_type="supersedes",
+                from_id=existing_id,
+                to_id=cid,
+                scope="global",
+                visibility=vis,
+                source_event_ids=[ev_id],
+                notes="update raw values",
+            )
+        except Exception:
+            pass
+
+    return cid
+
+
+def upsert_values_summary_node(
+    *,
+    tdb: ThoughtDbStore,
+    compiled_mindspec: dict[str, Any],
+    values_event_id: str,
+    visibility: str = "global",
+) -> str:
+    """Materialize a global Summary node for the current values (best-effort).
+
+    This stores a compact human-facing summary + procedure in Thought DB so users can
+    inspect MI's understanding without relying on MindSpec storage.
+    """
+
+    ev_id = str(values_event_id or "").strip()
+    if not ev_id or not isinstance(compiled_mindspec, dict):
+        return ""
+
+    vis = str(visibility or "global").strip()
+    if vis not in ("private", "project", "global"):
+        vis = "global"
+
+    vs = compiled_mindspec.get("values_summary") if isinstance(compiled_mindspec.get("values_summary"), list) else []
+    vs2 = [str(x).strip() for x in vs if str(x).strip()][:20]
+    dp = compiled_mindspec.get("decision_procedure") if isinstance(compiled_mindspec.get("decision_procedure"), dict) else {}
+    dp_summary = str(dp.get("summary") or "").strip() if isinstance(dp, dict) else ""
+    dp_mermaid = str(dp.get("mermaid") or "").strip() if isinstance(dp, dict) else ""
+
+    if not vs2 and not dp_summary and not dp_mermaid:
+        return ""
+
+    parts: list[str] = []
+    if vs2:
+        parts.append("values_summary:")
+        parts.extend([f"- {x}" for x in vs2])
+        parts.append("")
+    if dp_summary:
+        parts.append("decision_procedure.summary:")
+        parts.append(dp_summary)
+        parts.append("")
+    if dp_mermaid:
+        parts.append("decision_procedure.mermaid:")
+        parts.append("```mermaid")
+        parts.append(dp_mermaid)
+        parts.append("```")
+
+    text = "\n".join([p for p in parts if p is not None]).strip()
+    if not text:
+        return ""
+
+    v = tdb.load_view(scope="global")
+    prev: dict[str, Any] | None = None
+    prev_ts = ""
+    for n in v.iter_nodes(include_inactive=False, include_aliases=False):
+        if not isinstance(n, dict):
+            continue
+        if str(n.get("node_type") or "").strip() != "summary":
+            continue
+        tags = n.get("tags") if isinstance(n.get("tags"), list) else []
+        tagset = {str(x).strip() for x in tags if str(x).strip()}
+        if VALUES_SUMMARY_TAG not in tagset:
+            continue
+        ts = str(n.get("asserted_ts") or "").strip()
+        if ts >= prev_ts:
+            prev = n
+            prev_ts = ts
+
+    prev_id = str(prev.get("node_id") or "").strip() if isinstance(prev, dict) else ""
+    tags = [VALUES_SUMMARY_TAG, "mi:values", f"values_set:{ev_id}"]
+    try:
+        nid = tdb.append_node_create(
+            node_type="summary",
+            title="Values Summary",
+            text=text,
+            scope="global",
+            visibility=vis,
+            tags=tags,
+            source_event_ids=[ev_id],
+            confidence=1.0,
+            notes="compiled from values_text",
+        )
+    except Exception:
+        return ""
+
+    if prev_id:
+        try:
+            tdb.append_edge(
+                edge_type="supersedes",
+                from_id=prev_id,
+                to_id=nid,
+                scope="global",
+                visibility=vis,
+                source_event_ids=[ev_id],
+                notes="values summary update",
+            )
+        except Exception:
+            pass
+
+    return nid
 
 
 @dataclass(frozen=True)

@@ -117,16 +117,27 @@ MI 可以通过 `hands.provider=cli` 包装大多数 agent CLI。你需要提供
 - 支持占位符：`{project_root}`、`{prompt}`、`{thread_id}`（仅 resume）。
 - 如果 CLI 能输出 JSON 事件（例如 “stream-json”），MI 会尽力解析，以提升证据提取、session id 识别与“最后一条消息”识别的可靠性。
 
-初始化全局价值观/偏好（默认写入 `~/.mind-incarnation/mindspec/base.json`）：
+设置全局价值观/偏好（canonical: Thought DB）：
 
 ```bash
-mi init --values "我的偏好：尽量少问；默认行为不变重构；没有测试就停下来；非必要不联网/不安装依赖/不 push。"
+mi values set --text "我的偏好：尽量少问；默认行为不变重构；没有测试就停下来；非必要不联网/不安装依赖/不 push。"
+mi init --values "..."  # 兼容旧命令
+mi values show
 ```
 
 说明：
 
-- `mi init` 会在 `~/.mind-incarnation/global/evidence.jsonl` 追加一个全局 EvidenceLog `values_set` 事件（稳定的 `event_id` 证据来源）。
-- 除非设置 `--no-compile` 或 `--no-values-claims`，`mi init` 还会将价值观迁移为全局 Thought DB 的 preference/goal Claim（带 `values:base` 标签），供 `mi run` 的 `decide_next` 作为 canonical values 使用。
+- `mi init` / `mi values set` 会在 `~/.mind-incarnation/global/evidence.jsonl` 追加一个全局 EvidenceLog `values_set` 事件（稳定的 `event_id` 证据来源）。
+- 同时会写入一条 raw values 的 preference Claim（标签 `values:raw`，用于审计）。当编译成功（即未使用 `--no-compile`）时，还会写入一条全局 Summary 节点（标签 `values:summary`，方便人类查看）。
+- 除非设置 `--no-compile` 或 `--no-values-claims`，还会把价值观衍生为全局 Thought DB 的 preference/goal Claim（带 `values:base` 标签），供 `mi run` 的 `decide_next` 作为 canonical values 使用。
+
+操作性默认设置（canonical: Thought DB）：
+
+```bash
+mi settings show --cd /path/to/your/project
+mi settings set --ask-when-uncertain ask --refactor-intent behavior_preserving
+mi settings set --scope project --cd /path/to/your/project --ask-when-uncertain proceed
+```
 
 在 Hands 之上运行 MI（默认将 transcript + evidence 写入 `~/.mind-incarnation/projects/<id>/`；默认 Hands=Codex）：
 

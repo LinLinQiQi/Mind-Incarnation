@@ -171,6 +171,8 @@ def ensure_operational_defaults_claims_current(
     tdb: ThoughtDbStore,
     mindspec_base: dict[str, Any] | None,
     mode: str,
+    event_notes: str = "",
+    claim_notes_prefix: str = "auto_migrate",
 ) -> dict[str, Any]:
     """Ensure operational defaults are canonical preference Claims (append-only; best-effort).
 
@@ -225,7 +227,8 @@ def ensure_operational_defaults_claims_current(
     last_defaults = last_payload.get("defaults") if isinstance(last_payload.get("defaults"), dict) else {}
     event_id = last_id if (last_id and last_defaults == desired) else ""
     if not event_id:
-        rec = append_global_event(home_dir=home_dir, kind=DEFAULTS_EVENT_KIND, payload={"defaults": desired, "notes": "auto_migrate"})
+        note = str(event_notes or "").strip() or "auto_migrate"
+        rec = append_global_event(home_dir=home_dir, kind=DEFAULTS_EVENT_KIND, payload={"defaults": desired, "notes": note})
         event_id = str(rec.get("event_id") or "").strip()
 
     if not event_id:
@@ -258,6 +261,7 @@ def ensure_operational_defaults_claims_current(
             return cid0
 
         tags = [tag, "mi:setting", "mi:defaults"]
+        notes = str(claim_notes_prefix or "").strip() or "auto_migrate"
         cid = tdb.append_claim_create(
             claim_type="preference",
             text=text,
@@ -268,7 +272,7 @@ def ensure_operational_defaults_claims_current(
             tags=tags,
             source_event_ids=[event_id],
             confidence=1.0,
-            notes=f"auto_migrate {DEFAULTS_EVENT_KIND} {event_id}",
+            notes=f"{notes} {DEFAULTS_EVENT_KIND} {event_id}",
         )
         written.append(cid)
         sig_map[sig] = cid

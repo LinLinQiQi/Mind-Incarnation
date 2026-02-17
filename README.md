@@ -117,16 +117,27 @@ Notes:
 - Placeholders: `{project_root}`, `{prompt}`, `{thread_id}` (resume only).
 - If your CLI can output JSON events (e.g., "stream-json"), MI will parse them (best-effort) to improve evidence extraction, session id detection, and last-message detection.
 
-Initialize global values/preferences (writes MindSpec to `~/.mind-incarnation/mindspec/base.json` by default):
+Set global values/preferences (canonical: Thought DB):
 
 ```bash
-mi init --values "My values: minimize questions; prefer behavior-preserving refactors; stop when no tests exist; avoid network/install/push unless necessary."
+mi values set --text "My values: minimize questions; prefer behavior-preserving refactors; stop when no tests exist; avoid network/install/push unless necessary."
+mi init --values "..."  # legacy alias
+mi values show
 ```
 
 Notes:
 
-- `mi init` appends a global EvidenceLog `values_set` event under `~/.mind-incarnation/global/evidence.jsonl` (stable `event_id` provenance).
-- Unless `--no-compile` or `--no-values-claims` is set, `mi init` also migrates values into global Thought DB preference/goal Claims (tagged `values:base`) so `mi run` can treat them as canonical during `decide_next`.
+- `mi init` / `mi values set` appends a global EvidenceLog `values_set` event under `~/.mind-incarnation/global/evidence.jsonl` (stable `event_id` provenance).
+- It also writes a raw values preference Claim tagged `values:raw` (audit). When compilation succeeds (i.e., not `--no-compile`), it also writes a global Summary node tagged `values:summary` (human-facing).
+- Unless `--no-compile` or `--no-values-claims` is set, it also derives canonical values into global Thought DB preference/goal Claims tagged `values:base`, which `mi run` treats as canonical during `decide_next`.
+
+Operational settings (canonical: Thought DB):
+
+```bash
+mi settings show --cd /path/to/your/project
+mi settings set --ask-when-uncertain ask --refactor-intent behavior_preserving
+mi settings set --scope project --cd /path/to/your/project --ask-when-uncertain proceed
+```
 
 Run MI batch autopilot above Hands (stores transcripts + evidence under `~/.mind-incarnation/projects/<id>/`):
 

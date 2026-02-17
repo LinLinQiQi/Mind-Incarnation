@@ -43,6 +43,13 @@ from .memory.ingest import thoughtdb_node_item
 from .memory.service import MemoryService
 from .runtime.evidence import EvidenceWriter, new_run_id
 from .thoughtdb.values import write_values_set_event, existing_values_claims, apply_values_claim_patch
+from .thoughtdb.values import (
+    VALUES_BASE_TAG,
+    VALUES_RAW_TAG,
+    VALUES_SUMMARY_TAG,
+    upsert_raw_values_claim,
+    upsert_values_summary_node,
+)
 from .thoughtdb.context import build_decide_next_thoughtdb_context
 from .thoughtdb.why import (
     find_evidence_event,
@@ -51,6 +58,13 @@ from .thoughtdb.why import (
     run_why_trace,
     default_as_of_ts,
 )
+from .thoughtdb.operational_defaults import (
+    ensure_operational_defaults_claims_current,
+    resolve_operational_defaults,
+    ask_when_uncertain_claim_text,
+    refactor_intent_claim_text,
+)
+from .thoughtdb.pins import ASK_WHEN_UNCERTAIN_TAG, REFACTOR_INTENT_TAG
 
 
 def _read_stdin_text() -> str:
@@ -122,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg_sub.add_parser("rollback", help="Rollback config.json to the last apply-template backup.")
     cfg_sub.add_parser("path", help="Print the config.json path.")
 
-    p_init = sub.add_parser("init", help="Initialize global values/preferences (MindSpec base).")
+    p_init = sub.add_parser("init", help="Initialize global values/preferences (canonical: Thought DB).")
     p_init.add_argument(
         "--values",
         help="Values/preferences prompt text. If omitted or '-', read from stdin.",
@@ -131,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument(
         "--no-compile",
         action="store_true",
-        help="Do not call the model; write defaults + values_text only.",
+        help="Do not call the model; record values_set + raw values only (no derived values claims).",
     )
     p_init.add_argument(
         "--no-values-claims",
@@ -141,13 +155,61 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the compiled MindSpec but do not write it.",
+        help="Print the compiled values structure but do not write Thought DB.",
     )
     p_init.add_argument(
         "--show",
         action="store_true",
         help="Print the compiled values summary and decision procedure.",
     )
+
+    p_values = sub.add_parser("values", help="Manage canonical values/preferences in Thought DB.")
+    values_sub = p_values.add_subparsers(dest="values_cmd", required=True)
+    p_vs = values_sub.add_parser("set", help="Set/update global values (writes values_set + raw claim; optional derived claims).")
+    p_vs.add_argument(
+        "--text",
+        default="-",
+        help="Values/preferences prompt text. If omitted or '-', read from stdin.",
+    )
+    p_vs.add_argument(
+        "--no-compile",
+        action="store_true",
+        help="Do not call the model; record values_set + raw values only (no derived values claims).",
+    )
+    p_vs.add_argument(
+        "--no-values-claims",
+        action="store_true",
+        help="Skip deriving values:base claims (still records raw values).",
+    )
+    p_vs.add_argument(
+        "--show",
+        action="store_true",
+        help="Print the compiled values summary and decision procedure.",
+    )
+    p_vshow = values_sub.add_parser("show", help="Show the latest raw values + derived values claims.")
+    p_vshow.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_settings = sub.add_parser("settings", help="Manage MI operational settings (canonical: Thought DB claims).")
+    settings_sub = p_settings.add_subparsers(dest="settings_cmd", required=True)
+    p_sshow = settings_sub.add_parser("show", help="Show resolved operational settings (project overrides global).")
+    p_sshow.add_argument("--cd", default="", help="Project root used to resolve project overrides.")
+    p_sshow.add_argument("--json", action="store_true", help="Print as JSON.")
+    p_sset = settings_sub.add_parser("set", help="Set operational settings as canonical Thought DB claims.")
+    p_sset.add_argument("--cd", default="", help="Project root used for project-scoped overrides.")
+    p_sset.add_argument("--scope", choices=["global", "project"], default="global", help="Where to write the setting claims.")
+    p_sset.add_argument(
+        "--ask-when-uncertain",
+        choices=["ask", "proceed"],
+        default="",
+        help="Default when MI is uncertain (canonical setting claim).",
+    )
+    p_sset.add_argument(
+        "--refactor-intent",
+        choices=["behavior_preserving", "behavior_changing"],
+        default="",
+        help="Default refactor intent (canonical setting claim).",
+    )
+    p_sset.add_argument("--dry-run", action="store_true", help="Show what would be written without writing.")
 
     p_run = sub.add_parser("run", help="Run MI batch autopilot (Hands configured via mi config).")
     p_run.add_argument("task", help="User task for Hands to execute.")
@@ -497,6 +559,198 @@ def main(argv: list[str] | None = None) -> int:
     store = MindSpecStore(home_dir=args.home)
     cfg = load_config(store.home_dir)
 
+    def _make_global_tdb() -> ThoughtDbStore:
+        # Use a dummy ProjectPaths id to avoid accidentally creating a project mapping during global operations.
+        dummy_pp = ProjectPaths(home_dir=store.home_dir, project_root=Path("."), _project_id="__global__")
+        return ThoughtDbStore(home_dir=store.home_dir, project_paths=dummy_pp)
+
+    def _do_values_set(
+        *,
+        values_text: str,
+        no_compile: bool,
+        no_values_claims: bool,
+        show: bool,
+        dry_run: bool,
+        notes: str,
+    ) -> dict[str, Any]:
+        """Set canonical values in Thought DB (values event + raw claim; optional derived claims)."""
+
+        values = str(values_text or "")
+        if not values.strip():
+            return {"ok": False, "error": "values text is empty"}
+
+        llm = None
+        compiled: dict[str, Any] | None = None
+        compiled_from_model = False
+
+        # Keep a local template for compilation (knobs). Values/defaults are canonical in Thought DB.
+        base_template = store.load_base()
+        base_template["values_text"] = values
+        base_template["values_summary"] = []
+
+        if not no_compile:
+            # Run compile in an isolated directory to avoid accidental project context bleed.
+            scratch = store.home_dir / "tmp" / "compile_mindspec"
+            scratch.mkdir(parents=True, exist_ok=True)
+            transcripts_dir = store.home_dir / "mindspec" / "transcripts"
+
+            llm = make_mind_provider(cfg, project_root=scratch, transcripts_dir=transcripts_dir)
+            prompt = compile_mindspec_prompt(values_text=values, base_template=base_template)
+            try:
+                out = llm.call(schema_filename="compile_mindspec.json", prompt=prompt, tag="compile_mindspec").obj
+                compiled = out if isinstance(out, dict) else None
+                compiled_from_model = bool(compiled)
+            except Exception as e:
+                compiled = None
+                print(f"compile_mindspec failed; falling back. error={e}", file=sys.stderr)
+
+        # Even when compilation fails, we still record the raw values + a structured template
+        # into the values_set event payload for provenance/audit.
+        base_after = compiled if isinstance(compiled, dict) else dict(base_template)
+
+        if show or dry_run:
+            vs = base_after.get("values_summary") or []
+            if isinstance(vs, list) and any(str(x).strip() for x in vs):
+                print("values_summary:")
+                for x in vs:
+                    xs = str(x).strip()
+                    if xs:
+                        print(f"- {xs}")
+            dp = base_after.get("decision_procedure") or {}
+            if isinstance(dp, dict):
+                summary = str(dp.get("summary") or "").strip()
+                mermaid = str(dp.get("mermaid") or "").strip()
+                if summary:
+                    print("\ndecision_procedure.summary:\n" + summary)
+                if mermaid:
+                    print("\ndecision_procedure.mermaid:\n" + mermaid)
+
+        if dry_run:
+            return {"ok": True, "dry_run": True, "compiled": base_after, "compiled_from_model": compiled_from_model}
+
+        # Record values changes into a global EvidenceLog so Claims can cite stable event_id provenance.
+        values_ev = write_values_set_event(
+            home_dir=store.home_dir,
+            values_text=values,
+            compiled_mindspec=base_after,
+            notes=str(notes or "").strip(),
+        )
+        values_event_id = str(values_ev.get("event_id") or "").strip()
+        if not values_event_id:
+            return {"ok": False, "error": "failed to record global values_set event_id"}
+
+        tdb = _make_global_tdb()
+        raw_id = upsert_raw_values_claim(
+            tdb=tdb,
+            values_text=values,
+            values_event_id=values_event_id,
+            visibility="global",
+            notes="values_text (raw)",
+        )
+        summary_id = ""
+        if compiled_from_model:
+            summary_id = upsert_values_summary_node(tdb=tdb, compiled_mindspec=base_after, values_event_id=values_event_id)
+        try:
+            defaults_seed = ensure_operational_defaults_claims_current(
+                home_dir=store.home_dir,
+                tdb=tdb,
+                mindspec_base=base_after,
+                mode="seed_missing",
+                event_notes=str(notes or "").strip() or "values_set",
+                claim_notes_prefix="seed_on_values_set",
+            )
+        except Exception as e:
+            defaults_seed = {"ok": False, "changed": False, "mode": "seed_missing", "event_id": "", "error": f"{type(e).__name__}: {e}"}
+
+        # Derive values into canonical global preference/goal claims (best-effort).
+        values_claims_applied: dict[str, Any] = {}
+        values_claims_retracted: list[str] = []
+        if no_compile:
+            return {
+                "ok": True,
+                "values_event_id": values_event_id,
+                "raw_claim_id": raw_id,
+                "summary_node_id": summary_id,
+                "defaults_seed": defaults_seed,
+                "values_claims": {"skipped": "--no-compile"},
+            }
+        if no_values_claims:
+            return {
+                "ok": True,
+                "values_event_id": values_event_id,
+                "raw_claim_id": raw_id,
+                "summary_node_id": summary_id,
+                "defaults_seed": defaults_seed,
+                "values_claims": {"skipped": "--no-values-claims"},
+            }
+        if llm is None:
+            return {
+                "ok": True,
+                "values_event_id": values_event_id,
+                "raw_claim_id": raw_id,
+                "summary_node_id": summary_id,
+                "defaults_seed": defaults_seed,
+                "values_claims": {"skipped": "mind provider unavailable"},
+            }
+
+        try:
+            existing = existing_values_claims(tdb=tdb, limit=120)
+            retractable_ids = [
+                str(c.get("claim_id") or "").strip()
+                for c in existing
+                if isinstance(c, dict) and str(c.get("claim_id") or "").strip()
+            ]
+
+            prompt2 = values_claim_patch_prompt(
+                values_text=values,
+                compiled_mindspec=base_after,
+                existing_values_claims=existing,
+                allowed_event_ids=[values_event_id],
+                allowed_retract_claim_ids=retractable_ids,
+                notes=str(notes or "").strip() or "values -> Thought DB claims",
+            )
+            patch_obj = llm.call(schema_filename="values_claim_patch.json", prompt=prompt2, tag="values_claim_patch").obj
+
+            tcfg = base_after.get("thought_db") if isinstance(base_after.get("thought_db"), dict) else {}
+            try:
+                min_conf = float(tcfg.get("min_confidence", 0.9) or 0.9)
+            except Exception:
+                min_conf = 0.9
+            try:
+                base_max = int(tcfg.get("max_claims_per_checkpoint", 6) or 6)
+            except Exception:
+                base_max = 6
+            max_claims = max(8, min(20, base_max * 2))
+
+            applied = apply_values_claim_patch(
+                tdb=tdb,
+                patch_obj=patch_obj if isinstance(patch_obj, dict) else {},
+                values_event_id=values_event_id,
+                min_confidence=min_conf,
+                max_claims=max_claims,
+            )
+            if applied.ok:
+                values_claims_applied = applied.applied if isinstance(applied.applied, dict) else {}
+                values_claims_retracted = list(applied.retracted or [])
+        except Exception as e:
+            return {
+                "ok": True,
+                "values_event_id": values_event_id,
+                "raw_claim_id": raw_id,
+                "summary_node_id": summary_id,
+                "defaults_seed": defaults_seed,
+                "values_claims": {"error": f"{type(e).__name__}: {e}"},
+            }
+
+        return {
+            "ok": True,
+            "values_event_id": values_event_id,
+            "raw_claim_id": raw_id,
+            "summary_node_id": summary_id,
+            "defaults_seed": defaults_seed,
+            "values_claims": {"applied": values_claims_applied, "retracted": values_claims_retracted},
+        }
+
     if args.cmd == "version":
         print(__version__)
         return 0
@@ -571,140 +825,300 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.cmd == "init":
-        values = args.values
-        if values == "-" or values is None:
+        values = str(args.values or "")
+        if values == "-":
             values = _read_stdin_text()
         if not values.strip():
             print("Values text is empty. Provide --values or pipe text to stdin.", file=sys.stderr)
             return 2
 
-        llm = None
-        compiled = None
-        if not args.no_compile:
-            # Run compile in an isolated directory to avoid accidental project context bleed.
-            scratch = store.home_dir / "tmp" / "compile_mindspec"
-            scratch.mkdir(parents=True, exist_ok=True)
-            transcripts_dir = store.home_dir / "mindspec" / "transcripts"
-
-            base_template = store.load_base()
-            base_template["values_text"] = values
-
-            llm = make_mind_provider(cfg, project_root=scratch, transcripts_dir=transcripts_dir)
-            prompt = compile_mindspec_prompt(values_text=values, base_template=base_template)
-            try:
-                compiled = llm.call(schema_filename="compile_mindspec.json", prompt=prompt, tag="compile_mindspec").obj
-            except Exception as e:
-                print(f"compile_mindspec failed; falling back to defaults. error={e}", file=sys.stderr)
-
-        if compiled is None:
-            store.write_base_values(values_text=values)
-            compiled = store.load_base()
-        else:
-            if not args.dry_run:
-                store.write_base(compiled)
-
-        if args.show or args.dry_run:
-            vs = compiled.get("values_summary") or []
-            if isinstance(vs, list) and any(str(x).strip() for x in vs):
-                print("values_summary:")
-                for x in vs:
-                    x = str(x).strip()
-                    if x:
-                        print(f"- {x}")
-            dp = compiled.get("decision_procedure") or {}
-            if isinstance(dp, dict):
-                summary = str(dp.get("summary") or "").strip()
-                mermaid = str(dp.get("mermaid") or "").strip()
-                if summary:
-                    print("\ndecision_procedure.summary:\n" + summary)
-                if mermaid:
-                    print("\ndecision_procedure.mermaid:\n" + mermaid)
-
-        if args.dry_run:
-            print("(dry-run) did not write base MindSpec.")
-            return 0
-
-        print(f"Wrote base MindSpec to {store.base_path}")
-
-        # Record values changes into a global EvidenceLog so later Claims can cite stable event_id provenance.
-        base_after = store.load_base()
-        values_ev = write_values_set_event(
-            home_dir=store.home_dir,
+        out = _do_values_set(
             values_text=values,
-            compiled_mindspec=base_after,
+            no_compile=bool(args.no_compile),
+            no_values_claims=bool(args.no_values_claims),
+            show=bool(args.show),
+            dry_run=bool(args.dry_run),
             notes="mi init",
         )
-        values_event_id = str(values_ev.get("event_id") or "").strip()
-        if values_event_id:
-            print(f"[mi] recorded global values_set event_id={values_event_id}", file=sys.stderr)
-        else:
-            print("[mi] warning: failed to record global values_set event_id; skipping values->claims migration", file=sys.stderr)
+        if not bool(out.get("ok", False)):
+            print(f"init failed: {out.get('error')}", file=sys.stderr)
+            return 2
+        if bool(out.get("dry_run", False)):
+            print("(dry-run) did not write Thought DB.")
             return 0
+        ve = str(out.get("values_event_id") or "").strip()
+        if ve:
+            print(f"[mi] recorded global values_set event_id={ve}", file=sys.stderr)
+        raw_id = str(out.get("raw_claim_id") or "").strip()
+        if raw_id:
+            print(f"[mi] raw values claim_id={raw_id} (tag={VALUES_RAW_TAG})", file=sys.stderr)
+        sum_id = str(out.get("summary_node_id") or "").strip()
+        if sum_id:
+            print(f"[mi] values summary node_id={sum_id} (tag={VALUES_SUMMARY_TAG})", file=sys.stderr)
 
-        # Migrate values into global Thought DB preference/goal claims (best-effort).
-        if args.no_compile:
-            print("[mi] values->claims skipped (--no-compile)", file=sys.stderr)
-            return 0
-        if bool(args.no_values_claims):
-            print("[mi] values->claims skipped (--no-values-claims)", file=sys.stderr)
-            return 0
-        if llm is None:
-            print("[mi] values->claims skipped (mind provider unavailable)", file=sys.stderr)
-            return 0
-
-        try:
-            # Use a dummy ProjectPaths id to avoid accidentally creating a project mapping during global init.
-            dummy_pp = ProjectPaths(home_dir=store.home_dir, project_root=Path("."), _project_id="__global__")
-            tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=dummy_pp)
-
-            existing = existing_values_claims(tdb=tdb, limit=120)
-            retractable_ids = [
-                str(c.get("claim_id") or "").strip()
-                for c in existing
-                if isinstance(c, dict) and str(c.get("claim_id") or "").strip()
-            ]
-
-            prompt2 = values_claim_patch_prompt(
-                values_text=values,
-                compiled_mindspec=base_after,
-                existing_values_claims=existing,
-                allowed_event_ids=[values_event_id],
-                allowed_retract_claim_ids=retractable_ids,
-                notes="mi init (values -> Thought DB claims)",
+        vc = out.get("values_claims") if isinstance(out.get("values_claims"), dict) else {}
+        if isinstance(vc, dict) and vc.get("skipped"):
+            print(f"[mi] values->claims skipped: {vc.get('skipped')}", file=sys.stderr)
+        elif isinstance(vc, dict) and isinstance(vc.get("applied"), dict):
+            a = vc.get("applied") if isinstance(vc.get("applied"), dict) else {}
+            written = a.get("written") if isinstance(a.get("written"), list) else []
+            linked = a.get("linked_existing") if isinstance(a.get("linked_existing"), list) else []
+            edges = a.get("written_edges") if isinstance(a.get("written_edges"), list) else []
+            retracted = vc.get("retracted") if isinstance(vc.get("retracted"), list) else []
+            print(
+                f"[mi] values->claims ok: written={len(written)} linked_existing={len(linked)} edges={len(edges)} retracted={len(retracted)}",
+                file=sys.stderr,
             )
-            patch_obj = llm.call(schema_filename="values_claim_patch.json", prompt=prompt2, tag="values_claim_patch").obj
-
-            tcfg = base_after.get("thought_db") if isinstance(base_after.get("thought_db"), dict) else {}
-            try:
-                min_conf = float(tcfg.get("min_confidence", 0.9) or 0.9)
-            except Exception:
-                min_conf = 0.9
-            try:
-                base_max = int(tcfg.get("max_claims_per_checkpoint", 6) or 6)
-            except Exception:
-                base_max = 6
-            max_claims = max(8, min(20, base_max * 2))
-
-            applied = apply_values_claim_patch(
-                tdb=tdb,
-                patch_obj=patch_obj if isinstance(patch_obj, dict) else {},
-                values_event_id=values_event_id,
-                min_confidence=min_conf,
-                max_claims=max_claims,
-            )
-            if applied.ok:
-                a = applied.applied if isinstance(applied.applied, dict) else {}
-                written = a.get("written") if isinstance(a.get("written"), list) else []
-                linked = a.get("linked_existing") if isinstance(a.get("linked_existing"), list) else []
-                edges = a.get("written_edges") if isinstance(a.get("written_edges"), list) else []
-                print(
-                    f"[mi] values->claims ok: written={len(written)} linked_existing={len(linked)} edges={len(edges)} retracted={len(applied.retracted)}",
-                    file=sys.stderr,
-                )
-        except Exception as e:
-            print(f"[mi] values->claims migration failed: {type(e).__name__}: {e}", file=sys.stderr)
+        elif isinstance(vc, dict) and vc.get("error"):
+            print(f"[mi] values->claims error: {vc.get('error')}", file=sys.stderr)
 
         return 0
+
+    if args.cmd == "values":
+        if args.values_cmd == "set":
+            text = str(getattr(args, "text", "-") or "-")
+            if text == "-":
+                text = _read_stdin_text()
+            if not text.strip():
+                print("Values text is empty. Provide --text or pipe text to stdin.", file=sys.stderr)
+                return 2
+            out = _do_values_set(
+                values_text=text,
+                no_compile=bool(getattr(args, "no_compile", False)),
+                no_values_claims=bool(getattr(args, "no_values_claims", False)),
+                show=bool(getattr(args, "show", False)),
+                dry_run=False,
+                notes="mi values set",
+            )
+            if not bool(out.get("ok", False)):
+                print(f"values set failed: {out.get('error')}", file=sys.stderr)
+                return 2
+            ve = str(out.get("values_event_id") or "").strip()
+            if ve:
+                print(f"values_event_id={ve}")
+            raw_id = str(out.get("raw_claim_id") or "").strip()
+            if raw_id:
+                print(f"raw_claim_id={raw_id}")
+            sum_id = str(out.get("summary_node_id") or "").strip()
+            if sum_id:
+                print(f"summary_node_id={sum_id}")
+            return 0
+
+        if args.values_cmd == "show":
+            tdb = _make_global_tdb()
+            v = tdb.load_view(scope="global")
+
+            raw: dict[str, Any] | None = None
+            raw_ts = ""
+            for c in v.iter_claims(include_inactive=False, include_aliases=False):
+                if not isinstance(c, dict):
+                    continue
+                tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+                tagset = {str(x).strip() for x in tags if str(x).strip()}
+                if VALUES_RAW_TAG not in tagset:
+                    continue
+                ts = str(c.get("asserted_ts") or "").strip()
+                if ts >= raw_ts:
+                    raw = c
+                    raw_ts = ts
+
+            summary: dict[str, Any] | None = None
+            sum_ts = ""
+            for n in v.iter_nodes(include_inactive=False, include_aliases=False):
+                if not isinstance(n, dict):
+                    continue
+                tags = n.get("tags") if isinstance(n.get("tags"), list) else []
+                tagset = {str(x).strip() for x in tags if str(x).strip()}
+                if VALUES_SUMMARY_TAG not in tagset:
+                    continue
+                ts = str(n.get("asserted_ts") or "").strip()
+                if ts >= sum_ts:
+                    summary = n
+                    sum_ts = ts
+
+            derived = existing_values_claims(tdb=tdb, limit=80)
+            out = {
+                "raw_values_claim": raw or {},
+                "values_summary_node": summary or {},
+                "derived_values_claims": derived,
+            }
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(out, indent=2, sort_keys=True))
+                return 0
+
+            if raw:
+                print(f"raw_values_claim_id={raw.get('claim_id')}")
+                txt = str(raw.get("text") or "").strip()
+                if txt:
+                    print("\nvalues_text:\n" + txt)
+            if summary:
+                print(f"\nvalues_summary_node_id={summary.get('node_id')}")
+                st = str(summary.get("text") or "").strip()
+                if st:
+                    print("\nsummary:\n" + st)
+            if derived:
+                print("\nderived_values_claims:")
+                for c in derived[:24]:
+                    if not isinstance(c, dict):
+                        continue
+                    cid = str(c.get("claim_id") or "").strip()
+                    text = str(c.get("text") or "").strip()
+                    ct = str(c.get("claim_type") or "").strip()
+                    if text:
+                        print(f"- [{ct or 'claim'}] {text} ({cid})" if cid else f"- [{ct or 'claim'}] {text}")
+            return 0
+
+    if args.cmd == "settings":
+        if args.settings_cmd == "show":
+            cd = str(getattr(args, "cd", "") or "").strip()
+            if cd:
+                project_root = _resolve_project_root_from_args(store, cd)
+                pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+            else:
+                pp = ProjectPaths(home_dir=store.home_dir, project_root=Path("."), _project_id="__global__")
+            tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+            op = resolve_operational_defaults(tdb=tdb, mindspec_base={}, as_of_ts=now_rfc3339())
+            out = op.to_dict()
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(out, indent=2, sort_keys=True))
+                return 0
+            print(f"ask_when_uncertain={out.get('ask_when_uncertain')}")
+            print(f"ask_when_uncertain_source={out.get('ask_when_uncertain_source')}")
+            print(f"refactor_intent={out.get('refactor_intent')}")
+            print(f"refactor_intent_source={out.get('refactor_intent_source')}")
+            return 0
+
+        if args.settings_cmd == "set":
+            scope = str(getattr(args, "scope", "global") or "global").strip()
+            ask_s = str(getattr(args, "ask_when_uncertain", "") or "").strip()
+            ref_s = str(getattr(args, "refactor_intent", "") or "").strip()
+            if not ask_s and not ref_s:
+                print("nothing to set: provide --ask-when-uncertain and/or --refactor-intent", file=sys.stderr)
+                return 2
+
+            if scope == "global":
+                tdb = _make_global_tdb()
+                cur = resolve_operational_defaults(tdb=tdb, mindspec_base={}, as_of_ts=now_rfc3339())
+                desired_ask = cur.ask_when_uncertain
+                desired_ref = cur.refactor_intent or "behavior_preserving"
+                if ask_s:
+                    desired_ask = True if ask_s == "ask" else False
+                if ref_s:
+                    desired_ref = ref_s
+
+                desired = {"ask_when_uncertain": desired_ask, "refactor_intent": desired_ref}
+                if bool(getattr(args, "dry_run", False)):
+                    print(json.dumps({"scope": "global", "desired": desired}, indent=2, sort_keys=True))
+                    return 0
+
+                res = ensure_operational_defaults_claims_current(
+                    home_dir=store.home_dir,
+                    tdb=tdb,
+                    mindspec_base={"defaults": desired},
+                    mode="sync",
+                    event_notes="mi settings set",
+                    claim_notes_prefix="user_set",
+                )
+                print(json.dumps(res, indent=2, sort_keys=True))
+                return 0
+
+            # Project-scoped overrides: write setting claims into the project store (append-only).
+            project_root = _resolve_project_root_from_args(store, str(getattr(args, "cd", "") or ""))
+            pp = ProjectPaths(home_dir=store.home_dir, project_root=project_root)
+            tdb = ThoughtDbStore(home_dir=store.home_dir, project_paths=pp)
+            evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
+            ev = evw.append(
+                {
+                    "kind": "settings_set",
+                    "batch_id": "cli.settings_set",
+                    "ts": now_rfc3339(),
+                    "thread_id": "",
+                    "scope": "project",
+                    "project_id": pp.project_id,
+                    "ask_when_uncertain": ask_s,
+                    "refactor_intent": ref_s,
+                }
+            )
+            ev_id = str(ev.get("event_id") or "").strip()
+
+            v = tdb.load_view(scope="project")
+            sig_map = tdb.existing_signature_map(scope="project")
+
+            def _find_latest_tagged(tag: str) -> dict[str, Any] | None:
+                best: dict[str, Any] | None = None
+                best_ts = ""
+                for c in v.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=now_rfc3339()):
+                    if not isinstance(c, dict):
+                        continue
+                    ct = str(c.get("claim_type") or "").strip()
+                    if ct not in ("preference", "goal"):
+                        continue
+                    tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+                    tagset = {str(x).strip() for x in tags if str(x).strip()}
+                    if tag not in tagset:
+                        continue
+                    ts = str(c.get("asserted_ts") or "").strip()
+                    if ts >= best_ts:
+                        best = c
+                        best_ts = ts
+                return best
+
+            changes: list[dict[str, str]] = []
+            for tag, text in (
+                ("ask", ask_when_uncertain_claim_text(True) if ask_s == "ask" else ask_when_uncertain_claim_text(False) if ask_s else ""),
+                ("ref", refactor_intent_claim_text(ref_s) if ref_s else ""),
+            ):
+                if not text:
+                    continue
+                tag_id = ASK_WHEN_UNCERTAIN_TAG if tag == "ask" else REFACTOR_INTENT_TAG
+                existing = _find_latest_tagged(tag_id)
+                existing_id = str(existing.get("claim_id") or "").strip() if isinstance(existing, dict) else ""
+                existing_text = str(existing.get("text") or "").strip() if isinstance(existing, dict) else ""
+                if existing_id and existing_text == text:
+                    continue
+
+                sig = claim_signature(claim_type="preference", scope="project", project_id=pp.project_id, text=text)
+                reuse_id = ""
+                if sig and sig in sig_map:
+                    cand = v.claims_by_id.get(str(sig_map[sig]) or "")
+                    cand_tags = cand.get("tags") if isinstance(cand, dict) and isinstance(cand.get("tags"), list) else []
+                    cand_tagset = {str(x).strip() for x in cand_tags if str(x).strip()}
+                    if tag_id in cand_tagset:
+                        reuse_id = str(sig_map[sig])
+
+                if reuse_id:
+                    new_id = reuse_id
+                else:
+                    new_id = tdb.append_claim_create(
+                        claim_type="preference",
+                        text=text,
+                        scope="project",
+                        visibility="project",
+                        valid_from=None,
+                        valid_to=None,
+                        tags=[tag_id, "mi:setting", "mi:defaults", "mi:source:cli.settings_set"],
+                        source_event_ids=[ev_id] if ev_id else [],
+                        confidence=1.0,
+                        notes="user_set project override",
+                    )
+
+                if existing_id and ev_id:
+                    try:
+                        tdb.append_edge(
+                            edge_type="supersedes",
+                            from_id=existing_id,
+                            to_id=new_id,
+                            scope="project",
+                            visibility="project",
+                            source_event_ids=[ev_id],
+                            notes="project settings override update",
+                        )
+                    except Exception:
+                        pass
+                changes.append({"tag": tag_id, "claim_id": new_id})
+
+            print(json.dumps({"ok": True, "scope": "project", "project_id": pp.project_id, "changes": changes}, indent=2, sort_keys=True))
+            return 0
 
     if args.cmd == "run":
         hands_exec, hands_resume = make_hands_functions(cfg)

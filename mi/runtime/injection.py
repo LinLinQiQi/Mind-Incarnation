@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..thoughtdb import ThoughtDbStore, ThoughtDbView
-from ..thoughtdb.values import VALUES_BASE_TAG
+from ..thoughtdb.values import VALUES_BASE_TAG, VALUES_RAW_TAG
 from ..thoughtdb.pins import PINNED_PREF_GOAL_TAGS
 from ..thoughtdb.operational_defaults import resolve_operational_defaults
 
@@ -104,6 +104,9 @@ def collect_canonical_pref_goal_claims(
             tags = c.get("tags") if isinstance(c.get("tags"), list) else []
             tagset = {str(x).strip() for x in tags if str(x).strip()}
             if VALUES_BASE_TAG in tagset:
+                continue
+            # Raw values prompt text is stored for audit; do not inject it into Hands.
+            if VALUES_RAW_TAG in tagset:
                 continue
             other.append(_compact_claim(c, view=view))
             seen_ids.add(cid)

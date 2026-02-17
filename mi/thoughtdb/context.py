@@ -5,7 +5,7 @@ from typing import Any
 
 from ..memory.text import tokenize_query, truncate
 from .store import ThoughtDbStore, ThoughtDbView
-from .values import VALUES_BASE_TAG
+from .values import VALUES_BASE_TAG, VALUES_RAW_TAG
 from .pins import PINNED_PREF_GOAL_TAGS
 
 
@@ -198,6 +198,8 @@ def build_decide_next_thoughtdb_context(
             tagset = {str(x).strip() for x in tags if str(x).strip()}
             if VALUES_BASE_TAG in tagset:
                 continue
+            if VALUES_RAW_TAG in tagset:
+                continue
             pref_goal_raw.append((scope_rank, str(c.get("asserted_ts") or ""), c, view))
 
     # Sort newest-first within scope; prefer project scope over global.
@@ -223,6 +225,10 @@ def build_decide_next_thoughtdb_context(
                 continue
             cid = str(c.get("claim_id") or "").strip()
             if not cid or cid in values_ids or cid in pref_goal_ids:
+                continue
+            tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+            tagset = {str(x).strip() for x in tags if str(x).strip()}
+            if VALUES_RAW_TAG in tagset:
                 continue
             text = str(c.get("text") or "").strip()
             if not text:

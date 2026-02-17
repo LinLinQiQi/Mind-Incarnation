@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.hosts import HostBinding, sync_host_binding
+from mi.workflows.hosts import HostBinding, sync_host_binding
 
 
 class TestOpenClawAdapter(unittest.TestCase):

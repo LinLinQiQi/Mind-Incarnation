@@ -4,10 +4,10 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from mi.memory_service import MemoryService
-from mi.paths import ProjectPaths
+from mi.core.paths import ProjectPaths
+from mi.memory.service import MemoryService
 from mi.thoughtdb import ThoughtDbStore
-from mi.why import collect_candidate_claims, query_from_evidence_event, run_why_trace
+from mi.thoughtdb.why import collect_candidate_claims, query_from_evidence_event, run_why_trace
 
 
 @dataclass(frozen=True)

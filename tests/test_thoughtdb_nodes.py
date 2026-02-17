@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.paths import ProjectPaths
+from mi.core.paths import ProjectPaths
 from mi.thoughtdb import ThoughtDbStore
 
 
@@ -92,4 +92,3 @@ class TestThoughtDbNodes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

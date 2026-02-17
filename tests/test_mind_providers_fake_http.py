@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.mind_anthropic import AnthropicMindProvider
-from mi.mind_openai_compat import OpenAICompatibleMindProvider
+from mi.providers.mind_anthropic import AnthropicMindProvider
+from mi.providers.mind_openai_compat import OpenAICompatibleMindProvider
 
 
 _DECIDE_NEXT_OK = {
@@ -120,4 +120,3 @@ class TestMindProvidersFakeHttp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

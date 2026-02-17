@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.memory_service import MemoryService
-from mi.paths import GlobalPaths, ProjectPaths
-from mi.storage import append_jsonl, now_rfc3339
+from mi.core.paths import GlobalPaths, ProjectPaths
+from mi.core.storage import append_jsonl, now_rfc3339
+from mi.memory.service import MemoryService
 from mi.workflows import GlobalWorkflowStore
 
 

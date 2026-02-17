@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from mi.mindspec import MindSpecStore
-from mi.paths import ProjectPaths, project_index_path
+from mi.core.paths import ProjectPaths, project_index_path
 
 
 def _git(cwd: Path, args: list[str]) -> None:

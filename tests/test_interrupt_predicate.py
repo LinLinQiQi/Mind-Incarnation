@@ -1,6 +1,6 @@
 import unittest
 
-from mi.codex_runner import _should_interrupt_command
+from mi.providers.codex_runner import _should_interrupt_command
 
 
 class TestInterruptPredicate(unittest.TestCase):

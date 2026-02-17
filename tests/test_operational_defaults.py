@@ -2,19 +2,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.global_ledger import append_global_event
-from mi.mindspec_runtime import sanitize_mindspec_base_for_runtime
-from mi.operational_defaults import (
+from mi.core.paths import GlobalPaths, ProjectPaths
+from mi.core.storage import iter_jsonl, now_rfc3339
+from mi.mindspec.runtime import sanitize_mindspec_base_for_runtime
+from mi.thoughtdb.global_ledger import append_global_event
+from mi.thoughtdb.operational_defaults import (
     DEFAULTS_EVENT_KIND,
     ensure_operational_defaults_claims_current,
     resolve_operational_defaults,
     ask_when_uncertain_claim_text,
     refactor_intent_claim_text,
 )
-from mi.paths import GlobalPaths, ProjectPaths
-from mi.storage import iter_jsonl, now_rfc3339
 from mi.thoughtdb import ThoughtDbStore
-from mi.pins import ASK_WHEN_UNCERTAIN_TAG, REFACTOR_INTENT_TAG
+from mi.thoughtdb.pins import ASK_WHEN_UNCERTAIN_TAG, REFACTOR_INTENT_TAG
 
 
 class TestOperationalDefaults(unittest.TestCase):
@@ -129,4 +129,3 @@ class TestOperationalDefaults(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

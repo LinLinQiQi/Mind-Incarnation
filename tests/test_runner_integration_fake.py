@@ -6,16 +6,16 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from mi.codex_runner import CodexRunResult
-from mi.memory_service import MemoryService
-from mi.memory_types import MemoryItem
-from mi.mind_errors import MindCallError
+from mi.core.paths import GlobalPaths, ProjectPaths
+from mi.core.storage import iter_jsonl
+from mi.memory.service import MemoryService
+from mi.memory.types import MemoryItem
 from mi.mindspec import MindSpecStore
-from mi.paths import GlobalPaths, ProjectPaths
-from mi.runner import run_autopilot
-from mi.storage import iter_jsonl
+from mi.providers.codex_runner import CodexRunResult
+from mi.providers.mind_errors import MindCallError
+from mi.runtime.runner import run_autopilot
 from mi.thoughtdb import ThoughtDbStore
-from mi.values import write_values_set_event
+from mi.thoughtdb.values import write_values_set_event
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 import unittest
 
-from mi.llm import _extract_json
+from mi.providers.llm import _extract_json
 
 
 class TestExtractJson(unittest.TestCase):
@@ -18,4 +18,3 @@ class TestExtractJson(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

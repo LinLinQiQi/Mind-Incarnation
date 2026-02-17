@@ -2,11 +2,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.paths import GlobalPaths, ProjectPaths
-from mi.storage import iter_jsonl, now_rfc3339
-from mi.thought_context import build_decide_next_thoughtdb_context
+from mi.core.paths import GlobalPaths, ProjectPaths
+from mi.core.storage import iter_jsonl, now_rfc3339
+from mi.thoughtdb.context import build_decide_next_thoughtdb_context
 from mi.thoughtdb import ThoughtDbStore
-from mi.values import VALUES_BASE_TAG, apply_values_claim_patch, existing_values_claims, write_values_set_event
+from mi.thoughtdb.values import VALUES_BASE_TAG, apply_values_claim_patch, existing_values_claims, write_values_set_event
 
 
 class TestValuesAndThoughtContext(unittest.TestCase):
@@ -113,4 +113,3 @@ class TestValuesAndThoughtContext(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

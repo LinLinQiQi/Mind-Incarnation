@@ -3,14 +3,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.inspect import (
+from mi.runtime.inspect import (
     classify_evidence_record,
     load_last_batch_bundle,
     summarize_evidence_record,
     tail_json_objects,
     tail_raw_lines,
 )
-from mi.transcript import last_agent_message_from_transcript
+from mi.runtime.transcript import last_agent_message_from_transcript
 
 
 class TestInspectHelpers(unittest.TestCase):

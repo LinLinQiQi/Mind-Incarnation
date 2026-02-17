@@ -4,9 +4,9 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from mi.codex_runner import CodexRunResult
-from mi.paths import GlobalPaths, ProjectPaths
-from mi.runner import run_autopilot
+from mi.core.paths import GlobalPaths, ProjectPaths
+from mi.providers.codex_runner import CodexRunResult
+from mi.runtime.runner import run_autopilot
 from mi.workflows import GlobalWorkflowStore, WorkflowRegistry, WorkflowStore
 
 

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from mi.cli import main as mi_main
-from mi.paths import ProjectPaths
+from mi.core.paths import ProjectPaths
 from mi.thoughtdb import ThoughtDbStore
 
 

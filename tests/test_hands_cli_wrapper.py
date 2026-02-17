@@ -5,10 +5,10 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from mi.codex_runner import InterruptConfig
-from mi.hands_cli import CliHandsAdapter
-from mi.runner import run_autopilot
-from mi.transcript import summarize_hands_transcript
+from mi.providers.codex_runner import InterruptConfig
+from mi.providers.hands_cli import CliHandsAdapter
+from mi.runtime.runner import run_autopilot
+from mi.runtime.transcript import summarize_hands_transcript
 
 
 @dataclass(frozen=True)

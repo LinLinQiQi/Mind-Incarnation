@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.config import (
+from mi.core.config import (
     default_config,
     init_config,
     load_config,
@@ -15,7 +15,7 @@ from mi.config import (
     apply_config_template,
     rollback_config,
 )
-from mi.schema_validate import validate_json_schema
+from mi.core.schema_validate import validate_json_schema
 
 
 class TestConfigAndSchema(unittest.TestCase):

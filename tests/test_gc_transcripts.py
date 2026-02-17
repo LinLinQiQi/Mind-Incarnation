@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.gc import archive_project_transcripts
-from mi.paths import ProjectPaths
-from mi.storage import ensure_dir
-from mi.transcript import last_agent_message_from_transcript, resolve_transcript_path, tail_transcript_lines
+from mi.core.paths import ProjectPaths
+from mi.core.storage import ensure_dir
+from mi.runtime.gc import archive_project_transcripts
+from mi.runtime.transcript import last_agent_message_from_transcript, resolve_transcript_path, tail_transcript_lines
 
 
 def _write_transcript(path: Path, stdout_lines: list[str]) -> None:
@@ -60,4 +60,3 @@ class TestGcTranscripts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

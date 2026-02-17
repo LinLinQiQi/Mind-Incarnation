@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mi.cli import main as mi_main
-from mi.codex_runner import CodexRunResult
 from mi.mindspec import MindSpecStore
-from mi.paths import ProjectPaths
-from mi.runner import run_autopilot
+from mi.core.paths import ProjectPaths
+from mi.providers.codex_runner import CodexRunResult
+from mi.runtime.runner import run_autopilot
 from mi.thoughtdb import ThoughtDbStore
 
 

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.paths import project_identity, resolve_cli_project_root, project_index_path
+from mi.core.paths import project_identity, resolve_cli_project_root, project_index_path
 
 
 def _git(cwd: Path, args: list[str]) -> None:
@@ -78,4 +78,3 @@ class TestCliProjectRootResolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

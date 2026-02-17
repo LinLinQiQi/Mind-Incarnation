@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.memory_service import MemoryService
-from mi.paths import ProjectPaths
+from mi.core.paths import ProjectPaths
+from mi.memory.service import MemoryService
 from mi.thoughtdb import ThoughtDbStore
 
 

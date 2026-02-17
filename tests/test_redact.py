@@ -1,6 +1,6 @@
 import unittest
 
-from mi.redact import redact_text
+from mi.core.redact import redact_text
 
 
 class TestRedact(unittest.TestCase):
@@ -25,4 +25,3 @@ class TestRedact(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

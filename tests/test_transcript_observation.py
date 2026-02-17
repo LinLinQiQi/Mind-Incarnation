@@ -1,7 +1,7 @@
 import unittest
 
 
-from mi.transcript import summarize_codex_events
+from mi.runtime.transcript import summarize_codex_events
 
 
 class TestTranscriptObservation(unittest.TestCase):
@@ -52,4 +52,3 @@ class TestTranscriptObservation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

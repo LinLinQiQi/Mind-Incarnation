@@ -3,9 +3,9 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from mi.codex_runner import CodexRunResult
 from mi.mindspec import MindSpecStore
-from mi.runner import run_autopilot
+from mi.providers.codex_runner import CodexRunResult
+from mi.runtime.runner import run_autopilot
 
 
 @dataclass(frozen=True)

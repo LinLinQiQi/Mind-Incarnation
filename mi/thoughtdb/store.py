@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..core.paths import GlobalPaths, ProjectPaths
-from ..core.storage import append_jsonl, ensure_dir, iter_jsonl, now_rfc3339
+from ..core.storage import append_jsonl, ensure_dir, iter_jsonl, now_rfc3339, read_json, atomic_write_json
 
 
 THOUGHTDB_VERSION = "v1"
+_VIEW_SNAPSHOT_KIND = "mi.thoughtdb.view_snapshot"
+_VIEW_SNAPSHOT_VERSION = "v1"
 
 
 def new_claim_id() -> str:
@@ -230,6 +232,164 @@ class ThoughtDbStore:
         ensure_dir(edges.parent)
         ensure_dir(nodes.parent)
 
+    def _view_snapshot_path(self, scope: str) -> Path:
+        if scope == "global":
+            return self._gp.thoughtdb_global_dir / "view.snapshot.json"
+        return self._project_paths.thoughtdb_dir / "view.snapshot.json"
+
+    def _snapshot_metas_obj(self, metas: tuple[tuple[int, int], tuple[int, int], tuple[int, int]]) -> dict[str, dict[str, int]]:
+        return {
+            "claims": {"size": int(metas[0][0]), "mtime_ns": int(metas[0][1])},
+            "edges": {"size": int(metas[1][0]), "mtime_ns": int(metas[1][1])},
+            "nodes": {"size": int(metas[2][0]), "mtime_ns": int(metas[2][1])},
+        }
+
+    def _load_view_snapshot(self, *, scope: str, metas: tuple[tuple[int, int], tuple[int, int], tuple[int, int]]) -> ThoughtDbView | None:
+        """Load a persisted ThoughtDbView snapshot when it matches current file metas (best-effort)."""
+
+        path = self._view_snapshot_path(scope)
+        try:
+            obj = read_json(path, default=None)
+        except Exception:
+            obj = None
+        if not isinstance(obj, dict):
+            return None
+        if str(obj.get("kind") or "").strip() != _VIEW_SNAPSHOT_KIND:
+            return None
+        if str(obj.get("version") or "").strip() != _VIEW_SNAPSHOT_VERSION:
+            return None
+        if str(obj.get("scope") or "").strip() != str(scope or "").strip():
+            return None
+
+        want = self._snapshot_metas_obj(metas)
+        got = obj.get("source_metas")
+        if not isinstance(got, dict):
+            return None
+        if got != want:
+            return None
+
+        view_obj = obj.get("view")
+        if not isinstance(view_obj, dict):
+            return None
+
+        claims_by_id = view_obj.get("claims_by_id")
+        nodes_by_id = view_obj.get("nodes_by_id")
+        edges = view_obj.get("edges")
+        redirects = view_obj.get("redirects_same_as")
+        superseded_ids = view_obj.get("superseded_ids")
+        retracted_ids = view_obj.get("retracted_ids")
+        retracted_node_ids = view_obj.get("retracted_node_ids")
+
+        if not isinstance(claims_by_id, dict):
+            return None
+        if not isinstance(nodes_by_id, dict):
+            return None
+        if not isinstance(edges, list):
+            return None
+        if not isinstance(redirects, dict):
+            return None
+        if not isinstance(superseded_ids, list):
+            superseded_ids = []
+        if not isinstance(retracted_ids, list):
+            retracted_ids = []
+        if not isinstance(retracted_node_ids, list):
+            retracted_node_ids = []
+
+        # Rebuild lightweight indices; snapshot stores only base view to avoid duplication.
+        claims_by_tag: dict[str, set[str]] = {}
+        for cid, c in claims_by_id.items():
+            if not isinstance(c, dict):
+                continue
+            tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+            for t in tags:
+                ts = str(t or "").strip()
+                if ts:
+                    claims_by_tag.setdefault(ts, set()).add(str(cid))
+
+        nodes_by_tag: dict[str, set[str]] = {}
+        for nid, n in nodes_by_id.items():
+            if not isinstance(n, dict):
+                continue
+            tags = n.get("tags") if isinstance(n.get("tags"), list) else []
+            for t in tags:
+                ts = str(t or "").strip()
+                if ts:
+                    nodes_by_tag.setdefault(ts, set()).add(str(nid))
+
+        edges_by_from: dict[str, list[dict[str, Any]]] = {}
+        edges_by_to: dict[str, list[dict[str, Any]]] = {}
+        for e in edges:
+            if not isinstance(e, dict):
+                continue
+            frm = str(e.get("from_id") or "").strip()
+            to = str(e.get("to_id") or "").strip()
+            if frm:
+                edges_by_from.setdefault(frm, []).append(e)
+            if to:
+                edges_by_to.setdefault(to, []).append(e)
+
+        claim_ts: list[tuple[str, str]] = []
+        for cid, c in claims_by_id.items():
+            if not isinstance(c, dict):
+                continue
+            claim_ts.append((str(c.get("asserted_ts") or "").strip(), str(cid)))
+        claim_ts.sort(key=lambda x: x[0], reverse=True)
+
+        node_ts: list[tuple[str, str]] = []
+        for nid, n in nodes_by_id.items():
+            if not isinstance(n, dict):
+                continue
+            node_ts.append((str(n.get("asserted_ts") or "").strip(), str(nid)))
+        node_ts.sort(key=lambda x: x[0], reverse=True)
+
+        pid = self._project_id_for_scope(scope)
+        return ThoughtDbView(
+            scope=scope,
+            project_id=pid,
+            claims_by_id={str(k): v for k, v in claims_by_id.items() if str(k).strip() and isinstance(v, dict)},
+            nodes_by_id={str(k): v for k, v in nodes_by_id.items() if str(k).strip() and isinstance(v, dict)},
+            edges=[x for x in edges if isinstance(x, dict)],
+            redirects_same_as={str(k): str(v).strip() for k, v in redirects.items() if str(k).strip() and str(v).strip()},
+            superseded_ids={str(x).strip() for x in superseded_ids if str(x).strip()},
+            retracted_ids={str(x).strip() for x in retracted_ids if str(x).strip()},
+            retracted_node_ids={str(x).strip() for x in retracted_node_ids if str(x).strip()},
+            claims_by_tag=claims_by_tag,
+            nodes_by_tag=nodes_by_tag,
+            edges_by_from=edges_by_from,
+            edges_by_to=edges_by_to,
+            claim_ids_by_asserted_ts_desc=[cid for _ts, cid in claim_ts if cid],
+            node_ids_by_asserted_ts_desc=[nid for _ts, nid in node_ts if nid],
+        )
+
+    def _write_view_snapshot(
+        self,
+        *,
+        scope: str,
+        metas: tuple[tuple[int, int], tuple[int, int], tuple[int, int]],
+        view: ThoughtDbView,
+    ) -> None:
+        """Persist a minimal view snapshot for faster cold loads (best-effort)."""
+
+        path = self._view_snapshot_path(scope)
+        obj: dict[str, Any] = {
+            "kind": _VIEW_SNAPSHOT_KIND,
+            "version": _VIEW_SNAPSHOT_VERSION,
+            "built_ts": now_rfc3339(),
+            "scope": scope,
+            "project_id": str(view.project_id or ""),
+            "source_metas": self._snapshot_metas_obj(metas),
+            "view": {
+                "claims_by_id": view.claims_by_id,
+                "nodes_by_id": view.nodes_by_id,
+                "edges": view.edges,
+                "redirects_same_as": view.redirects_same_as,
+                "superseded_ids": sorted(view.superseded_ids),
+                "retracted_ids": sorted(view.retracted_ids),
+                "retracted_node_ids": sorted(view.retracted_node_ids),
+            },
+        }
+        atomic_write_json(path, obj)
+
     def load_view(self, *, scope: str) -> ThoughtDbView:
         sc = (scope or "project").strip()
         if sc not in ("project", "global"):
@@ -239,6 +399,15 @@ class ThoughtDbStore:
         cached = self._view_cache.get(sc)
         if cached and cached[1] == metas:
             return cached[0]
+
+        snap = None
+        try:
+            snap = self._load_view_snapshot(scope=sc, metas=metas)
+        except Exception:
+            snap = None
+        if snap is not None:
+            self._view_cache[sc] = (snap, metas)
+            return snap
 
         claims_path = self._claims_path(sc)
         edges_path = self._edges_path(sc)
@@ -344,6 +513,10 @@ class ThoughtDbStore:
             retracted_node_ids=retracted_nodes,
         )
         self._view_cache[sc] = (view, metas)
+        try:
+            self._write_view_snapshot(scope=sc, metas=metas, view=view)
+        except Exception:
+            pass
         return view
 
     def existing_signatures(self, *, scope: str) -> set[str]:

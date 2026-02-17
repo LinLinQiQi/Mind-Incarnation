@@ -894,6 +894,8 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `thoughtdb/global/claims.jsonl` (global Claims)
   - `thoughtdb/global/edges.jsonl` (global Edges)
   - `thoughtdb/global/nodes.jsonl` (global Nodes)
+  - `thoughtdb/global/view.snapshot.json` (optional; persisted materialized view for faster cold loads; safe to delete)
+  - `thoughtdb/global/archive/<ts>/*.jsonl.gz` + `thoughtdb/global/archive/<ts>/manifest.json` (optional; created by `mi gc thoughtdb --global`)
 - Project index (stable identity -> project_id mapping):
   - `projects/index.json`
 - Per project (keyed by a resolved `project_id`):
@@ -904,6 +906,8 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/<project_id>/thoughtdb/claims.jsonl` (project Claims)
   - `projects/<project_id>/thoughtdb/edges.jsonl` (project Edges)
   - `projects/<project_id>/thoughtdb/nodes.jsonl` (project Nodes)
+  - `projects/<project_id>/thoughtdb/view.snapshot.json` (optional; persisted materialized view for faster cold loads; safe to delete)
+  - `projects/<project_id>/thoughtdb/archive/<ts>/*.jsonl.gz` + `projects/<project_id>/thoughtdb/archive/<ts>/manifest.json` (optional; created by `mi gc thoughtdb`)
   - `projects/<project_id>/workflows/*.json` (workflow IR; source of truth)
   - `projects/<project_id>/workflow_candidates.json` (signature -> count; used for workflow mining)
   - `projects/<project_id>/preference_candidates.json` (signature -> count; used for preference mining)
@@ -925,6 +929,8 @@ Transcript archiving (optional): `mi gc transcripts` can gzip older transcripts 
 ```json
 {"type":"mi.transcript.archived","archived_path":".../archive/<name>.jsonl.gz", "...":"..."}
 ```
+
+Thought DB compaction (optional): `mi gc thoughtdb` archives Thought DB JSONL files into `thoughtdb/archive/<ts>/` as `.gz`, then rewrites compacted JSONL files (still append-only from that point onward). It also deletes `view.snapshot.json` and rebuilds it on the next load.
 
 ## CLI Usage (V1)
 

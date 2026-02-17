@@ -207,6 +207,16 @@ mi gc transcripts --cd /path/to/your/project
 mi gc transcripts --cd /path/to/your/project --apply
 ```
 
+Optional: compact Thought DB JSONL (archive + rewrite; default is dry-run):
+
+```bash
+mi gc thoughtdb --cd /path/to/your/project
+mi gc thoughtdb --cd /path/to/your/project --apply
+
+mi gc thoughtdb --global
+mi gc thoughtdb --global --apply
+```
+
 Preference tightening (reversible; strict Thought DB mode):
 
 ```bash

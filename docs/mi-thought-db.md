@@ -216,12 +216,16 @@ Project-scoped (per `project_id`):
 - `~/.mind-incarnation/projects/<project_id>/thoughtdb/claims.jsonl`
 - `~/.mind-incarnation/projects/<project_id>/thoughtdb/edges.jsonl`
 - `~/.mind-incarnation/projects/<project_id>/thoughtdb/nodes.jsonl`
+- `~/.mind-incarnation/projects/<project_id>/thoughtdb/view.snapshot.json` (optional; persisted materialized view; safe to delete)
+- `~/.mind-incarnation/projects/<project_id>/thoughtdb/archive/<ts>/*.jsonl.gz` + `manifest.json` (optional; created by `mi gc thoughtdb`)
 
 Global (shared across projects):
 
 - `~/.mind-incarnation/thoughtdb/global/claims.jsonl`
 - `~/.mind-incarnation/thoughtdb/global/edges.jsonl`
 - `~/.mind-incarnation/thoughtdb/global/nodes.jsonl`
+- `~/.mind-incarnation/thoughtdb/global/view.snapshot.json` (optional; persisted materialized view; safe to delete)
+- `~/.mind-incarnation/thoughtdb/global/archive/<ts>/*.jsonl.gz` + `manifest.json` (optional; created by `mi gc thoughtdb --global`)
 
 ### CLI (V1)
 
@@ -237,6 +241,7 @@ Global (shared across projects):
 - `mi edge list --cd <project>` (filterable by `--type/--from/--to`; default scope=project)
 - `mi edge show <edge_id> --cd <project>`
 - `mi why last --cd <project>` / `mi why event <event_id> --cd <project>` / `mi why claim <claim_id> --cd <project>`
+- `mi gc thoughtdb --cd <project>` / `mi gc thoughtdb --global` (optional; archives + compacts Thought DB JSONL and rebuilds `view.snapshot.json`)
 
 ### Mining Trigger (V1)
 

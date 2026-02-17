@@ -476,6 +476,15 @@ def main(argv: list[str] | None = None) -> int:
     p_gct.add_argument("--apply", action="store_true", help="Apply changes (default is dry-run).")
     p_gct.add_argument("--json", action="store_true", help="Print result as JSON.")
 
+    p_gctdb = gc_sub.add_parser(
+        "thoughtdb",
+        help="Compact Thought DB JSONL files by archiving then rewriting them (safe, reversible).",
+    )
+    p_gctdb.add_argument("--cd", default="", help="Project root used to locate MI artifacts (unless --global).")
+    p_gctdb.add_argument("--global", dest="gc_global", action="store_true", help="Compact the global Thought DB instead of the current project.")
+    p_gctdb.add_argument("--apply", action="store_true", help="Apply changes (default is dry-run).")
+    p_gctdb.add_argument("--json", action="store_true", help="Print result as JSON.")
+
     args = parser.parse_args(argv)
     home_dir = Path(str(args.home)).expanduser().resolve() if args.home else default_home_dir()
     cfg = load_config(home_dir)

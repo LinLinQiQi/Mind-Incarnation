@@ -53,3 +53,8 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
+
+def atomic_write_json(path: Path, obj: Any) -> None:
+    """Write JSON to `path` atomically (best-effort, no fsync)."""
+
+    atomic_write_text(path, json.dumps(obj, indent=2, sort_keys=True) + "\n")

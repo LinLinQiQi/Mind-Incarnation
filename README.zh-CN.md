@@ -207,6 +207,16 @@ mi gc transcripts --cd /path/to/your/project
 mi gc transcripts --cd /path/to/your/project --apply
 ```
 
+可选：压缩 Thought DB JSONL（先归档再重写；默认 dry-run）：
+
+```bash
+mi gc thoughtdb --cd /path/to/your/project
+mi gc thoughtdb --cd /path/to/your/project --apply
+
+mi gc thoughtdb --global
+mi gc thoughtdb --global --apply
+```
+
 偏好收紧（可回滚；严格 Thought DB 模式）：
 
 ```bash

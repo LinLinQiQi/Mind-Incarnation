@@ -43,6 +43,7 @@ from .providers.provider_factory import make_hands_functions, make_mind_provider
 from .runtime.gc import archive_project_transcripts
 from .core.storage import append_jsonl, iter_jsonl, now_rfc3339
 from .thoughtdb import ThoughtDbStore, claim_signature
+from .thoughtdb.compact import compact_thoughtdb_dir
 from .workflows import (
     WorkflowStore,
     GlobalWorkflowStore,
@@ -1193,6 +1194,59 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             print(f"mind: keep={mind.get('keep')} planned={mind.get('planned')}")
             if not bool(args.apply):
                 print("Re-run with --apply to archive.")
+            return 0
+
+        if args.gc_cmd == "thoughtdb":
+            dry_run = not bool(getattr(args, "apply", False))
+            is_global = bool(getattr(args, "gc_global", False))
+
+            if is_global:
+                gp = GlobalPaths(home_dir=home_dir)
+                snap = gp.thoughtdb_global_dir / "view.snapshot.json"
+                res = compact_thoughtdb_dir(thoughtdb_dir=gp.thoughtdb_global_dir, snapshot_path=snap, dry_run=dry_run)
+                res["scope"] = "global"
+            else:
+                project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+                pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+                snap = pp.thoughtdb_dir / "view.snapshot.json"
+                res = compact_thoughtdb_dir(thoughtdb_dir=pp.thoughtdb_dir, snapshot_path=snap, dry_run=dry_run)
+                res["scope"] = "project"
+                res["project_id"] = pp.project_id
+                res["project_dir"] = str(pp.project_dir)
+
+            # Rebuild snapshot after applying compaction (best-effort).
+            res["snapshot"] = res.get("snapshot") if isinstance(res.get("snapshot"), dict) else {"path": str(snap)}
+            if not dry_run:
+                try:
+                    if is_global:
+                        dummy_pp = ProjectPaths(home_dir=home_dir, project_root=Path("."), _project_id="__global__")
+                        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=dummy_pp)
+                        tdb.load_view(scope="global")
+                    else:
+                        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)  # type: ignore[arg-type]
+                        tdb.load_view(scope="project")
+                    res["snapshot"]["rebuilt"] = True
+                except Exception as e:
+                    res["snapshot"]["rebuilt"] = False
+                    res["snapshot"]["rebuild_error"] = f"{type(e).__name__}: {e}"
+
+            if args.json:
+                print(json.dumps(res, indent=2, sort_keys=True))
+                return 0
+
+            mode = "dry-run" if res.get("dry_run") else "applied"
+            scope = str(res.get("scope") or "").strip() or ("global" if is_global else "project")
+            print(f"{mode} scope={scope} thoughtdb_dir={res.get('thoughtdb_dir')}")
+            files = res.get("files") if isinstance(res.get("files"), dict) else {}
+            for name in ("claims", "edges", "nodes"):
+                item = files.get(name) if isinstance(files.get(name), dict) else {}
+                w = item.get("write") if isinstance(item.get("write"), dict) else {}
+                cs = item.get("compact_stats") if isinstance(item.get("compact_stats"), dict) else {}
+                planned = w.get("lines") if isinstance(w.get("lines"), int) else cs.get("output_lines")
+                inp = cs.get("input_lines")
+                print(f"{name}: input_lines={inp} output_lines={planned}")
+            if dry_run:
+                print("Re-run with --apply to compact and archive.")
             return 0
 
     if args.cmd == "claim":

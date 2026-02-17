@@ -66,6 +66,11 @@ def default_config() -> dict[str, Any]:
             },
         },
         "runtime": {
+            "project_selection": {
+                # When true, project-scoped CLI commands update `global/project_selection.json`
+                # so `mi run ...` can work from any directory (outside of git).
+                "auto_update_last": True,
+            },
             "verification": {
                 "no_tests_policy": "ask_once_per_project_then_remember",
             },

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .storage import ensure_dir, read_json, write_json
+from .storage import ensure_dir, now_rfc3339, read_json, write_json
 
 
 def default_home_dir() -> Path:
@@ -270,16 +270,23 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
       (or a provided `--cd`) was previously used as a distinct project root, keep it.
 
     Resolution order:
-    1) Explicit `--cd` (if provided)
+    1) Explicit `--cd` (if provided; supports `@last/@pinned/@alias`)
     2) $MI_PROJECT_ROOT (if set)
     3) If inside git and the current dir is not a known project root, use git toplevel
-    4) Fall back to cwd
+    4) If not inside git and a last-used project exists, use it
+    5) Fall back to cwd
 
     Returns: (project_root_path, reason)
     """
 
     cd_s = str(cd or "").strip()
     if cd_s:
+        if cd_s.startswith("@"):
+            token = cd_s
+            p = resolve_project_selection_token(home_dir, token)
+            if p is None:
+                return (cwd or Path.cwd()).resolve(), f"error:alias_missing:{token}"
+            return p, f"arg:{token}"
         return Path(cd_s).expanduser().resolve(), "arg"
 
     env_root = str(os.environ.get("MI_PROJECT_ROOT") or "").strip()
@@ -308,6 +315,11 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
             if key_top and mapping.get(key_top):
                 return top, "known:git_toplevel"
             return top, "git_toplevel"
+
+    # Outside of git, allow falling back to the last-used project to reduce `--cd` burden.
+    last = resolve_project_selection_token(home_dir, "@last")
+    if last is not None:
+        return last, "last"
 
     return cur, "cwd"
 
@@ -397,6 +409,11 @@ class GlobalPaths:
         return self.global_dir / "evidence.jsonl"
 
     @property
+    def project_selection_path(self) -> Path:
+        # Non-canonical convenience state for "run from anywhere" project selection.
+        return self.global_dir / "project_selection.json"
+
+    @property
     def global_workflows_dir(self) -> Path:
         # Global workflow IR (source of truth, shared across projects; project can override).
         return self.home_dir / "workflows" / "global"
@@ -426,3 +443,179 @@ class GlobalPaths:
     @property
     def thoughtdb_global_nodes_path(self) -> Path:
         return self.thoughtdb_global_dir / "nodes.jsonl"
+
+
+_PROJECT_SELECTION_VERSION = "v1"
+_ALIAS_NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def project_selection_path(home_dir: Path) -> Path:
+    """Path to non-canonical project selection registry (last/pinned/aliases)."""
+
+    return GlobalPaths(home_dir=Path(home_dir).expanduser().resolve()).project_selection_path
+
+
+def _default_project_selection_obj() -> dict[str, object]:
+    return {"version": _PROJECT_SELECTION_VERSION, "last": {}, "pinned": {}, "aliases": {}}
+
+
+def load_project_selection(home_dir: Path) -> dict[str, object]:
+    """Load the project selection registry (best-effort; never raises)."""
+
+    path = project_selection_path(home_dir)
+    try:
+        obj = read_json(path, default=None)
+    except Exception:
+        obj = None
+    if not isinstance(obj, dict):
+        return _default_project_selection_obj()
+
+    out = _default_project_selection_obj()
+    out.update(obj)
+    if not isinstance(out.get("aliases"), dict):
+        out["aliases"] = {}
+    if not isinstance(out.get("last"), dict):
+        out["last"] = {}
+    if not isinstance(out.get("pinned"), dict):
+        out["pinned"] = {}
+    if not isinstance(out.get("version"), str):
+        out["version"] = _PROJECT_SELECTION_VERSION
+    return out
+
+
+def write_project_selection(home_dir: Path, obj: dict[str, object]) -> None:
+    """Write the selection registry (best-effort)."""
+
+    path = project_selection_path(home_dir)
+    ensure_dir(path.parent)
+    write_json(path, obj)
+
+
+def _selection_entry_for_root(home_dir: Path, project_root: Path) -> dict[str, object]:
+    root = Path(project_root).expanduser().resolve()
+    pp = ProjectPaths(home_dir=Path(home_dir).expanduser().resolve(), project_root=root)
+    ident = project_identity(root)
+    return {
+        "ts": now_rfc3339(),
+        "root_path": str(root),
+        "project_id": str(pp.project_id),
+        "identity": ident,
+    }
+
+
+def record_last_project_selection(home_dir: Path, project_root: Path) -> dict[str, object]:
+    """Set the `@last` project (best-effort). Returns the stored entry."""
+
+    obj = load_project_selection(home_dir)
+    entry = _selection_entry_for_root(home_dir, project_root)
+    obj["last"] = entry
+    write_project_selection(home_dir, obj)
+    return entry
+
+
+def set_pinned_project_selection(home_dir: Path, project_root: Path) -> dict[str, object]:
+    """Set the `@pinned` project (best-effort). Returns the stored entry."""
+
+    obj = load_project_selection(home_dir)
+    entry = _selection_entry_for_root(home_dir, project_root)
+    obj["pinned"] = entry
+    write_project_selection(home_dir, obj)
+    return entry
+
+
+def clear_pinned_project_selection(home_dir: Path) -> None:
+    obj = load_project_selection(home_dir)
+    obj["pinned"] = {}
+    write_project_selection(home_dir, obj)
+
+
+def normalize_project_alias(name: str) -> str:
+    n = str(name or "").strip()
+    if not n:
+        return ""
+    if not _ALIAS_NAME_RX.fullmatch(n):
+        return ""
+    return n
+
+
+def set_project_alias(home_dir: Path, *, name: str, project_root: Path) -> dict[str, object]:
+    """Add/update an alias entry. Returns the stored entry."""
+
+    alias = normalize_project_alias(name)
+    if not alias:
+        raise ValueError("invalid alias name (expected [A-Za-z0-9][A-Za-z0-9._-]{0,63})")
+
+    obj = load_project_selection(home_dir)
+    aliases = obj.get("aliases")
+    if not isinstance(aliases, dict):
+        aliases = {}
+        obj["aliases"] = aliases
+    entry = _selection_entry_for_root(home_dir, project_root)
+    aliases[alias] = entry
+    write_project_selection(home_dir, obj)
+    return entry
+
+
+def remove_project_alias(home_dir: Path, *, name: str) -> bool:
+    alias = normalize_project_alias(name)
+    if not alias:
+        return False
+    obj = load_project_selection(home_dir)
+    aliases = obj.get("aliases")
+    if not isinstance(aliases, dict):
+        return False
+    if alias not in aliases:
+        return False
+    del aliases[alias]
+    write_project_selection(home_dir, obj)
+    return True
+
+
+def list_project_aliases(home_dir: Path) -> dict[str, dict[str, object]]:
+    obj = load_project_selection(home_dir)
+    aliases = obj.get("aliases")
+    if not isinstance(aliases, dict):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for k, v in aliases.items():
+        ks = str(k or "").strip()
+        if not ks:
+            continue
+        if isinstance(v, dict):
+            out[ks] = v
+    return out
+
+
+def resolve_project_selection_token(home_dir: Path, token: str) -> Path | None:
+    """Resolve `@last/@pinned/@alias` tokens into an existing root path."""
+
+    tok = str(token or "").strip()
+    if not tok:
+        return None
+    if tok.startswith("@"):
+        tok = tok[1:]
+    tok = tok.strip()
+    if not tok:
+        return None
+
+    obj = load_project_selection(home_dir)
+
+    entry: dict[str, object] | None = None
+    if tok in ("last", "pinned"):
+        x = obj.get(tok)
+        entry = x if isinstance(x, dict) else None
+    else:
+        aliases = obj.get("aliases")
+        if isinstance(aliases, dict):
+            x = aliases.get(tok)
+            entry = x if isinstance(x, dict) else None
+
+    if not entry:
+        return None
+    root_path = entry.get("root_path")
+    if not isinstance(root_path, str) or not root_path.strip():
+        return None
+    p = Path(root_path).expanduser().resolve()
+    if not p.exists():
+        return None
+    return p

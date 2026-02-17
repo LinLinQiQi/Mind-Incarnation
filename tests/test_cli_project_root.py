@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.core.paths import project_identity, resolve_cli_project_root, project_index_path
+from mi.core.paths import GlobalPaths, project_identity, resolve_cli_project_root, project_index_path
 
 
 def _git(cwd: Path, args: list[str]) -> None:
@@ -29,6 +29,16 @@ class TestCliProjectRootResolution(unittest.TestCase):
             _git(repo, ["init"])
             _git(repo, ["config", "user.email", "mi@example.com"])
             _git(repo, ["config", "user.name", "MI"])
+
+            # Even if a last-used selection exists, being inside git should prefer git toplevel.
+            other = base / "other"
+            other.mkdir(parents=True, exist_ok=True)
+            gp = GlobalPaths(home_dir=Path(home))
+            gp.project_selection_path.parent.mkdir(parents=True, exist_ok=True)
+            gp.project_selection_path.write_text(
+                json.dumps({"version": "v1", "last": {"root_path": str(other.resolve())}}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
 
             root, reason = resolve_cli_project_root(Path(home), "", cwd=sub)
             self.assertEqual(root, repo.resolve())
@@ -76,6 +86,47 @@ class TestCliProjectRootResolution(unittest.TestCase):
 
             self.assertEqual(root, a.resolve())
             self.assertEqual(reason, "env:MI_PROJECT_ROOT")
+
+    def test_cd_token_alias_resolves_from_selection_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            a = base / "a"
+            a.mkdir(parents=True, exist_ok=True)
+
+            gp = GlobalPaths(home_dir=Path(home))
+            gp.project_selection_path.parent.mkdir(parents=True, exist_ok=True)
+            gp.project_selection_path.write_text(
+                json.dumps({"version": "v1", "aliases": {"foo": {"root_path": str(a.resolve())}}}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            root, reason = resolve_cli_project_root(Path(home), "@foo", cwd=base)
+            self.assertEqual(root, a.resolve())
+            self.assertEqual(reason, "arg:@foo")
+
+    def test_cd_token_missing_returns_error_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            root, reason = resolve_cli_project_root(Path(home), "@missing", cwd=base)
+            self.assertEqual(root, base.resolve())
+            self.assertEqual(reason, "error:alias_missing:@missing")
+
+    def test_outside_git_falls_back_to_last_when_cd_omitted(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            a = base / "a"
+            a.mkdir(parents=True, exist_ok=True)
+
+            gp = GlobalPaths(home_dir=Path(home))
+            gp.project_selection_path.parent.mkdir(parents=True, exist_ok=True)
+            gp.project_selection_path.write_text(
+                json.dumps({"version": "v1", "last": {"root_path": str(a.resolve())}}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            root, reason = resolve_cli_project_root(Path(home), "", cwd=base)
+            self.assertEqual(root, a.resolve())
+            self.assertEqual(reason, "last")
 
 
 if __name__ == "__main__":

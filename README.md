@@ -147,8 +147,14 @@ mi run --cd /path/to/your/project --show "Do X, then verify with minimal checks.
 
 Notes on `--cd`:
 
-- `--cd` is optional. If omitted and you're inside a git repo, MI defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject).
+- `--cd` is optional:
+  - Inside a git repo: MI defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject).
+  - Outside git: MI uses `@last` (if recorded), otherwise uses the current directory.
 - You can set `$MI_PROJECT_ROOT` to run MI commands from anywhere without repeating `--cd`.
+- You can also use selection tokens:
+  - `--cd @last` / `--cd @pinned` / `--cd @<alias>`
+  - Manage them via `mi project use`, `mi project pin/unpin`, `mi project alias add/rm/list`
+- `runtime.project_selection.auto_update_last` controls whether project-scoped commands update `@last` automatically (default: true).
 
 Optional: resume/reset Hands session across runs (best-effort):
 
@@ -170,6 +176,18 @@ Show per-project overlay + resolved storage paths:
 mi project show --cd /path/to/your/project
 mi project show --cd /path/to/your/project --json
 mi project show --cd /path/to/your/project --redact
+```
+
+Project selection shortcuts (`@last/@pinned/@alias`):
+
+```bash
+mi project use --cd /path/to/your/project
+mi project pin --cd /path/to/your/project
+mi project unpin
+mi project alias add repo1 --cd /path/to/your/project
+mi project alias list
+
+mi run --cd @repo1 --show "Do X, then verify with minimal checks."
 ```
 
 Note: JSON outputs keep some legacy key names (e.g., `codex_last_message`, `next_codex_input`) for backward compatibility; they refer to Hands.

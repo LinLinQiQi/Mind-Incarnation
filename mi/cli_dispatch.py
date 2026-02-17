@@ -22,7 +22,20 @@ from .core.config import (
 )
 from .runtime.prompts import compile_values_prompt, edit_workflow_prompt, mine_claims_prompt, values_claim_patch_prompt
 from .runtime.runner import run_autopilot
-from .core.paths import GlobalPaths, ProjectPaths, project_index_path, resolve_cli_project_root
+from .core.paths import (
+    GlobalPaths,
+    ProjectPaths,
+    project_index_path,
+    resolve_cli_project_root,
+    record_last_project_selection,
+    set_pinned_project_selection,
+    clear_pinned_project_selection,
+    set_project_alias,
+    remove_project_alias,
+    list_project_aliases,
+    load_project_selection,
+    project_selection_path,
+)
 from .runtime.inspect import load_last_batch_bundle, tail_raw_lines, tail_json_objects, summarize_evidence_record
 from .runtime.transcript import last_agent_message_from_transcript, tail_transcript_lines, resolve_transcript_path
 from .core.redact import redact_text
@@ -94,7 +107,7 @@ def _unified_diff(a: str, b: str, *, fromfile: str, tofile: str, limit_lines: in
     return "".join(diff).rstrip() + "\n" if diff else ""
 
 
-def _resolve_project_root_from_args(home_dir: Path, cd_arg: str) -> Path:
+def _resolve_project_root_from_args(home_dir: Path, cd_arg: str, *, cfg: dict[str, Any] | None = None) -> Path:
     """Resolve an effective project root for CLI handlers.
 
     - If `--cd` is omitted, MI may infer git toplevel (see `resolve_cli_project_root`).
@@ -102,9 +115,24 @@ def _resolve_project_root_from_args(home_dir: Path, cd_arg: str) -> Path:
     """
 
     root, reason = resolve_cli_project_root(home_dir, cd_arg, cwd=Path.cwd())
+    if str(reason or "").startswith("error:alias_missing:"):
+        token = str(reason).split("error:alias_missing:", 1)[-1].strip() or str(cd_arg or "").strip()
+        print(f"[mi] unknown project token: {token}", file=sys.stderr)
+        print("[mi] tip: run `mi project alias list` or set `mi project use --cd <path>` to set @last.", file=sys.stderr)
+        raise SystemExit(2)
     cwd = Path.cwd().resolve()
-    if reason != "arg" and root != cwd:
+    if not str(reason or "").startswith("arg") and root != cwd:
         print(f"[mi] using inferred project_root={root} (reason={reason}, cwd={cwd})", file=sys.stderr)
+
+    # Auto-update the last-used project (non-canonical convenience) to reduce `--cd` burden.
+    runtime_cfg = cfg.get("runtime") if isinstance(cfg, dict) and isinstance(cfg.get("runtime"), dict) else {}
+    ps_cfg = runtime_cfg.get("project_selection") if isinstance(runtime_cfg.get("project_selection"), dict) else {}
+    auto_update = bool(ps_cfg.get("auto_update_last", True))
+    if auto_update:
+        try:
+            record_last_project_selection(home_dir, root)
+        except Exception:
+            pass
     return root
 
 
@@ -519,7 +547,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         if args.settings_cmd == "show":
             cd = str(getattr(args, "cd", "") or "").strip()
             if cd:
-                project_root = _resolve_project_root_from_args(home_dir, cd)
+                project_root = _resolve_project_root_from_args(home_dir, cd, cfg=cfg)
                 pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
             else:
                 pp = ProjectPaths(home_dir=home_dir, project_root=Path("."), _project_id="__global__")
@@ -570,7 +598,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 return 0
 
             # Project-scoped overrides: write setting claims into the project store (append-only).
-            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
             pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
             tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
             evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
@@ -669,7 +697,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
 
     if args.cmd == "run":
         hands_exec, hands_resume = make_hands_functions(cfg)
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
         project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
         llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=project_paths.transcripts_dir)
         hands_provider = ""
@@ -695,7 +723,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 0 if result.status == "done" else 1
 
     if args.cmd == "last":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
 
         bundle = load_last_batch_bundle(pp.evidence_log_path)
@@ -872,7 +900,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 0
 
     if args.cmd == "evidence":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         if args.evidence_cmd == "tail":
             if args.raw:
@@ -885,7 +913,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             return 0
 
     if args.cmd == "transcript":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         if args.tr_cmd == "show":
             if args.path:
@@ -986,75 +1014,166 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 return 0
 
     if args.cmd == "project":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
-        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
-        overlay = load_project_overlay(home_dir=home_dir, project_root=project_root)
+        subcmd = str(getattr(args, "project_cmd", "") or "").strip()
 
-        identity_key = str(overlay.get("identity_key") or "").strip()
-        idx_path = project_index_path(home_dir)
-        idx_mapped = ""
-        if identity_key:
-            try:
-                idx_obj = json.loads(idx_path.read_text(encoding="utf-8"))
-            except FileNotFoundError:
-                idx_obj = None
-            except Exception:
-                idx_obj = None
-            if isinstance(idx_obj, dict):
-                by_id = idx_obj.get("by_identity")
-                if isinstance(by_id, dict):
-                    idx_mapped = str(by_id.get(identity_key) or "").strip()
-                else:
-                    idx_mapped = str(idx_obj.get(identity_key) or "").strip()
+        if subcmd == "alias":
+            alias_cmd = str(getattr(args, "alias_cmd", "") or "").strip()
+            if alias_cmd == "list":
+                aliases = list_project_aliases(home_dir)
+                payload = {
+                    "selection_path": str(project_selection_path(home_dir)),
+                    "aliases": aliases,
+                }
+                if bool(getattr(args, "json", False)):
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                    return 0
+                if not aliases:
+                    print("(no aliases)")
+                    return 0
+                for name in sorted(aliases.keys()):
+                    entry = aliases.get(name) if isinstance(aliases.get(name), dict) else {}
+                    rp = str(entry.get("root_path") or "").strip()
+                    pid = str(entry.get("project_id") or "").strip()
+                    print(f"- @{name}: {rp} (project_id={pid})" if pid else f"- @{name}: {rp}")
+                return 0
 
-        out = {
-            "project_root": str(project_root),
-            "project_id": pp.project_id,
-            "project_dir": str(pp.project_dir),
-            "overlay_path": str(pp.overlay_path),
-            "identity_key": identity_key,
-            "project_index_path": str(idx_path),
-            "project_index_mapped_id": idx_mapped,
-            "evidence_log": str(pp.evidence_log_path),
-            "transcripts_dir": str(pp.transcripts_dir),
-            "thoughtdb_dir": str(pp.thoughtdb_dir),
-            "thoughtdb_claims": str(pp.thoughtdb_claims_path),
-            "thoughtdb_edges": str(pp.thoughtdb_edges_path),
-            "overlay": overlay if isinstance(overlay, dict) else {},
-        }
+            if alias_cmd == "add":
+                project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+                name = str(getattr(args, "name", "") or "").strip()
+                try:
+                    entry = set_project_alias(home_dir, name=name, project_root=project_root)
+                except Exception as e:
+                    print(f"alias add failed: {e}", file=sys.stderr)
+                    return 2
+                payload = {"ok": True, "name": name, "entry": entry}
+                if bool(getattr(args, "json", False)):
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                    return 0
+                print(f"added @{name} -> {entry.get('root_path')}")
+                return 0
 
-        if args.redact:
-            # Redact all string leaf values for display (keeps JSON valid).
-            def _redact_any(x: object) -> object:
-                if isinstance(x, str):
-                    return redact_text(x)
-                if isinstance(x, list):
-                    return [_redact_any(v) for v in x]
-                if isinstance(x, dict):
-                    return {k: _redact_any(v) for k, v in x.items()}
-                return x
+            if alias_cmd == "rm":
+                name = str(getattr(args, "name", "") or "").strip()
+                ok = False
+                try:
+                    ok = remove_project_alias(home_dir, name=name)
+                except Exception:
+                    ok = False
+                payload = {"ok": bool(ok), "name": name}
+                if bool(getattr(args, "json", False)):
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                    return 0 if ok else 2
+                if ok:
+                    print(f"removed @{name}")
+                    return 0
+                print(f"alias not found: @{name}", file=sys.stderr)
+                return 2
 
-            out = _redact_any(out)  # type: ignore[assignment]
+            print("unknown project alias subcommand", file=sys.stderr)
+            return 2
 
-        if args.json:
-            print(json.dumps(out, indent=2, sort_keys=True))
+        if subcmd == "unpin":
+            clear_pinned_project_selection(home_dir)
+            payload = {"ok": True, "pinned": {}}
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+            print("cleared @pinned")
             return 0
 
-        print(f"project_id={out['project_id']}")
-        print(f"project_dir={out['project_dir']}")
-        print(f"overlay_path={out['overlay_path']}")
-        if identity_key:
-            print(f"identity_key={identity_key}")
-        if idx_mapped:
-            print(f"index_mapped_project_id={idx_mapped}")
-        print(f"evidence_log={out['evidence_log']}")
-        print(f"transcripts_dir={out['transcripts_dir']}")
-        print(f"thoughtdb_dir={out['thoughtdb_dir']}")
-        return 0
+        if subcmd == "pin":
+            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+            entry = set_pinned_project_selection(home_dir, project_root)
+            payload = {"ok": True, "pinned": entry}
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+            print(f"pinned @pinned -> {entry.get('root_path')}")
+            return 0
+
+        if subcmd == "use":
+            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+            entry = record_last_project_selection(home_dir, project_root)
+            payload = {"ok": True, "last": entry}
+            if bool(getattr(args, "json", False)):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+            print(f"set @last -> {entry.get('root_path')}")
+            return 0
+
+        if subcmd == "show":
+            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+            pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+            overlay = load_project_overlay(home_dir=home_dir, project_root=project_root)
+
+            identity_key = str(overlay.get("identity_key") or "").strip()
+            idx_path = project_index_path(home_dir)
+            idx_mapped = ""
+            if identity_key:
+                try:
+                    idx_obj = json.loads(idx_path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    idx_obj = None
+                except Exception:
+                    idx_obj = None
+                if isinstance(idx_obj, dict):
+                    by_id = idx_obj.get("by_identity")
+                    if isinstance(by_id, dict):
+                        idx_mapped = str(by_id.get(identity_key) or "").strip()
+                    else:
+                        idx_mapped = str(idx_obj.get(identity_key) or "").strip()
+
+            out = {
+                "project_root": str(project_root),
+                "project_id": pp.project_id,
+                "project_dir": str(pp.project_dir),
+                "overlay_path": str(pp.overlay_path),
+                "identity_key": identity_key,
+                "project_index_path": str(idx_path),
+                "project_index_mapped_id": idx_mapped,
+                "evidence_log": str(pp.evidence_log_path),
+                "transcripts_dir": str(pp.transcripts_dir),
+                "thoughtdb_dir": str(pp.thoughtdb_dir),
+                "thoughtdb_claims": str(pp.thoughtdb_claims_path),
+                "thoughtdb_edges": str(pp.thoughtdb_edges_path),
+                "overlay": overlay if isinstance(overlay, dict) else {},
+            }
+
+            if args.redact:
+                # Redact all string leaf values for display (keeps JSON valid).
+                def _redact_any(x: object) -> object:
+                    if isinstance(x, str):
+                        return redact_text(x)
+                    if isinstance(x, list):
+                        return [_redact_any(v) for v in x]
+                    if isinstance(x, dict):
+                        return {k: _redact_any(v) for k, v in x.items()}
+                    return x
+
+                out = _redact_any(out)  # type: ignore[assignment]
+
+            if args.json:
+                print(json.dumps(out, indent=2, sort_keys=True))
+                return 0
+
+            print(f"project_id={out['project_id']}")
+            print(f"project_dir={out['project_dir']}")
+            print(f"overlay_path={out['overlay_path']}")
+            if identity_key:
+                print(f"identity_key={identity_key}")
+            if idx_mapped:
+                print(f"index_mapped_project_id={idx_mapped}")
+            print(f"evidence_log={out['evidence_log']}")
+            print(f"transcripts_dir={out['transcripts_dir']}")
+            print(f"thoughtdb_dir={out['thoughtdb_dir']}")
+            return 0
+
+        print("unknown project subcommand", file=sys.stderr)
+        return 2
 
     if args.cmd == "gc":
         if args.gc_cmd == "transcripts":
-            project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+            project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
             pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
             res = archive_project_transcripts(
                 transcripts_dir=pp.transcripts_dir,
@@ -1077,7 +1196,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             return 0
 
     if args.cmd == "claim":
-        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         overlay2 = load_project_overlay(home_dir=home_dir, project_root=project_root)
         if not isinstance(overlay2, dict):
@@ -1625,7 +1744,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "node":
-        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
 
@@ -1903,7 +2022,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "edge":
-        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
 
@@ -2045,7 +2164,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "why":
-        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
 
         # Providers/stores.
@@ -2261,7 +2380,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "workflow":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         overlay2 = load_project_overlay(home_dir=home_dir, project_root=project_root)
         if not isinstance(overlay2, dict):
@@ -2615,7 +2734,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "host":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""))
+        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
         overlay2 = load_project_overlay(home_dir=home_dir, project_root=project_root)
         if not isinstance(overlay2, dict):
             overlay2 = {}

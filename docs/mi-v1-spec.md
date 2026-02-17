@@ -889,6 +889,7 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `config.json` (Mind/Hands providers + runtime knobs)
   - `backups/config.json.<ts>.bak` + `backups/config.last_backup` (created by `mi config apply-template`; rollback uses the marker)
   - `global/evidence.jsonl` (global EvidenceLog for values + operational defaults lifecycle; provides stable `event_id` provenance for global preference/goal Claims)
+  - `global/project_selection.json` (non-canonical convenience: `@last/@pinned/@alias` project root selection for "run from anywhere")
   - `global/transcripts/mind/*.jsonl` (optional; used for Mind calls outside a project, e.g., `mi values set`)
   - `thoughtdb/global/claims.jsonl` (global Claims)
   - `thoughtdb/global/edges.jsonl` (global Edges)
@@ -1027,8 +1028,14 @@ Notes on `--cd` (project root):
 
 - `--cd` is optional. If omitted, MI infers a project root from your current working directory:
   - for git repos: defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject)
-  - for non-git dirs: uses the current directory
+  - for non-git dirs: uses `@last` (if recorded), otherwise uses the current directory
 - You can also set `$MI_PROJECT_ROOT` to run MI commands from anywhere without repeating `--cd`.
+- `--cd` also supports selection tokens:
+  - `--cd @last` (last used project)
+  - `--cd @pinned` (pinned project)
+  - `--cd @<alias>` (user-defined alias)
+  - Manage them via: `mi project use`, `mi project pin/unpin`, `mi project alias add/rm/list`
+- `config.runtime.project_selection.auto_update_last` controls whether project-scoped commands update `@last` automatically (default: true).
 
 Common run flags:
 
@@ -1052,6 +1059,19 @@ Inspect per-project state (overlay + resolved paths):
 mi --home ~/.mind-incarnation project show --cd <project_root>
 mi --home ~/.mind-incarnation project show --cd <project_root> --json
 mi --home ~/.mind-incarnation project show --cd <project_root> --redact
+```
+
+Project selection shortcuts (`@last/@pinned/@alias`):
+
+```bash
+mi --home ~/.mind-incarnation project use --cd <project_root>         # set @last
+mi --home ~/.mind-incarnation project pin --cd <project_root>         # set @pinned
+mi --home ~/.mind-incarnation project unpin                           # clear @pinned
+mi --home ~/.mind-incarnation project alias add repo1 --cd <project_root>
+mi --home ~/.mind-incarnation project alias list
+
+mi --home ~/.mind-incarnation run --cd @repo1 --show "<task>"
+mi --home ~/.mind-incarnation run --cd @pinned --show "<task>"
 ```
 
 Note: some output keys keep legacy `codex_*` / `*_to_codex` naming for backward compatibility; they refer to Hands.

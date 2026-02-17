@@ -52,6 +52,12 @@ mi version
 make check
 ```
 
+最佳努力的文档漂移检查（默认只警告；设置 `MI_DOCCHECK_STRICT=1` 可在有警告时失败）：
+
+```bash
+make doccheck
+```
+
 如果没有 `make`：
 
 ```bash
@@ -169,6 +175,8 @@ mi run --cd /path/to/your/project --reset-hands "重新开始一个新会话。"
 mi last --cd /path/to/your/project
 mi last --cd /path/to/your/project --redact
 ```
+
+注：`mi last --json` 在 MI 检测到并尝试打破“重复卡住”的循环时，会包含 `loop_guard` 和 `loop_break` 字段。
 
 查看项目级状态（overlay + 存储路径解析）：
 

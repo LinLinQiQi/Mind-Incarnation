@@ -16,7 +16,14 @@ from ..providers.llm import MiLlm
 from ..providers.mind_errors import MindCallError
 from ..core.config import load_config
 from ..core.paths import GlobalPaths, ProjectPaths, default_home_dir
-from .prompts import decide_next_prompt, extract_evidence_prompt, plan_min_checks_prompt, workflow_progress_prompt, checkpoint_decide_prompt
+from .prompts import (
+    checkpoint_decide_prompt,
+    decide_next_prompt,
+    extract_evidence_prompt,
+    loop_break_prompt,
+    plan_min_checks_prompt,
+    workflow_progress_prompt,
+)
 from .prompts import auto_answer_to_codex_prompt
 from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
@@ -2284,8 +2291,17 @@ def run_autopilot(
         segment_state["records"] = segment_records
         _persist_segment_state()
 
-    def _queue_next_input(*, nxt: str, codex_last_message: str, batch_id: str, reason: str) -> bool:
-        """Set next_input for the next Hands batch, with loop-guard and optional user intervention."""
+    def _queue_next_input(
+        *,
+        nxt: str,
+        codex_last_message: str,
+        batch_id: str,
+        reason: str,
+        repo_observation: dict[str, Any] | None = None,
+        thought_db_context: dict[str, Any] | None = None,
+        check_plan: dict[str, Any] | None = None,
+    ) -> bool:
+        """Set next_input for the next Hands batch, with loop-guard + loop-break (best-effort)."""
         nonlocal next_input, status, notes, sent_sigs
 
         candidate = (nxt or "").strip()
@@ -2315,23 +2331,70 @@ def run_autopilot(
             evidence_window.append({"kind": "loop_guard", "batch_id": batch_id, "pattern": pattern, "reason": reason})
             evidence_window[:] = evidence_window[-8:]
 
-            ask_when_uncertain = bool(
-                resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain
+            ask_when_uncertain = bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain)
+
+            # Best-effort automatic loop breaking: prefer rewriting the next instruction or forcing checks
+            # before asking the user (minimize burden; avoid protocol tyranny).
+            lb_prompt = loop_break_prompt(
+                task=task,
+                hands_provider=cur_provider,
+                mindspec_base=_mindspec_base_runtime(),
+                project_overlay=overlay,
+                thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
+                recent_evidence=evidence_window,
+                repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+                loop_pattern=pattern,
+                loop_reason=reason,
+                codex_last_message=codex_last_message,
+                planned_next_input=candidate,
             )
-            if ask_when_uncertain:
-                q = (
-                    "MI detected a repeated loop (pattern="
-                    + pattern
-                    + "). Provide a new instruction to send to Hands, or type 'stop' to end:"
-                )
-                override = _read_user_answer(q)
+            lb_obj, lb_ref, lb_state = _mind_call(
+                schema_filename="loop_break.json",
+                prompt=lb_prompt,
+                tag=f"loopbreak:{batch_id}",
+                batch_id=batch_id,
+            )
+
+            lb_rec = evw.append(
+                {
+                    "kind": "loop_break",
+                    "batch_id": batch_id,
+                    "ts": now_rfc3339(),
+                    "thread_id": thread_id,
+                    "pattern": pattern,
+                    "reason": reason,
+                    "state": lb_state,
+                    "mind_transcript_ref": lb_ref,
+                    "output": lb_obj if isinstance(lb_obj, dict) else {},
+                }
+            )
+            evidence_window.append(
+                {
+                    "kind": "loop_break",
+                    "batch_id": batch_id,
+                    "event_id": lb_rec.get("event_id"),
+                    "pattern": pattern,
+                    "state": lb_state,
+                    "action": (lb_obj.get("action") if isinstance(lb_obj, dict) else ""),
+                    "reason": reason,
+                }
+            )
+            evidence_window[:] = evidence_window[-8:]
+            _segment_add(lb_rec)
+            _persist_segment_state()
+
+            action = str(lb_obj.get("action") or "").strip() if isinstance(lb_obj, dict) else ""
+
+            # Helper: ask user override, used only as a last resort.
+            def _prompt_user_override(question: str) -> str:
+                override = _read_user_answer(question)
                 ui = evw.append(
                     {
                         "kind": "user_input",
                         "batch_id": batch_id,
                         "ts": now_rfc3339(),
                         "thread_id": thread_id,
-                        "question": q,
+                        "question": question,
                         "answer": override,
                     }
                 )
@@ -2340,25 +2403,263 @@ def run_autopilot(
                         "kind": "user_input",
                         "batch_id": batch_id,
                         "event_id": ui.get("event_id"),
-                        "question": q,
+                        "question": question,
                         "answer": override,
                     }
                 )
                 evidence_window[:] = evidence_window[-8:]
                 _segment_add(ui)
                 _persist_segment_state()
+                return override
 
-                ov = override.strip()
-                if not ov or ov.lower() in ("stop", "quit", "q"):
-                    status = "blocked"
-                    notes = "stopped by loop_guard"
-                    return False
-                candidate = ov
-                sent_sigs.clear()
-            else:
-                status = "blocked"
-                notes = "loop_guard triggered"
+            if action == "stop_done":
+                status = "done"
+                notes = f"loop_break: stop_done ({reason})"
                 return False
+
+            if action == "stop_blocked":
+                status = "blocked"
+                notes = f"loop_break: stop_blocked ({reason})"
+                return False
+
+            if action == "rewrite_next_input":
+                rewritten = str(lb_obj.get("rewritten_next_input") or "").strip() if isinstance(lb_obj, dict) else ""
+                if rewritten:
+                    candidate = rewritten
+                    sent_sigs.clear()
+                else:
+                    action = ""  # fall through to fallback
+
+            if action == "run_checks_then_continue":
+                # Prefer using an existing check plan (if present). Otherwise, plan checks now.
+                chk_text = ""
+                if isinstance(check_plan, dict) and bool(check_plan.get("should_run_checks", False)):
+                    chk_text = str(check_plan.get("codex_check_input") or "").strip()
+
+                if not chk_text:
+                    checks_prompt = plan_min_checks_prompt(
+                        task=task,
+                        hands_provider=cur_provider,
+                        mindspec_base=_mindspec_base_runtime(),
+                        project_overlay=overlay,
+                        thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
+                        recent_evidence=evidence_window,
+                        repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+                    )
+                    checks_obj2, checks_ref2, checks_state2 = _mind_call(
+                        schema_filename="plan_min_checks.json",
+                        prompt=checks_prompt,
+                        tag=f"checks_loopbreak:{batch_id}",
+                        batch_id=f"{batch_id}.loop_break_checks",
+                    )
+                    if checks_obj2 is None:
+                        checks_obj2 = _empty_check_plan()
+                        if checks_state2 == "skipped":
+                            checks_obj2["notes"] = "skipped: mind_circuit_open (plan_min_checks loop_break)"
+                        else:
+                            checks_obj2["notes"] = "mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error"
+
+                    checks_rec2 = evw.append(
+                        {
+                            "kind": "check_plan",
+                            "batch_id": f"{batch_id}.loop_break_checks",
+                            "ts": now_rfc3339(),
+                            "thread_id": thread_id,
+                            "mind_transcript_ref": checks_ref2,
+                            "checks": checks_obj2,
+                        }
+                    )
+                    evidence_window.append(
+                        {"kind": "check_plan", "batch_id": f"{batch_id}.loop_break_checks", "event_id": checks_rec2.get("event_id"), **checks_obj2}
+                    )
+                    evidence_window[:] = evidence_window[-8:]
+                    _segment_add(
+                        {
+                            "kind": "check_plan",
+                            "batch_id": f"{batch_id}.loop_break_checks",
+                            "event_id": checks_rec2.get("event_id"),
+                            **(checks_obj2 if isinstance(checks_obj2, dict) else {}),
+                        }
+                    )
+                    _persist_segment_state()
+
+                    # If checks planning needs a one-time testless strategy, ask once per project (canonicalize into Thought DB),
+                    # then re-plan checks.
+                    tls = overlay.get("testless_verification_strategy") if isinstance(overlay, dict) else None
+                    tls_chosen_once = bool(tls.get("chosen_once", False)) if isinstance(tls, dict) else False
+                    tls_claim = _find_testless_strategy_claim(as_of_ts=now_rfc3339())
+                    tls_claim_strategy = ""
+                    tls_claim_id = ""
+                    if isinstance(tls_claim, dict):
+                        tls_claim_id = str(tls_claim.get("claim_id") or "").strip()
+                        tls_claim_strategy = _parse_testless_strategy_from_claim_text(str(tls_claim.get("text") or ""))
+                    if tls_claim_strategy:
+                        tls_chosen_once = True
+                        cur_cid = str(tls.get("claim_id") or "").strip() if isinstance(tls, dict) else ""
+                        if tls_claim_id and cur_cid.strip() != tls_claim_id.strip():
+                            overlay.setdefault("testless_verification_strategy", {})
+                            overlay["testless_verification_strategy"] = {
+                                "chosen_once": True,
+                                "claim_id": tls_claim_id,
+                                "rationale": f"derived from Thought DB {tls_claim_id}",
+                            }
+                            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
+                            _refresh_overlay_refs()
+
+                    needs_tls = bool(checks_obj2.get("needs_testless_strategy", False)) if isinstance(checks_obj2, dict) else False
+                    if needs_tls and not tls_chosen_once:
+                        q = str(checks_obj2.get("testless_strategy_question") or "").strip()
+                        if not q:
+                            q = "This project appears to have no tests. What testless verification strategy should MI use for this project (one-time)?"
+                        answer = _read_user_answer(q)
+                        if not answer:
+                            status = "blocked"
+                            notes = "user did not provide required input"
+                            return False
+                        ui3 = evw.append(
+                            {
+                                "kind": "user_input",
+                                "batch_id": f"{batch_id}.loop_break",
+                                "ts": now_rfc3339(),
+                                "thread_id": thread_id,
+                                "question": q,
+                                "answer": answer,
+                            }
+                        )
+                        evidence_window.append(
+                            {"kind": "user_input", "batch_id": f"{batch_id}.loop_break", "event_id": ui3.get("event_id"), "question": q, "answer": answer}
+                        )
+                        evidence_window[:] = evidence_window[-8:]
+                        _segment_add(ui3)
+                        _persist_segment_state()
+
+                        src_eid = str(ui3.get("event_id") or "").strip()
+                        tls_cid = _upsert_testless_strategy_claim(
+                            strategy_text=answer.strip(),
+                            source_event_id=src_eid,
+                            source="user_input:testless_strategy(loop_break)",
+                            rationale="user provided testless verification strategy (loop_break)",
+                        )
+                        overlay.setdefault("testless_verification_strategy", {})
+                        overlay["testless_verification_strategy"] = {
+                            "chosen_once": True,
+                            "claim_id": tls_cid,
+                            "rationale": (f"user provided (canonical claim {tls_cid})" if tls_cid else "user provided testless verification strategy"),
+                        }
+                        write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
+                        _refresh_overlay_refs()
+
+                        tdb_ctx_tls = build_decide_next_thoughtdb_context(
+                            tdb=tdb,
+                            as_of_ts=now_rfc3339(),
+                            task=task,
+                            hands_last_message=codex_last_message,
+                            recent_evidence=evidence_window,
+                            mem=mem.service,
+                        )
+                        tdb_ctx_tls_obj = tdb_ctx_tls.to_prompt_obj()
+                        checks_prompt3 = plan_min_checks_prompt(
+                            task=task,
+                            hands_provider=cur_provider,
+                            mindspec_base=_mindspec_base_runtime(),
+                            project_overlay=overlay,
+                            thought_db_context=tdb_ctx_tls_obj,
+                            recent_evidence=evidence_window,
+                            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+                        )
+                        checks_obj3, checks_ref3, checks_state3 = _mind_call(
+                            schema_filename="plan_min_checks.json",
+                            prompt=checks_prompt3,
+                            tag=f"checks_loopbreak_after_tls:{batch_id}",
+                            batch_id=f"{batch_id}.loop_break_after_testless",
+                        )
+                        if checks_obj3 is None:
+                            checks_obj3 = _empty_check_plan()
+                            if checks_state3 == "skipped":
+                                checks_obj3["notes"] = "skipped: mind_circuit_open (plan_min_checks loop_break after_testless)"
+                            else:
+                                checks_obj3["notes"] = "mind_error: plan_min_checks(loop_break after_testless) failed; see EvidenceLog kind=mind_error"
+                        checks_rec3 = evw.append(
+                            {
+                                "kind": "check_plan",
+                                "batch_id": f"{batch_id}.loop_break_after_testless",
+                                "ts": now_rfc3339(),
+                                "thread_id": thread_id,
+                                "mind_transcript_ref": checks_ref3,
+                                "checks": checks_obj3,
+                            }
+                        )
+                        evidence_window.append(
+                            {
+                                "kind": "check_plan",
+                                "batch_id": f"{batch_id}.loop_break_after_testless",
+                                "event_id": checks_rec3.get("event_id"),
+                                **checks_obj3,
+                            }
+                        )
+                        evidence_window[:] = evidence_window[-8:]
+                        _segment_add(
+                            {
+                                "kind": "check_plan",
+                                "batch_id": f"{batch_id}.loop_break_after_testless",
+                                "event_id": checks_rec3.get("event_id"),
+                                **(checks_obj3 if isinstance(checks_obj3, dict) else {}),
+                            }
+                        )
+                        _persist_segment_state()
+                        checks_obj2 = checks_obj3
+
+                    if isinstance(checks_obj2, dict) and bool(checks_obj2.get("should_run_checks", False)):
+                        chk_text = str(checks_obj2.get("codex_check_input") or "").strip()
+
+                if chk_text:
+                    candidate = chk_text
+                    sent_sigs.clear()
+                else:
+                    action = ""  # fall through
+
+            if action == "ask_user":
+                if ask_when_uncertain:
+                    q = str(lb_obj.get("ask_user_question") or "").strip() if isinstance(lb_obj, dict) else ""
+                    if not q:
+                        q = (
+                            "MI detected a repeated loop (pattern="
+                            + pattern
+                            + "). Provide a new instruction to send to Hands, or type 'stop' to end:"
+                        )
+                    override = _prompt_user_override(q)
+                    ov = override.strip()
+                    if not ov or ov.lower() in ("stop", "quit", "q"):
+                        status = "blocked"
+                        notes = "stopped by loop_guard"
+                        return False
+                    candidate = ov
+                    sent_sigs.clear()
+                else:
+                    status = "blocked"
+                    notes = "loop_guard triggered (ask_when_uncertain=false)"
+                    return False
+
+            if not action:
+                # Fallback: preserve legacy behavior (prompt user if allowed, otherwise block).
+                if ask_when_uncertain:
+                    q = (
+                        "MI detected a repeated loop (pattern="
+                        + pattern
+                        + "). Provide a new instruction to send to Hands, or type 'stop' to end:"
+                    )
+                    override = _prompt_user_override(q)
+                    ov = override.strip()
+                    if not ov or ov.lower() in ("stop", "quit", "q"):
+                        status = "blocked"
+                        notes = "stopped by loop_guard"
+                        return False
+                    candidate = ov
+                    sent_sigs.clear()
+                else:
+                    status = "blocked"
+                    notes = "loop_guard triggered"
+                    return False
 
         # Checkpoint after the current batch, before sending the next instruction to Hands.
         _maybe_checkpoint_and_mine(
@@ -2917,6 +3218,9 @@ def run_autopilot(
                         codex_last_message=codex_last,
                         batch_id=f"b{batch_idx}.after_recall",
                         reason="auto-answered after cross-project recall",
+                        repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                        thought_db_context=tdb_ctx_batch_obj,
+                        check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                     ):
                         break
                     continue
@@ -2955,6 +3259,9 @@ def run_autopilot(
                 codex_last_message=codex_last,
                 batch_id=f"b{batch_idx}",
                 reason="answered after user input",
+                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                thought_db_context=tdb_ctx_batch_obj,
+                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             ):
                 break
             continue
@@ -3162,6 +3469,9 @@ def run_autopilot(
                 codex_last_message=codex_last,
                 batch_id=f"b{batch_idx}",
                 reason="sent auto-answer/checks to Hands",
+                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                thought_db_context=tdb_ctx_batch_obj,
+                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             ):
                 break
             continue
@@ -3246,6 +3556,9 @@ def run_autopilot(
                     codex_last_message=codex_last,
                     batch_id=f"b{batch_idx}",
                     reason="mind_circuit_open(decide_next): user override" if decision_state == "skipped" else "mind_error(decide_next): user override",
+                    repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                    thought_db_context=tdb_ctx_obj,
+                    check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 ):
                     break
                 continue
@@ -3409,6 +3722,9 @@ def run_autopilot(
                         codex_last_message=codex_last,
                         batch_id=f"b{batch_idx}.from_decide",
                         reason="auto-answered instead of prompting user",
+                        repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                        thought_db_context=tdb_ctx_obj,
+                        check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                     ):
                         break
                     continue
@@ -3503,6 +3819,9 @@ def run_autopilot(
                         codex_last_message=codex_last,
                         batch_id=f"b{batch_idx}.from_decide.after_recall",
                         reason="auto-answered (after recall) instead of prompting user",
+                        repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                        thought_db_context=tdb_ctx_obj,
+                        check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                     ):
                         break
                     continue
@@ -3585,6 +3904,9 @@ def run_autopilot(
                         if decision2_state == "skipped"
                         else "mind_error(decide_next after user): send user answer"
                     ),
+                    repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                    thought_db_context=tdb_ctx2_obj,
+                    check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 ):
                     break
                 continue
@@ -3662,6 +3984,9 @@ def run_autopilot(
                     codex_last_message=codex_last,
                     batch_id=f"b{batch_idx}.after_user",
                     reason="send_to_codex after user input",
+                    repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                    thought_db_context=tdb_ctx2_obj,
+                    check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 ):
                     break
                 continue
@@ -3681,6 +4006,9 @@ def run_autopilot(
                 codex_last_message=codex_last,
                 batch_id=f"b{batch_idx}",
                 reason="send_to_codex",
+                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                thought_db_context=tdb_ctx_obj,
+                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             ):
                 break
             continue

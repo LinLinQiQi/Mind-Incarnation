@@ -854,6 +854,42 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "notes": "continue",
                         },
                     ],
+                    "loop_break.json": [
+                        {
+                            "action": "stop_blocked",
+                            "confidence": 0.7,
+                            "rewritten_next_input": "",
+                            "check_intent": "",
+                            "ask_user_question": "",
+                            "notes": "Repeated loop; stop to avoid thrash.",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                    ],
                     "suggest_workflow.json": [
                         {"should_suggest": False, "suggestion": None, "notes": "skip"},
                     ],
@@ -882,6 +918,142 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                         found_loop_guard = True
                         break
             self.assertTrue(found_loop_guard)
+
+    def test_loop_break_rewrites_next_input_and_converges(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            ensure_operational_defaults_claims_current(
+                home_dir=Path(home),
+                tdb=tdb,
+                desired_defaults={"refactor_intent": "behavior_preserving", "ask_when_uncertain": False},
+                mode="sync",
+            )
+
+            fake_hands = _FakeHands(
+                [
+                    _mk_result(thread_id="t_lb", last_message="Still working."),
+                    _mk_result(thread_id="t_lb", last_message="Still working."),
+                    _mk_result(thread_id="t_lb", last_message="Still working."),
+                    _mk_result(thread_id="t_lb", last_message="All done."),
+                ]
+            )
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
+                        {"facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
+                        {"facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
+                        {"facts": ["done"], "actions": [], "results": ["ok"], "unknowns": [], "risk_signals": []},
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "send_to_codex",
+                            "status": "not_done",
+                            "confidence": 0.8,
+                            "next_codex_input": "do next",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "continue",
+                        },
+                        {
+                            "next_action": "send_to_codex",
+                            "status": "not_done",
+                            "confidence": 0.8,
+                            "next_codex_input": "do next",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "continue",
+                        },
+                        {
+                            "next_action": "send_to_codex",
+                            "status": "not_done",
+                            "confidence": 0.8,
+                            "next_codex_input": "do next",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "continue",
+                        },
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        },
+                    ],
+                    "loop_break.json": [
+                        {
+                            "action": "rewrite_next_input",
+                            "confidence": 0.8,
+                            "rewritten_next_input": "Stop repeating. Summarize what changed since last batch and run a minimal check if available.",
+                            "check_intent": "",
+                            "ask_user_question": "",
+                            "notes": "Rewrite to force progress.",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        },
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="start",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=8,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+
+            self.assertEqual(result.status, "done")
+            found_loop_break = False
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict) and obj.get("kind") == "loop_break":
+                        found_loop_break = True
+                        break
+            self.assertTrue(found_loop_break)
 
     def test_risk_prompt_triggers_only_for_configured_severities(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:

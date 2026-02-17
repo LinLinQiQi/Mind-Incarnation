@@ -112,9 +112,12 @@ Thought DB context (always-on, deterministic, V1):
 Loop/stuck guard (deterministic, V1):
 
 - Whenever MI is about to send a next input to Hands, it computes a bounded signature of `(codex_last_message, next_input)` (field name is legacy, but it is "Hands last message").
-- If a loop-like repetition pattern is detected (AAA or ABAB), MI records `kind="loop_guard"` and either:
-  - asks the user for an override instruction (if the effective `ask_when_uncertain=true`, canonically stored as a Thought DB preference Claim tagged `mi:setting:ask_when_uncertain`), or
-  - stops with `status=blocked` (if the effective `ask_when_uncertain=false`).
+- If a loop-like repetition pattern is detected (AAA or ABAB), MI records `kind="loop_guard"` and then attempts a best-effort **loop break**:
+  - MI calls `loop_break` (Mind prompt-pack; output schema `loop_break.json`) and records the result as `kind="loop_break"`.
+  - Preferred actions: rewrite the next instruction or force a minimal check run (without imposing step-by-step reporting).
+  - If the loop break cannot safely proceed:
+    - If the effective `ask_when_uncertain=true` (canonical Thought DB preference Claim tagged `mi:setting:ask_when_uncertain`), MI may ask the user for an override instruction.
+    - Otherwise, MI stops with `status=blocked`.
 
 Checkpointing (segments; internal, V1):
 
@@ -246,31 +249,35 @@ MI uses the following internal prompts (all should return strict JSON):
    - Input: Hands provider hint + runtime config, `ProjectOverlay`, recent `EvidenceLog`, and a deterministic Thought DB context subgraph (`nodes` + `values_claims` + `pref_goal_claims` + `query_claims` + `edges`)
    - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). `send_to_codex` is legacy naming and means "send the next batch input to Hands". This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
 
-8) `checkpoint_decide` (implemented; internal)
+8) `loop_break` (implemented; internal)
+   - Input: runtime config, `ProjectOverlay`, a Thought DB context, recent evidence, a loop pattern id + loop reason, Hands last message, and the planned next Hands instruction
+   - Output: a best-effort action to break the loop (rewrite the next instruction, force checks, stop, or ask the user as a last resort).
+
+9) `checkpoint_decide` (implemented; internal)
    - Input: runtime config, `ProjectOverlay`, a compact Thought DB context, and a compact "segment evidence" buffer + planned next Hands input (if any) + a status hint
    - Output: whether MI should cut a checkpoint boundary (segment) now, and whether it should mine workflows/preferences at this boundary.
 
-9) `suggest_workflow` (implemented; optional)
+10) `suggest_workflow` (implemented; optional)
    - Input: task + runtime config, `ProjectOverlay`, a compact Thought DB context, recent evidence (typically the current segment), and run notes
    - Output: either `should_suggest=false` or a suggested workflow IR + a stable `signature` (used to count occurrences across runs). MI may solidify it into stored workflows depending on `config.runtime.workflows` knobs.
 
-10) `edit_workflow` (implemented; CLI)
+11) `edit_workflow` (implemented; CLI)
    - Input: runtime config, `ProjectOverlay`, a compact Thought DB context, an existing workflow, and a natural-language edit request
    - Output: edited workflow IR + change_summary/conflicts/notes (used by `mi workflow edit`)
 
-11) `mine_preferences` (implemented; optional)
+12) `mine_preferences` (implemented; optional)
    - Input: task + runtime config, `ProjectOverlay`, a compact Thought DB context, recent evidence (typically the current segment), and run notes
    - Output: a small list of suggested preference/goal guidance texts (scope=`project|global`) with confidence/benefit, suitable to store as Thought DB preference/goal Claims. MI uses occurrence counts to avoid noisy one-off learning.
 
-12) `mine_claims` (implemented; optional; Thought DB)
+13) `mine_claims` (implemented; optional; Thought DB)
    - Input: task + runtime config, `ProjectOverlay`, a compact Thought DB context, recent evidence (typically the current segment), and run notes
    - Output: a small list of atomic `Claim`s (fact/preference/assumption/goal) and optional edges. MI applies them into the append-only Thought DB (project/global) with provenance that cites **EvidenceLog `event_id` only** (high-threshold, best-effort).
 
-13) `why_trace` (implemented; on-demand; Thought DB)
+14) `why_trace` (implemented; on-demand; Thought DB)
    - Input: a target (EvidenceLog `event_id` or a `claim_id`), an `as_of_ts`, and a bounded list of candidate claims (from recall/search).
    - Output: a minimal support set of `claim_id`s + short explanation + confidence. MI may materialize `depends_on(event_id -> claim_id)` edges when the target is an EvidenceLog `event_id`.
 
-14) `values_claim_patch` (implemented; on-demand; values -> Thought DB)
+15) `values_claim_patch` (implemented; on-demand; values -> Thought DB)
    - Input: `values_text` + `compiled_values` + existing global values claims + allowed `event_id` list + allowed retract claim ids
    - Output: a small patch of global preference/goal Claims (plus optional supersedes/same_as edges) and a list of old claim_ids to retract. Used by `mi init` / `mi values set` (explicit user action) to keep values canonical as Thought DB claims (tagged `values:base`), citing a `values_set` event_id for provenance.
 
@@ -507,6 +514,7 @@ Minimal shape:
 - `edge_create` (user-driven append-only Thought DB edge creation via CLI)
 - `why_trace` (root-cause tracing output: minimal support set of claim ids + explanation; may materialize `depends_on(event_id -> claim_id)` edges; best-effort, on-demand)
 - `loop_guard` (repeat-pattern detection for stuck loops)
+- `loop_break` (Mind-guided loop breaking invoked after `loop_guard`; may rewrite the next instruction or force checks; best-effort)
 - `user_input` (answers captured when MI asks the user)
 - `hands_resume_failed` (best-effort: resume by stored thread/session id failed; MI fell back to a fresh exec)
 
@@ -747,6 +755,29 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
   "codex_last_message": "string",
   "next_input": "string",
   "reason": "string"
+}
+```
+
+`loop_break` record shape (best-effort loop breaking invoked after `loop_guard`):
+
+```json
+{
+  "kind": "loop_break",
+  "batch_id": "string",
+  "ts": "RFC3339 timestamp",
+  "thread_id": "string",
+  "pattern": "aaa|abab",
+  "reason": "string",
+  "state": "ok|error|skipped",
+  "mind_transcript_ref": "path",
+  "output": {
+    "action": "rewrite_next_input|run_checks_then_continue|stop_done|stop_blocked|ask_user",
+    "confidence": 0.0,
+    "rewritten_next_input": "string",
+    "check_intent": "string",
+    "ask_user_question": "string",
+    "notes": "string"
+  }
 }
 ```
 
@@ -1061,7 +1092,7 @@ mi --home ~/.mind-incarnation last --cd <project_root> --json
 mi --home ~/.mind-incarnation last --cd <project_root> --redact
 ```
 
-Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`.
+Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`. When MI detects a stuck repetition loop, `mi last --json` also includes `loop_guard` and `loop_break`.
 
 Inspect per-project state (overlay + resolved paths):
 

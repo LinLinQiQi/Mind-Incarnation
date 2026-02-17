@@ -1,4 +1,4 @@
-.PHONY: test compile check
+.PHONY: test compile check doccheck
 
 PY ?= python3
 
@@ -9,3 +9,6 @@ test:
 	$(PY) -m unittest discover -s tests -p 'test_*.py'
 
 check: compile test
+
+doccheck:
+	$(PY) scripts/doccheck.py

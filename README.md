@@ -52,6 +52,12 @@ Run unit tests:
 make check
 ```
 
+Best-effort doc drift check (warning-only by default; set `MI_DOCCHECK_STRICT=1` to fail on warnings):
+
+```bash
+make doccheck
+```
+
 Or without `make`:
 
 ```bash
@@ -169,6 +175,8 @@ Inspect the latest batch (what MI sent, last agent message, evidence pointers, M
 mi last --cd /path/to/your/project
 mi last --cd /path/to/your/project --redact
 ```
+
+Note: `mi last --json` includes `loop_guard` and `loop_break` when MI detects and tries to break a stuck repetition loop.
 
 Show per-project overlay + resolved storage paths:
 

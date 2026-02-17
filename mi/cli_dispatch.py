@@ -801,6 +801,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             "learn_suggested": learn_suggested_out,
             "learn_applied": learn_applied_out,
             "loop_guard": (bundle.get("loop_guard") or {}) if isinstance(bundle.get("loop_guard"), dict) else {},
+            "loop_break": (bundle.get("loop_break") or {}) if isinstance(bundle.get("loop_break"), dict) else {},
             "decide_next": decide_next_out,
             "mind_transcripts": (bundle.get("mind_transcripts") or []) if isinstance(bundle.get("mind_transcripts"), list) else [],
         }

@@ -174,6 +174,17 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
         detail = " ".join([x for x in [f"status={st}" if st else "", (f"conf={cf_s}" if cf_s else ""), f"chosen={len(chosen)}"] if x]).strip()
     elif kind == "loop_guard":
         detail = f"pattern={obj.get('pattern')}"
+    elif kind == "loop_break":
+        pat = str(obj.get("pattern") or "").strip()
+        st = str(obj.get("state") or "").strip()
+        out = obj.get("output") if isinstance(obj.get("output"), dict) else {}
+        act = ""
+        if isinstance(out, dict):
+            act = str(out.get("action") or "").strip()
+        if not act:
+            act = str(obj.get("action") or "").strip()
+        parts = [f"pattern={pat}" if pat else "", f"action={act}" if act else "", f"state={st}" if st else ""]
+        detail = " ".join([p for p in parts if p]).strip()
     elif kind == "user_input":
         q = _truncate(str(obj.get("question") or "").strip().replace("\n", " "), 80)
         a = _truncate(str(obj.get("answer") or "").strip().replace("\n", " "), 60)
@@ -204,6 +215,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
         "learn_suggested": [],
         "learn_applied": [],
         "loop_guard": None,
+        "loop_break": None,
         "decide_next": None,
         # Convenience: mind transcript pointers for this batch cycle.
         # Entries look like: {"kind": "...", "batch_id": "...", "mind_transcript_ref": "...", ...}.
@@ -304,6 +316,10 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                 elif kind == "loop_guard":
                     if bid == last_bid:
                         bundle["loop_guard"] = obj
+                elif kind == "loop_break":
+                    if bid == last_bid:
+                        bundle["loop_break"] = obj
+                    add_mind_transcript_ref(obj=obj, kind="loop_break", bid=bid)
                 elif kind == "decide_next":
                     if bid == last_bid:
                         bundle["decide_next"] = obj

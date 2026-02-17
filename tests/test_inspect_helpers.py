@@ -120,6 +120,17 @@ class TestInspectHelpers(unittest.TestCase):
                 ),
                 json.dumps(
                     {
+                        "kind": "loop_break",
+                        "batch_id": "b1",
+                        "thread_id": "t",
+                        "pattern": "aaa",
+                        "state": "ok",
+                        "mind_transcript_ref": "m_loopbreak",
+                        "output": {"action": "rewrite_next_input"},
+                    }
+                ),
+                json.dumps(
+                    {
                         "batch_id": "b1",
                         "ts": "x",
                         "thread_id": "t",
@@ -155,12 +166,15 @@ class TestInspectHelpers(unittest.TestCase):
             self.assertIn("m_checks_2", refs)
             self.assertIn("m_autoanswer", refs)
             self.assertIn("m_decide", refs)
+            self.assertIn("m_loopbreak", refs)
 
     def test_classify_and_summarize(self) -> None:
         ev = {"batch_id": "b0", "facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []}
         self.assertEqual(classify_evidence_record(ev), "evidence")
         s = summarize_evidence_record({"kind": "loop_guard", "batch_id": "b0", "pattern": "aaa"})
         self.assertIn("loop_guard", s)
+        s2 = summarize_evidence_record({"kind": "loop_break", "batch_id": "b0", "pattern": "aaa", "state": "ok", "output": {"action": "rewrite_next_input"}})
+        self.assertIn("loop_break", s2)
 
     def test_last_agent_message_from_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as td:

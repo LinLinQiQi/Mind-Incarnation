@@ -6,7 +6,6 @@ from pathlib import Path
 
 from mi.core.paths import GlobalPaths, ProjectPaths
 from mi.core.storage import iter_jsonl, now_rfc3339
-from mi.mindspec.runtime import sanitize_mindspec_base_for_runtime
 from mi.thoughtdb.global_ledger import append_global_event
 from mi.thoughtdb.operational_defaults import (
     DEFAULTS_EVENT_KIND,
@@ -119,13 +118,6 @@ class TestOperationalDefaults(unittest.TestCase):
             out2 = ensure_operational_defaults_claims_current(home_dir=home, tdb=tdb, desired_defaults=desired, mode="sync")
             self.assertTrue(bool(out2.get("ok", False)))
             self.assertFalse(bool(out2.get("changed", True)))
-
-    def test_sanitize_runtime_clears_defaults(self) -> None:
-        base = {"values_text": "x", "values_summary": ["y"], "defaults": {"refactor_intent": "behavior_preserving", "ask_when_uncertain": True}}
-        out = sanitize_mindspec_base_for_runtime(base)
-        self.assertEqual(out.get("values_text"), "")
-        self.assertEqual(out.get("values_summary"), [])
-        self.assertEqual(out.get("defaults"), {})
 
 
 if __name__ == "__main__":

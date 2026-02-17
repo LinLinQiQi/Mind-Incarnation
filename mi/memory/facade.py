@@ -7,6 +7,7 @@ from typing import Any
 from .render import render_recall_context
 from .snapshot import build_snapshot_item
 from .types import MemoryItem
+from .text import tokenize_query
 from ..core.storage import now_rfc3339
 from ..core.paths import ProjectPaths
 from .service import MemoryService
@@ -113,12 +114,17 @@ class MemoryFacade:
         if not self._recall_cfg.should_trigger(reason):
             return None
 
-        q = str(query or "").strip()
-        if not q:
+        q_raw = str(query or "").strip()
+        if not q_raw:
+            return None
+
+        toks = tokenize_query(q_raw, max_tokens=24)
+        q_compact = " ".join(toks).strip()
+        if not q_compact:
             return None
 
         # Guard: avoid repeated identical recalls in a tight loop.
-        key = f"{reason}:{batch_id}:{_truncate(q, 120)}"
+        key = f"{reason}:{_truncate(q_compact, 160)}"
         if key == self._last_recall_key:
             return None
         self._last_recall_key = key
@@ -130,7 +136,7 @@ class MemoryFacade:
         # Fetch more candidates and re-rank to prefer current project/global items.
         candidate_k = min(50, max(self._recall_cfg.top_k, self._recall_cfg.top_k * 5))
         items = self._mem.search(
-            query=q,
+            query=q_compact,
             top_k=candidate_k,
             kinds=set(self._recall_cfg.include_kinds),
             include_global=True,
@@ -162,7 +168,11 @@ class MemoryFacade:
             "ts": now_rfc3339(),
             "thread_id": (thread_id or "").strip(),
             "reason": reason,
-            "query": _truncate(q, 800),
+            # `query` is the effective compact query used for search.
+            "query": _truncate(q_compact, 800),
+            "query_raw": _truncate(q_raw, 800),
+            "query_compact": _truncate(q_compact, 800),
+            "tokens_used": toks,
             "top_k": self._recall_cfg.top_k,
             "include_kinds": sorted(self._recall_cfg.include_kinds),
             "exclude_current_project": bool(self._recall_cfg.exclude_current_project),
@@ -174,7 +184,10 @@ class MemoryFacade:
             "kind": "cross_project_recall",
             "batch_id": batch_id,
             "reason": reason,
-            "query": _truncate(q, 200),
+            "query": _truncate(q_compact, 200),
+            "query_raw": _truncate(q_raw, 200),
+            "query_compact": _truncate(q_compact, 200),
+            "tokens_used": toks,
             "items": rendered_items,
         }
         return RecallOutcome(evidence_event=ev, window_entry=win)

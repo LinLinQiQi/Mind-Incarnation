@@ -397,14 +397,6 @@ class GlobalPaths:
         return self.global_dir / "evidence.jsonl"
 
     @property
-    def minds_dir(self) -> Path:
-        return self.home_dir / "mindspec"
-
-    @property
-    def base_path(self) -> Path:
-        return self.minds_dir / "base.json"
-
-    @property
     def global_workflows_dir(self) -> Path:
         # Global workflow IR (source of truth, shared across projects; project can override).
         return self.home_dir / "workflows" / "global"

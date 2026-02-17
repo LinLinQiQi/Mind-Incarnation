@@ -5,7 +5,7 @@ from typing import Any
 
 from ..memory.text import tokenize_query, truncate
 from .store import ThoughtDbStore, ThoughtDbView
-from .values import VALUES_BASE_TAG, VALUES_RAW_TAG
+from .values import VALUES_BASE_TAG, VALUES_RAW_TAG, VALUES_SUMMARY_TAG
 from .pins import PINNED_PREF_GOAL_TAGS
 
 
@@ -91,12 +91,37 @@ def _compact_edge(e: dict[str, Any], *, scope: str) -> dict[str, Any]:
     }
 
 
+def _compact_node(n: dict[str, Any], *, view: ThoughtDbView) -> dict[str, Any]:
+    nid = str(n.get("node_id") or "").strip()
+    refs = n.get("source_refs") if isinstance(n.get("source_refs"), list) else []
+    ev_ids: list[str] = []
+    for r in refs:
+        if isinstance(r, dict) and r.get("event_id"):
+            ev_ids.append(str(r.get("event_id")))
+    ev_ids = [x for x in ev_ids if x.strip()][:6]
+    tags = n.get("tags") if isinstance(n.get("tags"), list) else []
+    return {
+        "node_id": nid,
+        "canonical_id": view.resolve_id(nid),
+        "status": view.node_status(nid),
+        "node_type": str(n.get("node_type") or "").strip(),
+        "scope": str(n.get("scope") or "").strip(),
+        "visibility": str(n.get("visibility") or "").strip(),
+        "asserted_ts": str(n.get("asserted_ts") or "").strip(),
+        "title": truncate(str(n.get("title") or "").strip(), 160),
+        "text": truncate(str(n.get("text") or "").strip(), 560),
+        "tags": [str(x) for x in tags if str(x).strip()][:16] if isinstance(tags, list) else [],
+        "source_event_ids": ev_ids,
+    }
+
+
 @dataclass(frozen=True)
 class ThoughtDbContext:
     """Compact Thought DB subgraph context for Mind prompts (deterministic retrieval)."""
 
     as_of_ts: str
     query: str
+    nodes: list[dict[str, Any]]
     values_claims: list[dict[str, Any]]
     pref_goal_claims: list[dict[str, Any]]
     query_claims: list[dict[str, Any]]
@@ -107,6 +132,7 @@ class ThoughtDbContext:
         return {
             "as_of_ts": self.as_of_ts,
             "query": truncate(self.query, 1200),
+            "nodes": self.nodes,
             "values_claims": self.values_claims,
             "pref_goal_claims": self.pref_goal_claims,
             "query_claims": self.query_claims,
@@ -122,6 +148,7 @@ def build_decide_next_thoughtdb_context(
     task: str,
     hands_last_message: str,
     recent_evidence: list[dict[str, Any]],
+    max_nodes: int = 6,
     max_values_claims: int = 8,
     max_pref_goal_claims: int = 8,
     max_query_claims: int = 10,
@@ -134,6 +161,103 @@ def build_decide_next_thoughtdb_context(
 
     v_proj = tdb.load_view(scope="project")
     v_glob = tdb.load_view(scope="global")
+
+    # Nodes: include a small set of recent/high-signal Decision/Action/Summary nodes so
+    # decide_next can benefit from past decisions/steps without replaying the full transcript.
+    nodes: list[dict[str, Any]] = []
+    max_nodes_total = max(0, int(max_nodes))
+
+    def _add_node(n: dict[str, Any], *, view: ThoughtDbView) -> None:
+        nonlocal nodes
+        if len(nodes) >= max_nodes_total:
+            return
+        nodes.append(_compact_node(n, view=view))
+
+    included_node_ids: set[str] = set()
+
+    # Always include the latest global values summary node (if present).
+    best_vs: dict[str, Any] | None = None
+    best_ts = ""
+    for n in v_glob.iter_nodes(include_inactive=False, include_aliases=False):
+        if not isinstance(n, dict):
+            continue
+        if str(n.get("node_type") or "").strip() != "summary":
+            continue
+        tags = n.get("tags") if isinstance(n.get("tags"), list) else []
+        tagset = {str(x).strip() for x in tags if str(x).strip()}
+        if VALUES_SUMMARY_TAG not in tagset:
+            continue
+        ts = str(n.get("asserted_ts") or "").strip()
+        if ts >= best_ts:
+            best_vs = n
+            best_ts = ts
+
+    if isinstance(best_vs, dict) and max_nodes_total > 0:
+        nid = str(best_vs.get("node_id") or "").strip()
+        if nid:
+            _add_node(best_vs, view=v_glob)
+            included_node_ids.add(nid)
+
+    # Include a few most recent project nodes (best-effort).
+    max_recent_project_nodes = 3
+    proj_nodes: list[tuple[str, dict[str, Any]]] = []
+    for n in v_proj.iter_nodes(include_inactive=False, include_aliases=False):
+        if not isinstance(n, dict):
+            continue
+        nid = str(n.get("node_id") or "").strip()
+        if not nid or nid in included_node_ids:
+            continue
+        ts = str(n.get("asserted_ts") or "").strip()
+        proj_nodes.append((ts, n))
+    proj_nodes.sort(key=lambda x: x[0], reverse=True)
+    for _ts, n in proj_nodes:
+        if len(nodes) >= max_nodes_total:
+            break
+        if len(included_node_ids) >= max_recent_project_nodes + (1 if best_vs else 0):
+            break
+        nid = str(n.get("node_id") or "").strip()
+        if not nid or nid in included_node_ids:
+            continue
+        _add_node(n, view=v_proj)
+        included_node_ids.add(nid)
+
+    # Fill remaining node budget with query-ranked nodes (project first, then global).
+    if tokens and len(nodes) < max_nodes_total:
+        scored_nodes: list[tuple[int, str, str, dict[str, Any], ThoughtDbView]] = []
+        for view, scope in ((v_proj, "project"), (v_glob, "global")):
+            for n in view.iter_nodes(include_inactive=False, include_aliases=False):
+                if not isinstance(n, dict):
+                    continue
+                nid = str(n.get("node_id") or "").strip()
+                if not nid or nid in included_node_ids:
+                    continue
+                title = str(n.get("title") or "").strip()
+                text = str(n.get("text") or "").strip()
+                if not title and not text:
+                    continue
+                score = _score_tokens(tokens, text=(title + "\n" + text).strip())
+                if score <= 0:
+                    continue
+                ts = str(n.get("asserted_ts") or "").strip()
+                scored_nodes.append((score, scope, ts, n, view))
+
+        scored_nodes.sort(
+            key=lambda x: (
+                -int(x[0]),
+                0 if x[1] == "project" else 1,
+                str(x[2] or ""),
+            ),
+            reverse=False,
+        )
+
+        for _score, _scope, _ts, n, view in scored_nodes:
+            if len(nodes) >= max_nodes_total:
+                break
+            nid = str(n.get("node_id") or "").strip()
+            if not nid or nid in included_node_ids:
+                continue
+            _add_node(n, view=view)
+            included_node_ids.add(nid)
 
     # Values claims: always include a small set of active global preference/goal claims tagged as values:base.
     values: list[dict[str, Any]] = []
@@ -263,8 +387,23 @@ def build_decide_next_thoughtdb_context(
         if len(query_claims) >= max(0, int(max_query_claims)):
             break
 
-    # Edges among included claims (small budget). Prefer "reasoning" edges.
-    edge_types = {"depends_on", "supports", "contradicts", "supersedes", "same_as"}
+    # Include selected node ids for edge filtering.
+    included_ids |= set(included_node_ids)
+
+    # Allow edges that reference recent EvidenceLog event_ids for provenance (`derived_from`, etc.).
+    recent_event_ids: set[str] = set()
+    for rec in (recent_evidence or [])[-12:]:
+        if not isinstance(rec, dict):
+            continue
+        eid = rec.get("event_id")
+        if isinstance(eid, str) and eid.strip():
+            recent_event_ids.add(eid.strip())
+        if len(recent_event_ids) >= 18:
+            break
+    edge_allow_ids = set(included_ids) | set(recent_event_ids)
+
+    # Edges among included claims/nodes (small budget). Prefer "reasoning/provenance" edges.
+    edge_types = {"depends_on", "supports", "contradicts", "derived_from", "mentions", "supersedes", "same_as"}
     edges: list[dict[str, Any]] = []
     seen_edges: set[str] = set()
 
@@ -284,8 +423,9 @@ def build_decide_next_thoughtdb_context(
             to = str(e.get("to_id") or "").strip()
             if not frm or not to:
                 continue
-            # Keep only edges among included claim ids.
-            if frm not in included_ids or to not in included_ids:
+
+            # Keep only edges among included ids (claims+nodes) and recent evidence event_ids.
+            if frm not in edge_allow_ids or to not in edge_allow_ids:
                 continue
             key = f"{scope}:{et}:{frm}->{to}"
             if key in seen_edges:
@@ -298,13 +438,14 @@ def build_decide_next_thoughtdb_context(
     add_edges_from_view(v_glob, scope="global")
 
     notes = (
-        f"tokens={len(tokens)} values_claims={len(values)} pref_goal_claims={len(pref_goal_claims)} "
+        f"tokens={len(tokens)} nodes={len(nodes)} values_claims={len(values)} pref_goal_claims={len(pref_goal_claims)} "
         f"query_claims={len(query_claims)} edges={len(edges)} budgets(values={max_values_claims} pref_goal={max_pref_goal_claims} "
-        f"query={max_query_claims} edges={max_edges})"
+        f"query={max_query_claims} nodes={max_nodes} edges={max_edges})"
     )
     return ThoughtDbContext(
         as_of_ts=as_of_ts,
         query=q,
+        nodes=nodes,
         values_claims=values,
         pref_goal_claims=pref_goal_claims,
         query_claims=query_claims,

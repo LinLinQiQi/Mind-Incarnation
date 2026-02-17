@@ -424,8 +424,8 @@ def run_autopilot(
     def _mindspec_base_runtime() -> dict[str, Any]:
         """Runtime knobs context for Mind prompts.
 
-        Historical name: "MindSpec base". In strict Thought DB mode, canonical values/preferences
-        are in Thought DB Claims; this object is only operational knobs (budgets/feature switches).
+        Historical name: "MindSpec base". Canonical values/preferences and operational defaults
+        are in Thought DB Claims; this object is only runtime knobs (budgets/feature switches).
         """
 
         return runtime_cfg if isinstance(runtime_cfg, dict) else {}
@@ -1308,7 +1308,7 @@ def run_autopilot(
         )
 
     # Canonical operational defaults (ask_when_uncertain/refactor_intent) live as global Thought DB preference claims.
-    # In strict Thought DB mode, MindSpec.base.defaults is non-canonical; we only seed missing claims.
+    # Runtime config defaults are non-canonical; we only seed missing claims.
     try:
         defaults_sync = ensure_operational_defaults_claims_current(
             home_dir=home,

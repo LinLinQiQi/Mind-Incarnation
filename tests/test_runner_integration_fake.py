@@ -13,13 +13,12 @@ from mi.core.paths import GlobalPaths, ProjectPaths
 from mi.core.storage import iter_jsonl, write_json
 from mi.memory.service import MemoryService
 from mi.memory.types import MemoryItem
-from mi.mindspec import MindSpecStore
 from mi.providers.codex_runner import CodexRunResult
 from mi.providers.mind_errors import MindCallError
 from mi.runtime.runner import run_autopilot
 from mi.thoughtdb import ThoughtDbStore
 from mi.thoughtdb.operational_defaults import ensure_operational_defaults_claims_current
-from mi.thoughtdb.values import write_values_set_event
+from mi.thoughtdb.values import VALUES_BASE_TAG, write_values_set_event
 
 
 @dataclass(frozen=True)
@@ -85,18 +84,14 @@ def _mk_result(*, thread_id: str, last_message: str, command: str = "") -> Codex
 
 
 class TestRunnerIntegrationFake(unittest.TestCase):
-    def test_run_does_not_auto_migrate_values_claims_from_mindspec(self) -> None:
+    def test_run_does_not_auto_derive_values_claims(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
-            store = MindSpecStore(home_dir=home)
-            base = store.load_base()
-            base["values_text"] = "Prefer minimal questions; avoid unnecessary prompts."
-            store.write_base(base)
-
             # Simulate a prior values_set event existing (e.g., from `mi init`) without derived claims.
+            values_text = "Prefer minimal questions; avoid unnecessary prompts."
             rec = write_values_set_event(
                 home_dir=Path(home),
-                values_text=str(base.get("values_text") or ""),
-                compiled_values=base,
+                values_text=values_text,
+                compiled_values={},
                 notes="test",
             )
             ev_id = str(rec.get("event_id") or "").strip()
@@ -156,9 +151,24 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             self.assertEqual(len(values_set), 1)
             self.assertEqual(str(values_set[0].get("event_id") or "").strip(), ev_id)
 
-            # Project EvidenceLog should NOT record a values migration (run no longer auto-migrates).
+            # Project EvidenceLog should NOT record a values_claim_patch (values are only derived via `mi values set` / `mi init`).
             found = any(isinstance(obj, dict) and obj.get("kind") == "values_claim_patch" for obj in iter_jsonl(result.evidence_log_path))
             self.assertFalse(found)
+
+            # Global Thought DB should not gain any derived values:base claims during `mi run`.
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            v = tdb.load_view(scope="global")
+            has_values_base = False
+            for c in v.iter_claims(include_inactive=True, include_aliases=True):
+                if not isinstance(c, dict):
+                    continue
+                tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+                tagset = {str(x).strip() for x in tags if str(x).strip()}
+                if VALUES_BASE_TAG in tagset:
+                    has_values_base = True
+                    break
+            self.assertFalse(has_values_base)
 
     def test_checkpoint_materializes_thoughtdb_nodes_without_extra_mind_calls(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
@@ -411,6 +421,10 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                     self.assertEqual(obj.get("batch_id"), "b0.recall")
                     self.assertTrue(str(obj.get("event_id") or "").strip())
                     self.assertTrue(isinstance(obj.get("items"), list) and obj.get("items"))
+                    self.assertEqual(str(obj.get("query_raw") or "").strip(), "hello world")
+                    self.assertEqual(str(obj.get("query_compact") or "").strip(), "hello world")
+                    toks = obj.get("tokens_used") if isinstance(obj.get("tokens_used"), list) else []
+                    self.assertTrue("hello" in [str(x) for x in toks] and "world" in [str(x) for x in toks])
                     found = True
                     break
             self.assertTrue(found)

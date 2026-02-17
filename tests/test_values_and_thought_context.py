@@ -112,6 +112,41 @@ class TestValuesAndThoughtContext(unittest.TestCase):
             v_ids = {str(x.get("claim_id") or "") for x in (ctx.values_claims or []) if isinstance(x, dict)}
             self.assertIn(cid, v_ids)
 
+    def test_thought_context_includes_recent_project_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:
+            home = Path(td_home)
+            project_root = Path(td_proj)
+            pp = ProjectPaths(home_dir=home, project_root=project_root)
+            tdb = ThoughtDbStore(home_dir=home, project_paths=pp)
+
+            nid = tdb.append_node_create(
+                node_type="decision",
+                title="Test Decision",
+                text="Decide to run minimal checks before stopping.",
+                scope="project",
+                visibility="project",
+                tags=["test"],
+                source_event_ids=["ev_test_node_1"],
+                confidence=1.0,
+                notes="t",
+            )
+            self.assertTrue(nid.startswith("nd_"))
+
+            ctx = build_decide_next_thoughtdb_context(
+                tdb=tdb,
+                as_of_ts=now_rfc3339(),
+                task="run checks",
+                hands_last_message="",
+                recent_evidence=[],
+            )
+            node_ids = {str(x.get("node_id") or "") for x in (ctx.nodes or []) if isinstance(x, dict)}
+            self.assertIn(nid, node_ids)
+
+            obj = ctx.to_prompt_obj()
+            self.assertIn("nodes", obj)
+            node_ids2 = {str(x.get("node_id") or "") for x in (obj.get("nodes") or []) if isinstance(x, dict)}
+            self.assertIn(nid, node_ids2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -159,8 +159,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_clm = claim_sub.add_parser("mine", help="On-demand mine claims from the current segment buffer (best-effort).")
     p_clm.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
-    p_clm.add_argument("--min-confidence", type=float, default=-1.0, help="Override MindSpec.thought_db.min_confidence.")
-    p_clm.add_argument("--max-claims", type=int, default=-1, help="Override MindSpec.thought_db.max_claims_per_checkpoint.")
+    p_clm.add_argument("--min-confidence", type=float, default=-1.0, help="Override config.runtime.thought_db.min_confidence.")
+    p_clm.add_argument("--max-claims", type=int, default=-1, help="Override config.runtime.thought_db.max_claims_per_checkpoint.")
     p_clm.add_argument("--json", action="store_true", help="Print result as JSON.")
 
     p_cas = claim_sub.add_parser(

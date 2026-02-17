@@ -5,7 +5,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from mi.mindspec import MindSpecStore
+from mi.project import load_project_overlay, write_project_overlay
 from mi.providers.codex_runner import CodexRunResult
 from mi.runtime.runner import run_autopilot
 
@@ -102,8 +102,7 @@ class TestRunnerHandsPersistence(unittest.TestCase):
             self.assertEqual(r1.status, "done")
             self.assertEqual(fake_hands_1.exec_calls, 1)
 
-            store = MindSpecStore(home_dir=home)
-            overlay = store.load_project_overlay(root)
+            overlay = load_project_overlay(home_dir=Path(home), project_root=root)
             hs = overlay.get("hands_state") if isinstance(overlay.get("hands_state"), dict) else {}
             self.assertEqual(hs.get("provider"), "codex")
             self.assertEqual(hs.get("thread_id"), "t123")
@@ -154,11 +153,10 @@ class TestRunnerHandsPersistence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             root = Path(project_root)
 
-            store = MindSpecStore(home_dir=home)
-            overlay = store.load_project_overlay(root)
+            overlay = load_project_overlay(home_dir=Path(home), project_root=root)
             overlay.setdefault("hands_state", {})
             overlay["hands_state"] = {"provider": "codex", "thread_id": "t123", "updated_ts": "t"}
-            store.write_project_overlay(root, overlay)
+            write_project_overlay(home_dir=Path(home), project_root=root, overlay=overlay)
 
             fake_hands = _FakeHands([_mk_result(thread_id="t999")])
             fake_llm = _FakeLlm(

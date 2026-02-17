@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mi.mindspec import MindSpecStore
 from mi.core.paths import ProjectPaths, project_index_path
+from mi.project import load_project_overlay
 
 
 def _git(cwd: Path, args: list[str]) -> None:
@@ -34,10 +34,8 @@ class TestProjectIdResolution(unittest.TestCase):
             _git(repo_a, ["add", "."])
             _git(repo_a, ["commit", "-m", "init"])
 
-            store = MindSpecStore(home_dir=home)
-
             # First run: creates overlay under legacy path-hash id, but writes identity fields.
-            overlay_a = store.load_project_overlay(repo_a)
+            overlay_a = load_project_overlay(home_dir=Path(home), project_root=repo_a)
             pid_a = str(overlay_a.get("project_id") or "")
             ident_a = str(overlay_a.get("identity_key") or "")
             self.assertTrue(pid_a)
@@ -50,7 +48,7 @@ class TestProjectIdResolution(unittest.TestCase):
 
             shutil.copytree(repo_a, repo_b)
 
-            overlay_b = store.load_project_overlay(repo_b)
+            overlay_b = load_project_overlay(home_dir=Path(home), project_root=repo_b)
             pid_b = str(overlay_b.get("project_id") or "")
             ident_b = str(overlay_b.get("identity_key") or "")
 

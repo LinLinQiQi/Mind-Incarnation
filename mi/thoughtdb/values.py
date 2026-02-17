@@ -213,7 +213,7 @@ def upsert_values_summary_node(
     """Materialize a global Summary node for the current values (best-effort).
 
     This stores a compact human-facing summary + procedure in Thought DB so users can
-    inspect MI's understanding without relying on MindSpec storage.
+    inspect MI's understanding without relying on any legacy/non-canonical storage.
     """
 
     ev_id = str(values_event_id or "").strip()

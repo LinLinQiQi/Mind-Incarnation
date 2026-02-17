@@ -362,7 +362,7 @@ Minimal shape:
 
 ### ProjectOverlay
 
-Note: `testless_verification_strategy` is a derived mirror for backward compatibility. Canonical storage is a project-scoped Thought DB preference Claim tagged `mi:testless_verification_strategy`.
+Note: `testless_verification_strategy` is a derived mirror/cache for backward compatibility. Canonical storage is a project-scoped Thought DB preference Claim tagged `mi:testless_verification_strategy`. The overlay stores only a `claim_id` pointer (not the full strategy text).
 
 ```json
 {
@@ -376,7 +376,7 @@ Note: `testless_verification_strategy` is a derived mirror for backward compatib
   "stack_hints": ["string"],
   "testless_verification_strategy": {
     "chosen_once": true,
-    "strategy": "string",
+    "claim_id": "cl_<id>",
     "rationale": "string"
   },
   "host_bindings": [
@@ -890,8 +890,6 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `thoughtdb/global/claims.jsonl` (global Claims)
   - `thoughtdb/global/edges.jsonl` (global Edges)
   - `thoughtdb/global/nodes.jsonl` (global Nodes)
-  - `mindspec/base.json` (legacy; not used by current MI versions)
-  - `mindspec/learned.jsonl` (legacy; ignored by current MI versions)
 - Project index (stable identity -> project_id mapping):
   - `projects/index.json`
 - Per project (keyed by a resolved `project_id`):
@@ -909,6 +907,12 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/<project_id>/transcripts/hands/archive/*.jsonl.gz` (optional; created by `mi gc transcripts`)
   - `projects/<project_id>/transcripts/mind/*.jsonl`
   - `projects/<project_id>/transcripts/mind/archive/*.jsonl.gz` (optional; created by `mi gc transcripts`)
+
+Legacy leftovers (safe to delete; not read by current MI versions):
+
+- `<home>/mindspec/base.json`
+- `<home>/mindspec/learned.jsonl`
+- `<home>/projects/<project_id>/learned.jsonl`
 
 Note: `project_id` is legacy-compatible (historically a hash of the root path), but MI also stores an `identity_key` in ProjectOverlay and maintains a `projects/index.json` mapping so the same project can be recognized across path moves/clones (best-effort; especially effective for git repos).
 

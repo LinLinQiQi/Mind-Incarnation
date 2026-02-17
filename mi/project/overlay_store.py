@@ -38,7 +38,9 @@ def load_project_overlay(*, home_dir: Path, project_root: Path) -> dict[str, Any
         "testless_verification_strategy",
         {
             "chosen_once": False,
-            "strategy": "",
+            # Derived cache pointer to the canonical Thought DB claim_id (project scope).
+            # Keep this as a pointer (not full text) to avoid ambiguity about what is canonical.
+            "claim_id": "",
             "rationale": "",
         },
     )
@@ -113,6 +115,20 @@ def load_project_overlay(*, home_dir: Path, project_root: Path) -> dict[str, Any
         overlay["global_workflow_overrides"] = {}
         changed = True
 
+    tls = overlay.get("testless_verification_strategy")
+    if not isinstance(tls, dict):
+        overlay["testless_verification_strategy"] = {"chosen_once": False, "claim_id": "", "rationale": ""}
+        changed = True
+    else:
+        for k, default_v in (("chosen_once", False), ("claim_id", ""), ("rationale", "")):
+            if k not in tls:
+                tls[k] = default_v
+                changed = True
+        # Back-compat: older overlays stored the strategy text. Keep it if present but do not forward-fill it.
+        if "strategy" in tls and not isinstance(tls.get("strategy"), str):
+            tls["strategy"] = str(tls.get("strategy") or "")
+            changed = True
+
     wr = overlay.get("workflow_run")
     if not isinstance(wr, dict):
         overlay["workflow_run"] = {
@@ -159,4 +175,3 @@ def load_project_overlay(*, home_dir: Path, project_root: Path) -> dict[str, Any
 def write_project_overlay(*, home_dir: Path, project_root: Path, overlay: dict[str, Any]) -> None:
     project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
     write_json(project_paths.overlay_path, overlay if isinstance(overlay, dict) else {})
-

@@ -1257,7 +1257,7 @@ def run_autopilot(
         """Unify testless verification strategy storage via Thought DB.
 
         - If a tagged preference Claim exists, derive ProjectOverlay from it (best-effort).
-        - Else, if ProjectOverlay has a chosen strategy, migrate it into a tagged preference Claim.
+        - Else, if ProjectOverlay has a chosen legacy strategy text, migrate it into a tagged preference Claim.
         """
         nonlocal overlay
 
@@ -1269,16 +1269,18 @@ def run_autopilot(
 
         tls = overlay.get("testless_verification_strategy") if isinstance(overlay, dict) else None
         overlay_chosen = bool(tls.get("chosen_once", False)) if isinstance(tls, dict) else False
+        overlay_claim_id = str(tls.get("claim_id") or "").strip() if isinstance(tls, dict) else ""
+        # Back-compat: older overlays stored the strategy text directly.
         overlay_strategy = str(tls.get("strategy") or "").strip() if isinstance(tls, dict) else ""
         overlay_rationale = str(tls.get("rationale") or "").strip() if isinstance(tls, dict) else ""
 
         if claim_id and claim_strategy:
             # Derive overlay from canonical claim when missing or divergent.
-            if (not overlay_chosen) or (overlay_strategy.strip() != claim_strategy.strip()):
+            if (not overlay_chosen) or (overlay_claim_id.strip() != claim_id.strip()):
                 overlay.setdefault("testless_verification_strategy", {})
                 overlay["testless_verification_strategy"] = {
                     "chosen_once": True,
-                    "strategy": claim_strategy,
+                    "claim_id": claim_id,
                     "rationale": f"derived from Thought DB {claim_id}",
                 }
                 write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
@@ -1300,12 +1302,21 @@ def run_autopilot(
             }
         )
         eid = str(mig.get("event_id") or "").strip()
-        _upsert_testless_strategy_claim(
+        cid = _upsert_testless_strategy_claim(
             strategy_text=overlay_strategy,
             source_event_id=eid,
             source="overlay_migrate",
             rationale=overlay_rationale or "migrate from overlay",
         )
+        if cid:
+            overlay.setdefault("testless_verification_strategy", {})
+            overlay["testless_verification_strategy"] = {
+                "chosen_once": True,
+                "claim_id": cid,
+                "rationale": f"migrated legacy overlay strategy into Thought DB {cid}",
+            }
+            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
+            _refresh_overlay_refs()
 
     # Canonical operational defaults (ask_when_uncertain/refactor_intent) live as global Thought DB preference claims.
     # Runtime config defaults are non-canonical; we only seed missing claims.
@@ -2917,18 +2928,20 @@ def run_autopilot(
         # Thought DB is canonical: treat a tagged strategy claim as the one-time choice.
         tls_claim = _find_testless_strategy_claim(as_of_ts=now_rfc3339())
         tls_claim_strategy = ""
+        tls_claim_id = ""
         if isinstance(tls_claim, dict):
+            tls_claim_id = str(tls_claim.get("claim_id") or "").strip()
             tls_claim_strategy = _parse_testless_strategy_from_claim_text(str(tls_claim.get("text") or ""))
         if tls_claim_strategy:
             tls_chosen_once = True
-            # Keep overlay aligned for backward compatibility and to avoid decide_next prompting.
-            cur_strategy = str(tls.get("strategy") or "").strip() if isinstance(tls, dict) else ""
-            if cur_strategy.strip() != tls_claim_strategy.strip():
+            # Keep overlay aligned (derived cache pointer) and to avoid decide_next prompting.
+            cur_cid = str(tls.get("claim_id") or "").strip() if isinstance(tls, dict) else ""
+            if tls_claim_id and cur_cid.strip() != tls_claim_id.strip():
                 overlay.setdefault("testless_verification_strategy", {})
                 overlay["testless_verification_strategy"] = {
                     "chosen_once": True,
-                    "strategy": tls_claim_strategy.strip(),
-                    "rationale": f"derived from Thought DB {str(tls_claim.get('claim_id') or '').strip()}",
+                    "claim_id": tls_claim_id,
+                    "rationale": f"derived from Thought DB {tls_claim_id}",
                 }
                 write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
                 _refresh_overlay_refs()
@@ -2970,7 +2983,7 @@ def run_autopilot(
             overlay.setdefault("testless_verification_strategy", {})
             overlay["testless_verification_strategy"] = {
                 "chosen_once": True,
-                "strategy": answer.strip(),
+                "claim_id": tls_cid,
                 "rationale": (f"user provided (canonical claim {tls_cid})" if tls_cid else "user provided testless verification strategy"),
             }
             write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
@@ -3256,7 +3269,7 @@ def run_autopilot(
                     overlay.setdefault("testless_verification_strategy", {})
                     overlay["testless_verification_strategy"] = {
                         "chosen_once": True,
-                        "strategy": strategy,
+                        "claim_id": tls_cid,
                         "rationale": (f"{rationale} (canonical claim {tls_cid})" if tls_cid else rationale),
                     }
                     write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
@@ -3575,7 +3588,7 @@ def run_autopilot(
                         overlay.setdefault("testless_verification_strategy", {})
                         overlay["testless_verification_strategy"] = {
                             "chosen_once": True,
-                            "strategy": strategy,
+                            "claim_id": tls_cid,
                             "rationale": (f"{rationale} (canonical claim {tls_cid})" if tls_cid else rationale),
                         }
                         write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)

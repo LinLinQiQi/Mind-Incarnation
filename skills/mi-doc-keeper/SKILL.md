@@ -13,7 +13,7 @@ If `.mi-project` is missing, do not apply this skill's workflow.
 
 ## Workflow (run on every functional change)
 
-0) Open `references/doc-map.md` and use it as the "change -> docs" checklist.
+0) Open `../../references/doc-map.md` and use it as the "change -> docs" checklist.
 
 1) Identify the user-visible behavior change (even if "behavior-preserving").
 2) Update docs in the same patch:
@@ -37,4 +37,4 @@ If `.mi-project` is missing, do not apply this skill's workflow.
 
 ## Reference
 
-For a "change -> doc section" mapping and checklist, read `references/doc-map.md`.
+For a "change -> doc section" mapping and checklist, read `../../references/doc-map.md`.

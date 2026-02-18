@@ -19,6 +19,8 @@ If `.mi-project` is missing, do not apply this skill's workflow.
 2) Update docs in the same patch:
    - Always update `docs/mi-v1-spec.md` when V1 behavior/loop/prompts/schemas change.
    - Also update any other impacted docs (typically `README.md`, `README.zh-CN.md`, `references/doc-map.md`, and any relevant files under `docs/`).
+   - If README updates are needed, keep `README.md` and `README.zh-CN.md` in sync (update both unless intentionally language-specific, and call it out).
+   - If you edit `docs/mi-v1-spec.md`, bump its `Last updated: YYYY-MM-DD` line to today.
 3) Ensure the following stay consistent with the implementation:
    - Constraints (no tool interception, no forced step slicing)
    - Runtime loop (batch autopilot)

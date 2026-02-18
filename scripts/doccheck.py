@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import subprocess
@@ -49,7 +50,7 @@ def _is_all_zeros_sha(s: str) -> bool:
 def _ci_diff_args() -> list[str]:
     """Best-effort diff args for CI (GitHub Actions).
 
-    Returns arguments to append after: `git diff --name-only`.
+    Returns arguments to append after: `git diff --name-status`.
     """
 
     if not _truthy_env("GITHUB_ACTIONS"):
@@ -87,27 +88,95 @@ def _ci_diff_args() -> list[str]:
 
 
 def _changed_files_from_worktree() -> set[str]:
-    changed: set[str] = set()
-    for cmd in (
-        ["diff", "--name-only"],
-        ["diff", "--name-only", "--cached"],
-        ["ls-files", "--others", "--exclude-standard"],
-    ):
-        _, out = _run_git(cmd)
-        for line in (out or "").splitlines():
-            p = line.strip()
-            if p:
-                changed.add(p)
+    changed, _, _ = _changes_from_worktree()
     return changed
 
 
 def _changed_files_from_diff_args(diff_args: list[str]) -> set[str]:
+    changed, _, _ = _changes_from_diff_args(diff_args)
+    return changed
+
+
+def _parse_name_status(out: str) -> tuple[set[str], set[str], set[str]]:
+    """Parse `git diff --name-status` output into (changed, added, deleted)."""
+
+    changed: set[str] = set()
+    added: set[str] = set()
+    deleted: set[str] = set()
+
+    for raw in (out or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+
+        # Git uses tabs by default; fall back to whitespace if needed.
+        parts = line.split("\t") if "\t" in line else line.split()
+        if not parts:
+            continue
+
+        status = parts[0].strip()
+        if not status:
+            continue
+
+        code = status[0].upper()
+
+        # Rename/copy have: Rxxx old new / Cxxx old new.
+        if code in ("R", "C") and len(parts) >= 3:
+            old = parts[1].strip()
+            new = parts[2].strip()
+            if old:
+                changed.add(old)
+                deleted.add(old)
+            if new:
+                changed.add(new)
+                added.add(new)
+            continue
+
+        path = parts[1].strip() if len(parts) >= 2 else ""
+        if not path:
+            continue
+
+        changed.add(path)
+        if code == "A":
+            added.add(path)
+        elif code == "D":
+            deleted.add(path)
+
+    return changed, added, deleted
+
+
+def _changes_from_worktree() -> tuple[set[str], set[str], set[str]]:
+    changed: set[str] = set()
+    added: set[str] = set()
+    deleted: set[str] = set()
+
+    # Unstaged and staged diffs.
+    for cmd in (["diff", "--name-status"], ["diff", "--name-status", "--cached"]):
+        _, out = _run_git(cmd)
+        ch, ad, de = _parse_name_status(out)
+        changed |= ch
+        added |= ad
+        deleted |= de
+
+    # Untracked files: treat as added.
+    _, out = _run_git(["ls-files", "--others", "--exclude-standard"])
+    for line in (out or "").splitlines():
+        p = line.strip()
+        if not p:
+            continue
+        changed.add(p)
+        added.add(p)
+
+    return changed, added, deleted
+
+
+def _changes_from_diff_args(diff_args: list[str]) -> tuple[set[str], set[str], set[str]]:
     if not diff_args:
-        return set()
-    rc, out = _run_git(["diff", "--name-only", *diff_args])
+        return set(), set(), set()
+    rc, out = _run_git(["diff", "--name-status", *diff_args])
     if rc != 0:
-        return set()
-    return {line.strip() for line in (out or "").splitlines() if line.strip()}
+        return set(), set(), set()
+    return _parse_name_status(out)
 
 
 def main() -> int:
@@ -131,16 +200,18 @@ def main() -> int:
         return 0
 
     changed: set[str] = set()
+    added: set[str] = set()
+    deleted: set[str] = set()
     diff_s = str(getattr(args, "diff", "") or "").strip()
     if diff_s:
-        changed = _changed_files_from_diff_args([diff_s])
+        changed, added, deleted = _changes_from_diff_args([diff_s])
         mode = f"diff:{diff_s}"
     elif bool(getattr(args, "ci", False)):
         diff_args = _ci_diff_args()
-        changed = _changed_files_from_diff_args(diff_args)
+        changed, added, deleted = _changes_from_diff_args(diff_args)
         mode = "ci"
     else:
-        changed = _changed_files_from_worktree()
+        changed, added, deleted = _changes_from_worktree()
         mode = "worktree"
 
     if not changed:
@@ -148,7 +219,15 @@ def main() -> int:
         return 0
 
     strict = _truthy_env("MI_DOCCHECK_STRICT")
-    warnings: list[str] = []
+    warnings: list[tuple[str, str, tuple[str, ...]]] = []
+    expected_docs: set[str] = set()
+
+    def warn(*, category: str, message: str, expected: tuple[str, ...] = ()) -> None:
+        warnings.append((str(category or "").strip() or "other", str(message or "").strip(), tuple(expected or ())))
+        for p in expected or ():
+            ps = str(p or "").strip()
+            if ps:
+                expected_docs.add(ps)
 
     def any_changed(prefixes: tuple[str, ...]) -> bool:
         return any(any(f == p or f.startswith(p + "/") for p in prefixes) for f in changed)
@@ -158,41 +237,112 @@ def main() -> int:
 
     readme_en = "README.md"
     readme_zh = "README.zh-CN.md"
-    readme_changed = any(f in changed for f in (readme_en, readme_zh))
+    readme_en_changed = readme_en in changed
+    readme_zh_changed = readme_zh in changed
+    readme_any_changed = readme_en_changed or readme_zh_changed
 
     thoughtdb_doc = "docs/mi-thought-db.md"
     thoughtdb_doc_changed = thoughtdb_doc in changed
+    doc_map = "references/doc-map.md"
+    doc_map_changed = doc_map in changed
 
     # Spec is source-of-truth for V1 behavior.
     code_changed = any_changed(("mi",)) or any(f in changed for f in ("pyproject.toml", "Makefile"))
     if code_changed and not spec_changed:
-        warnings.append(f"Code changed but {spec} not changed (spec is source-of-truth).")
+        warn(
+            category="spec",
+            message=f"Code changed but {spec} not changed (spec is source-of-truth).",
+            expected=(spec,),
+        )
 
-    # CLI / inspection surface typically needs README updates.
-    cli_changed = any(f in changed for f in ("mi/cli.py", "mi/cli_dispatch.py", "mi/runtime/inspect.py"))
-    cli_changed = cli_changed or any_changed(("mi/schemas",))
-    if cli_changed and not readme_changed:
-        warnings.append(f"CLI/inspect/schemas changed but README not updated ({readme_en} / {readme_zh}).")
+    # README updates are usually required for user-facing surface changes.
+    readme_reasons: list[str] = []
+    cli_changed = any(f in changed for f in ("mi/cli.py", "mi/cli_dispatch.py", "mi/runtime/inspect.py")) or any_changed(("mi/schemas",))
+    if cli_changed:
+        readme_reasons.append("CLI/inspect/schemas")
 
     # Thought DB / memory design notes.
     tdb_changed = any_changed(("mi/thoughtdb", "mi/memory"))
     if tdb_changed and not thoughtdb_doc_changed:
-        warnings.append(f"Thought DB / memory changed but {thoughtdb_doc} not updated.")
+        warn(
+            category="thoughtdb_doc",
+            message=f"Thought DB / memory changed but {thoughtdb_doc} not updated.",
+            expected=(thoughtdb_doc,),
+        )
 
     # Workflows / host adapters are user-facing; README should usually mention new/changed knobs.
-    wf_changed = any_changed(("mi/workflows",))
-    hosts_changed = any(f in changed for f in ("mi/workflows/hosts.py",))
-    if (wf_changed or hosts_changed) and not readme_changed:
-        warnings.append(f"Workflows/host adapters changed but README not updated ({readme_en} / {readme_zh}).")
+    wf_changed = any_changed(("mi/workflows",)) or any(f in changed for f in ("mi/workflows/hosts.py",))
+    if wf_changed:
+        readme_reasons.append("Workflows/host adapters")
 
     # Provider config/templates are user-facing.
     providers_changed = any_changed(("mi/providers",)) or any(f in changed for f in ("mi/core/config.py",))
-    if providers_changed and not readme_changed:
-        warnings.append(f"Provider config changed but README not updated ({readme_en} / {readme_zh}).")
+    if providers_changed:
+        readme_reasons.append("Providers/config")
+
+    if readme_reasons:
+        reasons_s = ", ".join(readme_reasons)
+        if not readme_any_changed:
+            warn(
+                category="readme",
+                message=f"{reasons_s} changed but README not updated.",
+                expected=(readme_en, readme_zh),
+            )
+        elif readme_en_changed != readme_zh_changed:
+            warn(
+                category="readme_sync",
+                message="README updated in only one language; keep README.md and README.zh-CN.md in sync.",
+                expected=(readme_en, readme_zh),
+            )
+
+    # If the spec itself changed, ensure the header date is meaningful.
+    if spec_changed and spec not in deleted:
+        today = datetime.date.today().isoformat()
+        last_updated = ""
+        try:
+            with open(spec, "r", encoding="utf-8") as f:
+                for _ in range(80):
+                    line = f.readline()
+                    if not line:
+                        break
+                    if line.lower().startswith("last updated:"):
+                        last_updated = line.split(":", 1)[1].strip()
+                        break
+        except Exception:
+            last_updated = ""
+        if not last_updated:
+            warn(
+                category="spec_date",
+                message=f"{spec} changed but missing 'Last updated: YYYY-MM-DD' line.",
+                expected=(spec,),
+            )
+        elif last_updated != today:
+            warn(
+                category="spec_date",
+                message=f"{spec} changed but 'Last updated' is {last_updated} (expected {today}).",
+                expected=(spec,),
+            )
+
+    # If a new docs/* file is added, require updating doc-map so future changes stay honest.
+    excluded_docs = {spec, thoughtdb_doc}
+    new_docs = sorted([p for p in added if p.startswith("docs/") and p not in excluded_docs])
+    if new_docs and not doc_map_changed:
+        sample = ", ".join(new_docs[:3])
+        more = "" if len(new_docs) <= 3 else f" (+{len(new_docs) - 3} more)"
+        warn(
+            category="doc_map",
+            message=f"New docs added ({sample}{more}) but {doc_map} not updated.",
+            expected=(doc_map,),
+        )
 
     if warnings:
-        for w in warnings[:20]:
-            print(f"[doccheck] WARN: {w}", file=sys.stderr)
+        for cat, msg, exp in warnings[:40]:
+            exp_s = ", ".join([x for x in exp if str(x).strip()])
+            suffix = f" -> expected: {exp_s}" if exp_s else ""
+            print(f"[doccheck] WARN: {cat}: {msg}{suffix}", file=sys.stderr)
+        if expected_docs:
+            docs_s = ", ".join(sorted(expected_docs))
+            print(f"[doccheck] Docs to review/update: {docs_s}", file=sys.stderr)
         if strict:
             print("[doccheck] strict mode: failing due to warnings", file=sys.stderr)
             return 1

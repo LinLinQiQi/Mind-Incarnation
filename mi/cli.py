@@ -159,6 +159,101 @@ def main(argv: list[str] | None = None) -> int:
         help="Opt-in: run one WhyTrace at run end (writes kind=why_trace; may materialize depends_on edges).",
     )
 
+    p_status = sub.add_parser("status", help="Show everyday status for the current project (read-only).")
+    p_status.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_status.add_argument("--json", action="store_true", help="Print as JSON.")
+    p_status.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
+
+    p_show = sub.add_parser(
+        "show",
+        help="Show an MI resource by id (ev_/cl_/nd_/wf_/ed_) or a transcript .jsonl path (best-effort).",
+    )
+    p_show.add_argument("ref", help="Resource id (ev_/cl_/nd_/wf_/ed_) or transcript path.")
+    p_show.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_show.add_argument("-n", "--lines", type=int, default=200, help="Number of transcript lines to show when ref is a .jsonl path.")
+    p_show.add_argument("--jsonl", action="store_true", help="When showing a transcript path: print raw JSONL lines.")
+    p_show.add_argument("--json", action="store_true", help="Print as JSON when possible.")
+    p_show.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
+
+    p_ls = sub.add_parser("ls", help="List MI resources (front-door aliases).")
+    ls_sub = p_ls.add_subparsers(dest="ls_kind", required=True)
+
+    p_ls_claims = ls_sub.add_parser("claims", help="Alias for: mi claim list")
+    p_ls_claims.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_ls_claims.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to list.")
+    p_ls_claims.add_argument("--all", action="store_true", help="Include superseded/retracted and alias claims.")
+    p_ls_claims.add_argument("--tag", action="append", default=[], help="Filter by tag (repeatable).")
+    p_ls_claims.add_argument("--contains", default="", help="Case-insensitive substring filter over claim text.")
+    p_ls_claims.add_argument(
+        "--type",
+        dest="claim_type",
+        action="append",
+        default=[],
+        help="Filter by claim_type (fact/preference/assumption/goal). Repeatable.",
+    )
+    p_ls_claims.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        choices=["active", "superseded", "retracted"],
+        help="Filter by derived status (repeatable).",
+    )
+    p_ls_claims.add_argument("--as-of", default="", help="RFC3339 as-of timestamp (filters valid_from/valid_to; defaults to now).")
+    p_ls_claims.add_argument("--limit", type=int, default=0, help="Limit number of results (0 means no limit).")
+    p_ls_claims.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_ls_nodes = ls_sub.add_parser("nodes", help="Alias for: mi node list")
+    p_ls_nodes.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_ls_nodes.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to list.")
+    p_ls_nodes.add_argument("--all", action="store_true", help="Include superseded/retracted and alias nodes.")
+    p_ls_nodes.add_argument("--tag", action="append", default=[], help="Filter by tag (repeatable).")
+    p_ls_nodes.add_argument("--contains", default="", help="Case-insensitive substring filter over node title/text.")
+    p_ls_nodes.add_argument("--type", dest="node_type", action="append", default=[], help="Filter by node_type (decision/action/summary). Repeatable.")
+    p_ls_nodes.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        choices=["active", "superseded", "retracted"],
+        help="Filter by derived status (repeatable).",
+    )
+    p_ls_nodes.add_argument("--limit", type=int, default=0, help="Limit number of results (0 means no limit).")
+    p_ls_nodes.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_ls_edges = ls_sub.add_parser("edges", help="Alias for: mi edge list")
+    p_ls_edges.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_ls_edges.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to list.")
+    p_ls_edges.add_argument("--type", dest="edge_type", default="", help="Filter by edge_type (depends_on/supports/...).")
+    p_ls_edges.add_argument("--from", dest="from_id", default="", help="Filter by from_id.")
+    p_ls_edges.add_argument("--to", dest="to_id", default="", help="Filter by to_id.")
+    p_ls_edges.add_argument("--limit", type=int, default=50, help="Maximum number of edges to print.")
+    p_ls_edges.add_argument("--json", action="store_true", help="Print as JSON.")
+
+    p_ls_workflows = ls_sub.add_parser("workflows", help="Alias for: mi workflow list")
+    p_ls_workflows.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_ls_workflows.add_argument(
+        "--scope",
+        choices=["project", "global", "effective"],
+        default="project",
+        help="Which store to list (effective merges project+global with project precedence).",
+    )
+
+    p_edit = sub.add_parser("edit", help="Edit an MI resource by id (V1: workflows only).")
+    p_edit.add_argument("ref", help="Resource id (wf_...).")
+    p_edit.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_edit.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to edit.")
+    p_edit.add_argument(
+        "--project-override",
+        action="store_true",
+        help="When scope=global, write a per-project override patch instead of editing the global workflow file.",
+    )
+    p_edit.add_argument(
+        "--request",
+        default="-",
+        help="Edit request text. If omitted or '-', read a single line from stdin.",
+    )
+    p_edit.add_argument("--loop", action="store_true", help="After applying, prompt for more edits until blank.")
+    p_edit.add_argument("--dry-run", action="store_true", help="Show proposed edits but do not write.")
+
     p_claim = sub.add_parser("claim", help="Manage Thought DB claims (atomic reusable arguments).")
     claim_sub = p_claim.add_subparsers(dest="claim_cmd", required=True)
 

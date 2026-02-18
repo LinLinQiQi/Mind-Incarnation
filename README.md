@@ -155,6 +155,27 @@ Run MI batch autopilot above Hands (stores transcripts + evidence under `~/.mind
 mi run --cd /path/to/your/project --show "Do X, then verify with minimal checks."
 ```
 
+Everyday status + front-door inspect (reduce command surface area):
+
+```bash
+mi status --cd /path/to/your/project
+mi status --cd /path/to/your/project --json
+
+# Show an MI resource by id (ev_/cl_/nd_/wf_/ed_) or a transcript path:
+mi show ev_<id> --cd /path/to/your/project --json
+mi show cl_<id> --cd /path/to/your/project --json
+mi show wf_<id> --cd /path/to/your/project --json
+mi show /path/to/transcript.jsonl -n 200
+
+# List resources (aliases for claim/node/edge/workflow list):
+mi ls claims --cd /path/to/your/project
+mi ls nodes --cd /path/to/your/project
+mi ls workflows --cd /path/to/your/project
+
+# Edit workflows (alias for `mi workflow edit`):
+mi edit wf_<id> --cd /path/to/your/project --request "..."
+```
+
 Optional: run one WhyTrace at run end (opt-in; writes `kind=why_trace` and may materialize `depends_on` edges):
 
 ```bash
@@ -225,8 +246,8 @@ Tail EvidenceLog / show raw transcript:
 
 ```bash
 mi evidence tail --cd /path/to/your/project -n 20
-mi evidence show <event_id> --cd /path/to/your/project
-mi evidence show <event_id> --cd /path/to/your/project --redact
+mi show <event_id> --cd /path/to/your/project
+mi show <event_id> --cd /path/to/your/project --redact
 mi transcript show --cd /path/to/your/project -n 200
 mi transcript show --cd /path/to/your/project -n 200 --redact
 ```

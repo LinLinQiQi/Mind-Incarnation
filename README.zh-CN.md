@@ -155,6 +155,27 @@ mi settings set --scope project --cd /path/to/your/project --ask-when-uncertain 
 mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。"
 ```
 
+日常状态 + 统一查看入口（降低命令面、减少心智负担）：
+
+```bash
+mi status --cd /path/to/your/project
+mi status --cd /path/to/your/project --json
+
+# 通过 id（ev_/cl_/nd_/wf_/ed_）或 transcript 路径查看：
+mi show ev_<id> --cd /path/to/your/project --json
+mi show cl_<id> --cd /path/to/your/project --json
+mi show wf_<id> --cd /path/to/your/project --json
+mi show /path/to/transcript.jsonl -n 200
+
+# 列表入口（分别是 claim/node/edge/workflow list 的 alias）：
+mi ls claims --cd /path/to/your/project
+mi ls nodes --cd /path/to/your/project
+mi ls workflows --cd /path/to/your/project
+
+# 编辑 workflow（`mi workflow edit` 的 alias）：
+mi edit wf_<id> --cd /path/to/your/project --request "..."
+```
+
 可选：在 run 结束时跑一次 WhyTrace（opt-in；会写入 `kind=why_trace`，并可能 materialize `depends_on` 边）：
 
 ```bash
@@ -225,8 +246,8 @@ mi run --cd @repo1 --show "完成 X，并用最小检查验证。"
 
 ```bash
 mi evidence tail --cd /path/to/your/project -n 20
-mi evidence show <event_id> --cd /path/to/your/project
-mi evidence show <event_id> --cd /path/to/your/project --redact
+mi show <event_id> --cd /path/to/your/project
+mi show <event_id> --cd /path/to/your/project --redact
 mi transcript show --cd /path/to/your/project -n 200
 mi transcript show --cd /path/to/your/project -n 200 --redact
 ```

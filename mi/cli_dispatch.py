@@ -345,6 +345,365 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         print(__version__)
         return 0
 
+    if args.cmd == "status":
+        # Read-only: resolve project root without updating @last.
+        cd_arg = _effective_cd_arg(args)
+        cwd = Path.cwd().resolve()
+        root, reason = resolve_cli_project_root(home_dir, cd_arg, cwd=cwd, here=bool(getattr(args, "here", False)))
+        if str(reason or "").startswith("error:alias_missing:"):
+            token = str(reason).split("error:alias_missing:", 1)[-1].strip() or str(cd_arg or "").strip()
+            print(f"[mi] unknown project token: {token}", file=sys.stderr)
+            print("[mi] tip: run `mi project alias list` or set `mi project use --cd <path>` to set @last.", file=sys.stderr)
+            return 2
+
+        # Config/provider health.
+        vcfg = validate_config(cfg)
+        hands_cfg = cfg.get("hands") if isinstance(cfg.get("hands"), dict) else {}
+        mind_cfg = cfg.get("mind") if isinstance(cfg.get("mind"), dict) else {}
+        hands_provider = str(hands_cfg.get("provider") or "codex").strip()
+        mind_provider = str(mind_cfg.get("provider") or "codex_schema").strip()
+
+        # Values readiness (canonical: Thought DB global).
+        tdb_g = _make_global_tdb()
+        vals = existing_values_claims(tdb=tdb_g, limit=3)
+        values_base_present = bool(vals)
+
+        # Best-effort: detect presence of a values summary node.
+        values_summary_present = False
+        try:
+            v_glob = tdb_g.load_view(scope="global")
+            for n in v_glob.iter_nodes(include_inactive=False, include_aliases=False):
+                if not isinstance(n, dict):
+                    continue
+                tags = n.get("tags") if isinstance(n.get("tags"), list) else []
+                if VALUES_SUMMARY_TAG in {str(x).strip() for x in tags if str(x).strip()}:
+                    values_summary_present = True
+                    break
+        except Exception:
+            values_summary_present = False
+
+        # Project-scoped state (best-effort).
+        pp = ProjectPaths(home_dir=home_dir, project_root=root)
+        overlay = load_project_overlay(home_dir=home_dir, project_root=root)
+        if not isinstance(overlay, dict):
+            overlay = {}
+        bindings = parse_host_bindings(overlay)
+
+        bundle = load_last_batch_bundle(pp.evidence_log_path)
+        codex_input = bundle.get("codex_input") if isinstance(bundle.get("codex_input"), dict) else None
+        evidence_item = bundle.get("evidence_item") if isinstance(bundle.get("evidence_item"), dict) else None
+        decide_next = bundle.get("decide_next") if isinstance(bundle.get("decide_next"), dict) else None
+
+        transcript_path = ""
+        if codex_input and isinstance(codex_input.get("transcript_path"), str):
+            transcript_path = codex_input["transcript_path"]
+        elif evidence_item and isinstance(evidence_item.get("codex_transcript_ref"), str):
+            transcript_path = evidence_item["codex_transcript_ref"]
+        last_msg = last_agent_message_from_transcript(Path(transcript_path)) if transcript_path else ""
+
+        # Pending learn suggestions (reduce user burden): show only items that require manual apply.
+        pending_suggestions: list[str] = []
+        for rec in (bundle.get("learn_suggested") or []) if isinstance(bundle.get("learn_suggested"), list) else []:
+            if not isinstance(rec, dict):
+                continue
+            sid = str(rec.get("id") or "").strip()
+            auto = bool(rec.get("auto_learn", True))
+            applied_ids = rec.get("applied_claim_ids") if isinstance(rec.get("applied_claim_ids"), list) else []
+            if not applied_ids:
+                applied_ids = rec.get("applied_entry_ids") if isinstance(rec.get("applied_entry_ids"), list) else []
+            if sid and (not auto) and (not applied_ids):
+                pending_suggestions.append(sid)
+        pending_suggestions = pending_suggestions[:6]
+
+        # Best-effort: detect the latest host_sync record and surface failures.
+        host_sync_recent: dict[str, Any] | None = None
+        try:
+            for obj in reversed(tail_json_objects(pp.evidence_log_path, 200)):
+                if isinstance(obj, dict) and str(obj.get("kind") or "").strip() == "host_sync":
+                    host_sync_recent = obj
+                    break
+        except Exception:
+            host_sync_recent = None
+        host_sync_ok = True
+        if isinstance(host_sync_recent, dict):
+            sync_obj = host_sync_recent.get("sync") if isinstance(host_sync_recent.get("sync"), dict) else {}
+            host_sync_ok = bool(sync_obj.get("ok", True)) if isinstance(sync_obj, dict) else True
+
+        # Deterministic next-step suggestions (no model calls).
+        next_steps: list[str] = []
+        if not bool(vcfg.get("ok", False)):
+            next_steps.append("mi config validate")
+        if not values_base_present:
+            next_steps.append('mi values set --text "..."')
+        if pending_suggestions:
+            next_steps.append(f"mi claim apply-suggested {pending_suggestions[0]} --dry-run")
+        st = str(decide_next.get("status") or "") if isinstance(decide_next, dict) else ""
+        na = str(decide_next.get("next_action") or "") if isinstance(decide_next, dict) else ""
+        if st in ("blocked", "not_done") or na in ("ask_user", "continue", "run_checks"):
+            next_steps.append("mi last --redact")
+        if bindings and (not host_sync_ok):
+            next_steps.append("mi host sync --json")
+        if not next_steps:
+            next_steps.append('mi run --show "..."')
+        next_steps = next_steps[:3]
+
+        payload = {
+            "cwd": str(cwd),
+            "effective_cd": str(cd_arg or ""),
+            "here": bool(getattr(args, "here", False)),
+            "project_root": str(root),
+            "reason": str(reason or ""),
+            "config_validate": vcfg,
+            "providers": {"hands": hands_provider, "mind": mind_provider},
+            "values": {
+                "values_base_present": values_base_present,
+                "values_summary_present": values_summary_present,
+                "values_base_claims_sample": vals,
+            },
+            "project": {
+                "project_id": pp.project_id,
+                "project_dir": str(pp.project_dir),
+                "evidence_log": str(pp.evidence_log_path),
+                "transcripts_dir": str(pp.transcripts_dir),
+                "host_bindings": [b.host for b in bindings] if bindings else [],
+            },
+            "last": {
+                "bundle": bundle,
+                "hands_last_message": last_msg,
+            },
+            "pending": {
+                "learn_suggested": pending_suggestions,
+                "host_sync_ok": host_sync_ok,
+                "host_sync_recent": host_sync_recent or {},
+            },
+            "next_steps": next_steps,
+        }
+
+        if bool(getattr(args, "redact", False)):
+            if last_msg:
+                last_msg = redact_text(last_msg)
+            s = json.dumps(payload, indent=2, sort_keys=True)
+            payload_s = redact_text(s)
+            if bool(getattr(args, "json", False)):
+                print(payload_s)
+                return 0
+            # Keep text rendering compact in redacted mode too.
+            payload2 = json.loads(payload_s)
+            payload = payload2 if isinstance(payload2, dict) else payload
+
+        if bool(getattr(args, "json", False)):
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return 0
+
+        print(f"project_root={payload['project_root']} (reason={payload['reason']})")
+        print(f"providers: hands={hands_provider} mind={mind_provider}")
+        errs = vcfg.get("errors") if isinstance(vcfg.get("errors"), list) else []
+        warns = vcfg.get("warnings") if isinstance(vcfg.get("warnings"), list) else []
+        print(f"config_ok={str(bool(vcfg.get('ok', False))).lower()} errors={len(errs)} warnings={len(warns)}")
+        print(f"values_base_present={str(values_base_present).lower()} values_summary_present={str(values_summary_present).lower()}")
+        if last_msg.strip():
+            print("")
+            print("hands_last_message:")
+            print(last_msg.strip())
+        if pending_suggestions:
+            print("")
+            print("pending_learn_suggested:")
+            for sid in pending_suggestions[:3]:
+                print(f"- {sid}")
+        if bindings:
+            print("")
+            print(f"host_bindings={len(bindings)} host_sync_ok={str(bool(host_sync_ok)).lower()}")
+        if next_steps:
+            print("")
+            print("next_steps:")
+            for cmd in next_steps:
+                print(f"- {cmd}")
+        return 0
+
+    if args.cmd == "show":
+        ref = str(getattr(args, "ref", "") or "").strip()
+        if not ref:
+            print("missing ref", file=sys.stderr)
+            return 2
+
+        # Transcript path shortcut (no project root required).
+        if ref.endswith(".jsonl") or ref.endswith(".jsonl.gz"):
+            tp = Path(ref).expanduser()
+            if not tp.exists():
+                print(f"Transcript not found: {tp}", file=sys.stderr)
+                return 2
+            real_tp = resolve_transcript_path(tp)
+            lines = tail_transcript_lines(tp, int(getattr(args, "lines", 200) or 200))
+            print(str(tp))
+            if real_tp != tp:
+                print(f"(archived -> {real_tp})")
+            if bool(getattr(args, "jsonl", False)):
+                for line in lines:
+                    print(redact_text(line) if bool(getattr(args, "redact", False)) else line)
+                return 0
+            for line in lines:
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    print(redact_text(line) if bool(getattr(args, "redact", False)) else line)
+                    continue
+                if not isinstance(rec, dict):
+                    print(redact_text(line) if bool(getattr(args, "redact", False)) else line)
+                    continue
+                ts = str(rec.get("ts") or "")
+                stream = str(rec.get("stream") or "")
+                payload = rec.get("line")
+                s = str(payload) if payload is not None else ""
+                out = f"{ts} {stream}: {s}".strip()
+                print(redact_text(out) if bool(getattr(args, "redact", False)) else out)
+            return 0
+
+        # Everything else is project-scoped by default.
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
+        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+
+        def _print_json(obj: object) -> None:
+            s = json.dumps(obj, indent=2, sort_keys=True)
+            print(redact_text(s) if bool(getattr(args, "redact", False)) else s)
+
+        if ref.startswith("ev_"):
+            eid = ref
+            obj = find_evidence_event(evidence_log_path=pp.evidence_log_path, event_id=eid)
+            scope = "project"
+            if obj is None:
+                obj = find_evidence_event(evidence_log_path=GlobalPaths(home_dir=home_dir).global_evidence_log_path, event_id=eid)
+                scope = "global" if obj is not None else ""
+            if obj is None:
+                print(f"evidence event not found: {eid}", file=sys.stderr)
+                return 2
+            payload = {"scope": scope, "event": obj}
+            _print_json(payload)
+            return 0
+
+        if ref.startswith("cl_"):
+            tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+            cid = ref
+            found_scope = ""
+            cobj: dict[str, Any] | None = None
+            for sc in ("project", "global"):
+                v = tdb.load_view(scope=sc)
+                if cid in v.claims_by_id:
+                    cobj = dict(v.claims_by_id[cid])
+                    cobj["status"] = v.claim_status(cid)
+                    cobj["canonical_id"] = v.resolve_id(cid)
+                    found_scope = sc
+                    break
+                canon = v.resolve_id(cid)
+                if canon and canon in v.claims_by_id:
+                    cobj = dict(v.claims_by_id[canon])
+                    cobj["status"] = v.claim_status(canon)
+                    cobj["canonical_id"] = v.resolve_id(canon)
+                    cobj["requested_id"] = cid
+                    found_scope = sc
+                    break
+            if not cobj:
+                print(f"claim not found: {cid}", file=sys.stderr)
+                return 2
+            _print_json({"scope": found_scope, "claim": cobj})
+            return 0
+
+        if ref.startswith("nd_"):
+            tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+            nid = ref
+            found_scope = ""
+            nobj: dict[str, Any] | None = None
+            for sc in ("project", "global"):
+                v = tdb.load_view(scope=sc)
+                if nid in v.nodes_by_id:
+                    nobj = dict(v.nodes_by_id[nid])
+                    nobj["status"] = v.node_status(nid)
+                    nobj["canonical_id"] = v.resolve_id(nid)
+                    found_scope = sc
+                    break
+                canon = v.resolve_id(nid)
+                if canon and canon in v.nodes_by_id:
+                    nobj = dict(v.nodes_by_id[canon])
+                    nobj["status"] = v.node_status(canon)
+                    nobj["canonical_id"] = v.resolve_id(canon)
+                    nobj["requested_id"] = nid
+                    found_scope = sc
+                    break
+            if not nobj:
+                print(f"node not found: {nid}", file=sys.stderr)
+                return 2
+            _print_json({"scope": found_scope, "node": nobj})
+            return 0
+
+        if ref.startswith("ed_"):
+            tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+            eid = ref
+            found_scope = ""
+            eobj: dict[str, Any] | None = None
+            for sc in ("project", "global"):
+                v = tdb.load_view(scope=sc)
+                for e in v.edges:
+                    if isinstance(e, dict) and str(e.get("edge_id") or "").strip() == eid:
+                        found_scope = sc
+                        eobj = e
+                        break
+                if eobj:
+                    break
+            if not eobj:
+                print(f"edge not found: {eid}", file=sys.stderr)
+                return 2
+            _print_json({"scope": found_scope, "edge": eobj})
+            return 0
+
+        if ref.startswith("wf_"):
+            # Delegate to workflow show (scope=effective, so project overrides win).
+            args2 = argparse.Namespace(**vars(args))
+            args2.cmd = "workflow"
+            args2.wf_cmd = "show"
+            args2.id = ref
+            args2.scope = "effective"
+            args2.markdown = not bool(getattr(args, "json", False))
+            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+
+        print(f"unknown ref: {ref} (expected ev_/cl_/nd_/wf_/ed_ or a transcript .jsonl path)", file=sys.stderr)
+        return 2
+
+    if args.cmd == "edit":
+        ref = str(getattr(args, "ref", "") or "").strip()
+        if not ref:
+            print("missing ref", file=sys.stderr)
+            return 2
+        if not ref.startswith("wf_"):
+            print(f"edit: unsupported ref {ref!r} (V1 supports workflows only)", file=sys.stderr)
+            return 2
+        # Delegate to workflow edit (keeps semantics in one place).
+        args2 = argparse.Namespace(**vars(args))
+        args2.cmd = "workflow"
+        args2.wf_cmd = "edit"
+        args2.id = ref
+        return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+
+    if args.cmd == "ls":
+        kind = str(getattr(args, "ls_kind", "") or "").strip()
+        args2 = argparse.Namespace(**vars(args))
+        if kind == "claims":
+            args2.cmd = "claim"
+            args2.claim_cmd = "list"
+            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+        if kind == "nodes":
+            args2.cmd = "node"
+            args2.node_cmd = "list"
+            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+        if kind == "edges":
+            args2.cmd = "edge"
+            args2.edge_cmd = "list"
+            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+        if kind == "workflows":
+            args2.cmd = "workflow"
+            args2.wf_cmd = "list"
+            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+        print(f"unknown ls kind: {kind}", file=sys.stderr)
+        return 2
+
     if args.cmd == "config":
         if args.config_cmd == "path":
             print(str(config_path(home_dir)))

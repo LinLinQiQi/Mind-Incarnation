@@ -1112,6 +1112,52 @@ Run batch autopilot:
 mi --home ~/.mind-incarnation run --cd <project_root> --show "<task>"
 ```
 
+Everyday status (front-door, read-only):
+
+```bash
+mi --home ~/.mind-incarnation status --cd <project_root>
+mi --home ~/.mind-incarnation status --cd <project_root> --json
+mi --home ~/.mind-incarnation --here status --json
+```
+
+Notes:
+
+- `mi status` is read-only: it does not update `@last` / `global/project_selection.json`.
+- It aggregates: config/provider health, canonical values readiness, latest batch bundle summary, pending learn suggestions, and next-step command hints.
+
+Show an MI resource (front-door):
+
+```bash
+mi --home ~/.mind-incarnation show ev_<id> --cd <project_root>
+mi --home ~/.mind-incarnation show cl_<id> --cd <project_root>
+mi --home ~/.mind-incarnation show nd_<id> --cd <project_root>
+mi --home ~/.mind-incarnation show wf_<id> --cd <project_root>
+mi --home ~/.mind-incarnation show ed_<id> --cd <project_root>
+mi --home ~/.mind-incarnation show /path/to/transcript.jsonl -n 200
+```
+
+Notes:
+
+- `mi show ev_...` searches the project EvidenceLog first, then falls back to the global EvidenceLog.
+- `mi show cl_/nd_/ed_/wf_...` uses effective resolution (project first, then global).
+- `mi show <path>.jsonl` prints a transcript tail (best-effort; supports archive stubs and `.gz`).
+
+List resources (front-door aliases):
+
+```bash
+mi --home ~/.mind-incarnation ls claims --cd <project_root>
+mi --home ~/.mind-incarnation ls nodes --cd <project_root>
+mi --home ~/.mind-incarnation ls workflows --cd <project_root>
+mi --home ~/.mind-incarnation ls edges --cd <project_root>
+```
+
+Edit a workflow (front-door alias; uses Mind provider):
+
+```bash
+mi --home ~/.mind-incarnation edit wf_<id> --cd <project_root> --request "..."
+mi --home ~/.mind-incarnation edit wf_<id> --cd <project_root> --loop
+```
+
 Notes on `--cd` (project root):
 
 - Most project-scoped commands accept `--cd <project_root>` to choose which project to operate on.

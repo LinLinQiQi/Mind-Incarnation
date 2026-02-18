@@ -260,7 +260,7 @@ def resolve_project_id(home_dir: Path, project_root: Path) -> str:
     return pid
 
 
-def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None) -> tuple[Path, str]:
+def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None, here: bool = False) -> tuple[Path, str]:
     """Resolve an effective project root for CLI commands.
 
     Goals:
@@ -271,12 +271,13 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
 
     Resolution order:
     1) Explicit `--cd` (if provided; supports `@last/@pinned/@alias`)
-    2) $MI_CD (if set)
-    3) $MI_PROJECT_ROOT (if set)
-    4) If inside git and the current dir is not a known project root, use git toplevel
-    5) If not inside git and a pinned project exists, use it
-    6) If not inside git and a last-used project exists, use it
-    7) Fall back to cwd
+    2) `--here` (if set): force cwd as the project root (overrides git toplevel inference)
+    3) $MI_CD (if set)
+    4) $MI_PROJECT_ROOT (if set)
+    5) If inside git and the current dir is not a known project root, use git toplevel
+    6) If not inside git and a pinned project exists, use it
+    7) If not inside git and a last-used project exists, use it
+    8) Fall back to cwd
 
     Returns: (project_root_path, reason)
     """
@@ -291,6 +292,10 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
             return p, f"arg:{token}"
         return Path(cd_s).expanduser().resolve(), "arg"
 
+    cur = (cwd or Path.cwd()).resolve()
+    if bool(here):
+        return cur, "here"
+
     env_cd = str(os.environ.get("MI_CD") or "").strip()
     if env_cd:
         p = Path(env_cd).expanduser().resolve()
@@ -303,7 +308,6 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
         if p.exists():
             return p, "env:MI_PROJECT_ROOT"
 
-    cur = (cwd or Path.cwd()).resolve()
     ident_cur = project_identity(cur)
     key_cur = str(ident_cur.get("key") or "").strip()
 

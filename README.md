@@ -165,6 +165,7 @@ Notes on `--cd`:
 
 - Most project-scoped commands accept `--cd <project_root>` to choose which project to operate on.
 - You can also set a per-invocation default project root via `mi -C <project_root> <cmd> ...` (argparse: `-C/--cd` must appear before the subcommand). Subcommand `--cd` overrides `-C/--cd` if both are provided.
+- You can force the project root to be the current working directory (even inside a git repo) via `mi --here <cmd> ...` (global flag; must appear before the subcommand). Useful for monorepo subdirs and ignored when `--cd/-C` is provided.
 - `--cd` is optional:
   - Inside a git repo: MI defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject).
   - Outside git: MI uses `@pinned` (if recorded), otherwise `@last` (if recorded), otherwise uses the current directory.
@@ -196,6 +197,14 @@ Show per-project overlay + resolved storage paths:
 mi project show --cd /path/to/your/project
 mi project show --cd /path/to/your/project --json
 mi project show --cd /path/to/your/project --redact
+```
+
+Show how MI resolves the project root (read-only; does not update `@last`):
+
+```bash
+mi project status
+mi project status --json
+mi --here project status --json
 ```
 
 Project selection shortcuts (`@last/@pinned/@alias`):

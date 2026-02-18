@@ -39,6 +39,36 @@ def _patched_env(changes: dict[str, str | None]):
 
 
 class TestCliProjectRootResolution(unittest.TestCase):
+    def test_here_forces_cwd_even_inside_git(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git not installed")
+        with _patched_env({"MI_CD": None, "MI_PROJECT_ROOT": None}), tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            sub = repo / "sub"
+            repo.mkdir(parents=True, exist_ok=True)
+            sub.mkdir(parents=True, exist_ok=True)
+
+            _git(repo, ["init"])
+            _git(repo, ["config", "user.email", "mi@example.com"])
+            _git(repo, ["config", "user.name", "MI"])
+
+            root, reason = resolve_cli_project_root(Path(home), "", cwd=sub, here=True)
+            self.assertEqual(root, sub.resolve())
+            self.assertEqual(reason, "here")
+
+    def test_explicit_cd_wins_over_here(self) -> None:
+        with _patched_env({"MI_CD": None, "MI_PROJECT_ROOT": None}), tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            a = base / "a"
+            b = base / "b"
+            a.mkdir(parents=True, exist_ok=True)
+            b.mkdir(parents=True, exist_ok=True)
+
+            root, reason = resolve_cli_project_root(Path(home), str(a), cwd=b, here=True)
+            self.assertEqual(root, a.resolve())
+            self.assertEqual(reason, "arg")
+
     def test_infers_git_toplevel_when_cd_omitted_and_cwd_not_known(self) -> None:
         if shutil.which("git") is None:
             self.skipTest("git not installed")

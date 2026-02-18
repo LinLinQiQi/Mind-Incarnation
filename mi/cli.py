@@ -25,6 +25,11 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Default project root for project-scoped commands (supports @last/@pinned/@alias). Must appear before subcommand; subcommand --cd overrides.",
     )
+    parser.add_argument(
+        "--here",
+        action="store_true",
+        help="Force project root to the current working directory (useful for monorepo subdirs). Ignored if --cd/-C is provided. Must appear before subcommand.",
+    )
 
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -507,6 +512,9 @@ def main(argv: list[str] | None = None) -> int:
     p_ps.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_ps.add_argument("--json", action="store_true", help="Print as JSON.")
     p_ps.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
+    p_pst = proj_sub.add_parser("status", help="Show how MI resolves the project root (read-only; no side effects).")
+    p_pst.add_argument("--cd", default="", help="Project root used to locate MI artifacts (supports @last/@pinned/@alias).")
+    p_pst.add_argument("--json", action="store_true", help="Print as JSON.")
     p_ppin = proj_sub.add_parser("pin", help="Pin a project for quick selection (@pinned).")
     p_ppin.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_ppin.add_argument("--json", action="store_true", help="Print as JSON.")

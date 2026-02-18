@@ -106,6 +106,92 @@ class TestHandsCliWrapper(unittest.TestCase):
             self.assertEqual(res.thread_id, "s123")
             self.assertEqual(res.last_agent_message().strip(), "Hi there")
 
+    def test_cli_extracts_last_agent_message_from_json_output_object(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            transcript_path = root / "hands.jsonl"
+
+            script = (
+                "import json\n"
+                "print(json.dumps({'session_id':'s123','result':'Hi there'}))\n"
+            )
+            adapter = CliHandsAdapter(
+                exec_argv=[sys.executable, "-c", script],
+                resume_argv=None,
+                prompt_mode="stdin",
+                env=None,
+                thread_id_regex="",
+            )
+            res = adapter.exec(
+                prompt="x",
+                project_root=root,
+                transcript_path=transcript_path,
+                full_auto=True,
+                sandbox=None,
+                output_schema_path=None,
+                interrupt=None,
+            )
+            self.assertEqual(res.thread_id, "s123")
+            self.assertEqual(res.last_agent_message().strip(), "Hi there")
+
+    def test_cli_resume_formats_thread_id_and_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            transcript_path = root / "hands.jsonl"
+
+            script = "print('ok')\n"
+            adapter = CliHandsAdapter(
+                exec_argv=[sys.executable, "-c", script],
+                resume_argv=[sys.executable, "-c", script, "--resume", "{thread_id}", "{prompt}"],
+                prompt_mode="arg",
+                env=None,
+                thread_id_regex="",
+            )
+            _res = adapter.resume(
+                thread_id="t123",
+                prompt="hello",
+                project_root=root,
+                transcript_path=transcript_path,
+                full_auto=True,
+                sandbox=None,
+                output_schema_path=None,
+                interrupt=None,
+            )
+
+            header = json.loads(transcript_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(header.get("kind"), "cli.resume")
+            self.assertEqual(header.get("thread_id"), "t123")
+            argv = header.get("argv") or []
+            self.assertIn("t123", argv)
+            self.assertIn("hello", argv)
+            self.assertTrue(all(x not in str(argv) for x in ("{thread_id}", "{prompt}")))
+
+    def test_cli_arg_mode_appends_prompt_when_placeholder_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            transcript_path = root / "hands.jsonl"
+
+            script = "print('ok')\n"
+            adapter = CliHandsAdapter(
+                exec_argv=[sys.executable, "-c", script],
+                resume_argv=None,
+                prompt_mode="arg",
+                env=None,
+                thread_id_regex="",
+            )
+            _res = adapter.exec(
+                prompt="hello",
+                project_root=root,
+                transcript_path=transcript_path,
+                full_auto=True,
+                sandbox=None,
+                output_schema_path=None,
+                interrupt=None,
+            )
+            header = json.loads(transcript_path.read_text(encoding="utf-8").splitlines()[0])
+            argv = header.get("argv") or []
+            self.assertEqual(argv[-1], "hello")
+
     def test_cli_interrupt_sends_signal_and_records_meta(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

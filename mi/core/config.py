@@ -419,10 +419,12 @@ def get_config_template(name: str) -> dict[str, Any]:
                 "continue_across_runs": False,
                 "cli": {
                     "prompt_mode": "arg",
-                    # Adjust flags to your local Claude Code version.
-                    "exec": ["claude", "...", "{prompt}", "..."],
-                    "resume": ["claude", "...", "{thread_id}", "...", "{prompt}", "..."],
-                    "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\"",
+                    # Claude Code (Anthropic) supports headless execution via -p ("print") and JSON output formats.
+                    # If your local install differs, adjust flags/args to your version.
+                    "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json"],
+                    "resume": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--resume", "{thread_id}"],
+                    # Fallback only; MI prefers structured JSON session_id extraction when available.
+                    "thread_id_regex": "\"(?:session_id|sessionId)\"\\s*:\\s*\"([A-Za-z0-9_-]+)\"",
                     "env": {},
                 },
             }

@@ -478,6 +478,12 @@ def last_agent_message_from_transcript(transcript_path: Path, *, limit_chars: in
                 if not isinstance(ev, dict):
                     continue
 
+                # Some CLIs (e.g., Claude `--output-format json`) may emit a single JSON object without a `type`
+                # field. Prefer the human `result` if present.
+                if not ev.get("type") and isinstance(ev.get("result"), str) and ev.get("result").strip():
+                    claude_result = ev["result"]
+                    continue
+
                 if ev.get("type") == "item.completed" and isinstance(ev.get("item"), dict):
                     item = ev["item"]
                     if item.get("type") == "agent_message":

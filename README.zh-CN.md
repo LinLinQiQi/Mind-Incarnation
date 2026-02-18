@@ -102,7 +102,7 @@ mi config rollback
 
 MI 可以通过 `hands.provider=cli` 包装大多数 agent CLI。你需要提供 *你本机安装的工具* 的启动命令与参数（不同版本的 flags 可能不同）。
 
-示例：Claude Code（请按你本机版本调整 flags/args）
+示例：Claude Code（headless + stream-json；请按你本机版本调整 flags/args）
 
 编辑 `~/.mind-incarnation/config.json`：
 
@@ -112,9 +112,9 @@ MI 可以通过 `hands.provider=cli` 包装大多数 agent CLI。你需要提供
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "...", "{prompt}", "..."],
-      "resume": ["claude", "...", "{thread_id}", "...", "{prompt}", "..."],
-      "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\""
+      "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json"],
+      "resume": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--resume", "{thread_id}"],
+      "thread_id_regex": "\"(?:session_id|sessionId)\"\\s*:\\s*\"([A-Za-z0-9_-]+)\""
     }
   }
 }
@@ -123,7 +123,9 @@ MI 可以通过 `hands.provider=cli` 包装大多数 agent CLI。你需要提供
 说明：
 
 - 支持占位符：`{project_root}`、`{prompt}`、`{thread_id}`（仅 resume）。
-- 如果 CLI 能输出 JSON 事件（例如 “stream-json”），MI 会尽力解析，以提升证据提取、session id 识别与“最后一条消息”识别的可靠性。
+- `-p` 表示 headless/非交互执行（wrapper 推荐使用）。
+- 如果 CLI 能输出 JSON（例如 `--output-format stream-json` 或 `json`），MI 会尽力解析，以提升证据提取、session id 识别与“最后一条消息”识别的可靠性。
+- 如果你希望 MI 在多次 `mi run` 之间复用上一轮的 Claude Code session，请设置 `hands.continue_across_runs=true`。
 
 设置全局价值观/偏好（canonical: Thought DB）：
 

@@ -115,6 +115,23 @@ class TestConfigAndSchema(unittest.TestCase):
         with self.assertRaises(KeyError):
             _ = get_config_template("does.not.exist")
 
+    def test_claude_code_template_is_concrete_and_runnable(self) -> None:
+        tmpl = get_config_template("hands.cli.claude_code_placeholder")
+        hands = tmpl.get("hands") if isinstance(tmpl.get("hands"), dict) else {}
+        cli = hands.get("cli") if isinstance(hands.get("cli"), dict) else {}
+        exec_argv = cli.get("exec") if isinstance(cli.get("exec"), list) else []
+        resume_argv = cli.get("resume") if isinstance(cli.get("resume"), list) else []
+
+        self.assertEqual(hands.get("provider"), "cli")
+        self.assertEqual(cli.get("prompt_mode"), "arg")
+        self.assertIn("claude", exec_argv)
+        self.assertIn("-p", exec_argv)
+        self.assertIn("{prompt}", exec_argv)
+        self.assertIn("--output-format", exec_argv)
+        self.assertIn("stream-json", exec_argv)
+        self.assertIn("--resume", resume_argv)
+        self.assertIn("{thread_id}", resume_argv)
+
     def test_apply_template_and_rollback(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)

@@ -1050,7 +1050,7 @@ Key knobs (V1):
 
 Example: Hands = Claude Code (via `hands.provider=cli`)
 
-MI wraps an agent CLI by capturing stdout/stderr into an MI-owned transcript. Command flags vary by tool/version; treat this as a placeholder example.
+MI wraps an agent CLI by capturing stdout/stderr into an MI-owned transcript. Claude Code flags may vary by version, but the config below is intended to be runnable on a typical install.
 
 Edit `<home>/config.json`:
 
@@ -1060,9 +1060,9 @@ Edit `<home>/config.json`:
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "...", "{prompt}", "..."],
-      "resume": ["claude", "...", "{thread_id}", "...", "{prompt}", "..."],
-      "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\"",
+      "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json"],
+      "resume": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--resume", "{thread_id}"],
+      "thread_id_regex": "\"(?:session_id|sessionId)\"\\s*:\\s*\"([A-Za-z0-9_-]+)\"",
       "env": {}
     }
   }
@@ -1072,8 +1072,10 @@ Edit `<home>/config.json`:
 Notes:
 
 - If your Claude Code install requires env, set it in your shell (preferred) or under `hands.cli.env`.
-- If your CLI can output JSON events (e.g., "stream-json"/"json"), MI will parse them (best-effort) to improve evidence extraction, last-message detection, and session id extraction.
+- Use `-p` ("print") to run headless/non-interactive.
+- If your CLI can output JSON (e.g., `--output-format stream-json` or `json`), MI will parse it (best-effort) to improve evidence extraction, last-message detection, and session id extraction.
 - `thread_id_regex` is a fallback only: it extracts an id from raw text if no JSON session id is available.
+- If you want MI to resume the last Claude Code session across separate `mi run` invocations, also set `hands.continue_across_runs=true`.
 
 Set values (canonical: Thought DB):
 

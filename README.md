@@ -102,7 +102,7 @@ Optional: Use another agent CLI as Hands (wrapper)
 
 MI can wrap most agent CLIs via `hands.provider=cli`. You provide the command + args for *your installed tool* (flags vary by version).
 
-Example: Claude Code (adjust flags/args to your version)
+Example: Claude Code (headless + stream-json; adjust flags to your version)
 
 Edit `~/.mind-incarnation/config.json`:
 
@@ -112,9 +112,9 @@ Edit `~/.mind-incarnation/config.json`:
     "provider": "cli",
     "cli": {
       "prompt_mode": "arg",
-      "exec": ["claude", "...", "{prompt}", "..."],
-      "resume": ["claude", "...", "{thread_id}", "...", "{prompt}", "..."],
-      "thread_id_regex": "\"session_id\"\\s*:\\s*\"([A-Za-z0-9_-]+)\""
+      "exec": ["claude", "-p", "{prompt}", "--output-format", "stream-json"],
+      "resume": ["claude", "-p", "{prompt}", "--output-format", "stream-json", "--resume", "{thread_id}"],
+      "thread_id_regex": "\"(?:session_id|sessionId)\"\\s*:\\s*\"([A-Za-z0-9_-]+)\""
     }
   }
 }
@@ -123,7 +123,9 @@ Edit `~/.mind-incarnation/config.json`:
 Notes:
 
 - Placeholders: `{project_root}`, `{prompt}`, `{thread_id}` (resume only).
-- If your CLI can output JSON events (e.g., "stream-json"), MI will parse them (best-effort) to improve evidence extraction, session id detection, and last-message detection.
+- `-p` runs headless/non-interactive (recommended for wrappers).
+- If your CLI can output JSON (e.g., `--output-format stream-json` or `json`), MI will parse it (best-effort) to improve evidence extraction, session id detection, and last-message detection.
+- If you want MI to resume the last Claude Code session across separate `mi run` invocations, set `hands.continue_across_runs=true`.
 
 Set global values/preferences (canonical: Thought DB):
 

@@ -644,7 +644,9 @@ def run_autopilot(
         tdb_max_claims = 6
     tdb_max_claims = max(0, min(20, tdb_max_claims))
 
-    checkpoint_enabled = bool(wf_auto_mine or pref_auto_mine or tdb_auto_mine)
+    # The "segment checkpoint" mechanism is shared infrastructure: it is required for both
+    # mining (workflows/preferences/claims) and deterministic node materialization.
+    checkpoint_enabled = bool(wf_auto_mine or pref_auto_mine or tdb_auto_mine or tdb_auto_nodes)
 
     def _flush_state_warnings(*, batch_id: str = "b0.state_recovery") -> None:
         if not state_warnings:

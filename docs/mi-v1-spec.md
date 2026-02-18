@@ -122,6 +122,11 @@ Loop/stuck guard (deterministic, V1):
 Checkpointing (segments; internal, V1):
 
 - MI maintains a compact internal "segment buffer" while `mi run` continues across multiple Hands batches.
+- Checkpointing is enabled whenever any checkpoint-based feature is enabled, including:
+  - workflow mining (`config.runtime.workflows.auto_mine=true`)
+  - preference mining (`config.runtime.preference_mining.auto_mine=true`)
+  - Thought DB claim mining (`config.runtime.thought_db.auto_mine=true`)
+  - Thought DB deterministic node materialization (`config.runtime.thought_db.auto_materialize_nodes=true`)
 - Before sending the next batch input to Hands (and once again when the run ends), MI calls `checkpoint_decide` to judge whether a segment boundary exists.
 - When `checkpoint_decide.should_checkpoint=true`, MI may mine workflows and/or preferences using only the current segment evidence, **writes a compact `snapshot` record** (traceable to the segment), then resets the segment buffer for the next phase.
 - This mechanism exists to avoid tying workflow solidification to "user exits" and to support long-running sessions without forcing Hands into step-by-step protocols.

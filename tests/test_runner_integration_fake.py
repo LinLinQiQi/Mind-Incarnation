@@ -306,6 +306,81 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             v = tdb.load_view(scope="project")
             self.assertTrue(any(isinstance(n, dict) and n.get("kind") == "node" for n in v.nodes_by_id.values()))
 
+    def test_nodes_only_mode_still_checkpoints_and_materializes_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            # Nodes-only: disable all checkpoint mining but keep deterministic node materialization on.
+            cfg = default_config()
+            cfg["runtime"]["workflows"]["auto_mine"] = False
+            cfg["runtime"]["preference_mining"]["auto_mine"] = False
+            cfg["runtime"]["thought_db"]["enabled"] = True
+            cfg["runtime"]["thought_db"]["auto_mine"] = False
+            cfg["runtime"]["thought_db"]["auto_materialize_nodes"] = True
+            write_json(config_path(Path(home)), cfg)
+
+            fake_hands = _FakeHands([_mk_result(thread_id="t_nodes_only", last_message="All done.", command="ls")])
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {
+                            "facts": ["ran ls"],
+                            "actions": [{"kind": "command", "detail": "ls"}],
+                            "results": ["ok"],
+                            "unknowns": [],
+                            "risk_signals": [],
+                        },
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        }
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": True,
+                            "checkpoint_kind": "done",
+                            # Even if the model wants to mine, MI must respect auto_mine=false.
+                            "should_mine_workflow": True,
+                            "should_mine_preferences": True,
+                            "confidence": 0.9,
+                            "notes": "checkpoint for node materialization (nodes-only)",
+                        }
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="do something",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+            self.assertEqual(result.status, "done")
+            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "decide_next.json", "checkpoint_decide.json"])
+
+            kinds = set()
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict) and obj.get("kind"):
+                        kinds.add(obj["kind"])
+
+            self.assertIn("checkpoint", kinds)
+            self.assertIn("snapshot", kinds)
+            self.assertIn("node_materialized", kinds)
+            self.assertNotIn("workflow_suggestion", kinds)
+            self.assertNotIn("preference_mining", kinds)
+            self.assertNotIn("claim_mining", kinds)
+
     def test_recall_prefers_current_project_when_configured(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))

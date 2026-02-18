@@ -184,7 +184,7 @@ mi last --cd /path/to/your/project
 mi last --cd /path/to/your/project --redact
 ```
 
-Note: `mi last --json` includes `loop_guard` and `loop_break` when MI detects and tries to break a stuck repetition loop.
+Note: `mi last --json` includes `why_trace` / `why_traces` when present (e.g., from `mi run --why`), and includes `loop_guard` and `loop_break` when MI detects and tries to break a stuck repetition loop.
 
 Show per-project overlay + resolved storage paths:
 

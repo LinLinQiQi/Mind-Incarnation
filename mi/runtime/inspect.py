@@ -212,6 +212,9 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
         "check_plan": None,
         "auto_answer": None,
         "risk_event": None,
+        # Optional: WhyTrace record(s) related to the last batch cycle.
+        "why_trace": None,
+        "why_traces": [],
         "learn_suggested": [],
         "learn_applied": [],
         "loop_guard": None,
@@ -272,9 +275,12 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                         "check_plan": None,
                         "auto_answer": None,
                         "risk_event": None,
+                        "why_trace": None,
+                        "why_traces": [],
                         "learn_suggested": [],
                         "learn_applied": [],
                         "loop_guard": None,
+                        "loop_break": None,
                         "decide_next": None,
                         "mind_transcripts": [],
                         "user_inputs": [],
@@ -301,6 +307,14 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                     if bid == last_bid:
                         bundle["risk_event"] = obj
                     add_mind_transcript_ref(obj=obj, kind="risk_judge", bid=bid)
+                elif kind == "why_trace":
+                    items = bundle.get("why_traces")
+                    if isinstance(items, list):
+                        items.append(obj)
+                    else:
+                        bundle["why_traces"] = [obj]
+                    bundle["why_trace"] = obj
+                    add_mind_transcript_ref(obj=obj, kind="why_trace", bid=bid)
                 elif kind == "learn_suggested":
                     items = bundle.get("learn_suggested")
                     if isinstance(items, list):

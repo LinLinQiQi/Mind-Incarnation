@@ -1138,7 +1138,7 @@ mi --home ~/.mind-incarnation last --cd <project_root> --json
 mi --home ~/.mind-incarnation last --cd <project_root> --redact
 ```
 
-Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`. When MI detects a stuck repetition loop, `mi last --json` also includes `loop_guard` and `loop_break`.
+Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`. When MI records WhyTrace for the latest batch cycle (e.g., via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true`), `mi last --json` also includes `why_trace` and `why_traces`. When MI detects a stuck repetition loop, `mi last --json` also includes `loop_guard` and `loop_break`.
 
 Inspect per-project state (overlay + resolved paths):
 

@@ -96,6 +96,16 @@ class TestInspectHelpers(unittest.TestCase):
                 ),
                 json.dumps(
                     {
+                        "kind": "why_trace",
+                        "batch_id": "b1.why_trace",
+                        "thread_id": "t",
+                        "mind_transcript_ref": "m_why",
+                        "output": {"status": "ok", "confidence": 0.8, "chosen_claim_ids": ["c1"]},
+                        "written_edge_ids": ["e1"],
+                    }
+                ),
+                json.dumps(
+                    {
                         "kind": "learn_suggested",
                         "id": "ls_123",
                         "batch_id": "b1",
@@ -152,6 +162,9 @@ class TestInspectHelpers(unittest.TestCase):
             self.assertIsNotNone(bundle["evidence_item"])
             self.assertIsNotNone(bundle["check_plan"])
             self.assertIsNotNone(bundle["decide_next"])
+            self.assertIsNotNone(bundle["why_trace"])
+            self.assertIsInstance(bundle.get("why_traces"), list)
+            self.assertTrue(any(isinstance(x, dict) and x.get("kind") == "why_trace" for x in (bundle.get("why_traces") or [])))
             ls = bundle.get("learn_suggested")
             self.assertIsInstance(ls, list)
             self.assertTrue(any(isinstance(x, dict) and x.get("id") == "ls_123" for x in ls))
@@ -166,6 +179,7 @@ class TestInspectHelpers(unittest.TestCase):
             self.assertIn("m_checks_2", refs)
             self.assertIn("m_autoanswer", refs)
             self.assertIn("m_decide", refs)
+            self.assertIn("m_why", refs)
             self.assertIn("m_loopbreak", refs)
 
     def test_classify_and_summarize(self) -> None:

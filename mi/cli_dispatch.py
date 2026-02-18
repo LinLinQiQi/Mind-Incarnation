@@ -761,6 +761,10 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
 
         evidence_item_out = evidence_item or {}
         decide_next_out = decide_next or {}
+        why_trace_raw = bundle.get("why_trace") if isinstance(bundle.get("why_trace"), dict) else None
+        why_traces_raw = bundle.get("why_traces") if isinstance(bundle.get("why_traces"), list) else []
+        why_trace_out = dict(why_trace_raw) if isinstance(why_trace_raw, dict) else {}
+        why_traces_out = [dict(x) for x in why_traces_raw if isinstance(x, dict)]
         learn_suggested_out = (bundle.get("learn_suggested") or []) if isinstance(bundle.get("learn_suggested"), list) else []
         learn_applied_out = (bundle.get("learn_applied") or []) if isinstance(bundle.get("learn_applied"), list) else []
         if args.redact:
@@ -798,6 +802,19 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                     r = ch.get("rationale")
                     if isinstance(r, str) and r:
                         ch["rationale"] = redact_text(r)
+            # Redact WhyTrace query/explanation (they may contain paths/URLs/tokens).
+            for rec in [why_trace_out, *why_traces_out]:
+                if not isinstance(rec, dict) or not rec:
+                    continue
+                q = rec.get("query")
+                if isinstance(q, str) and q:
+                    rec["query"] = redact_text(q)
+                out2 = rec.get("output")
+                if isinstance(out2, dict):
+                    for k in ("explanation", "notes"):
+                        v = out2.get(k)
+                        if isinstance(v, str) and v:
+                            out2[k] = redact_text(v)
 
         out = {
             "project_root": str(project_root),
@@ -812,6 +829,8 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             "check_plan": (bundle.get("check_plan") or {}) if isinstance(bundle.get("check_plan"), dict) else {},
             "auto_answer": (bundle.get("auto_answer") or {}) if isinstance(bundle.get("auto_answer"), dict) else {},
             "risk_event": (bundle.get("risk_event") or {}) if isinstance(bundle.get("risk_event"), dict) else {},
+            "why_trace": why_trace_out,
+            "why_traces": why_traces_out,
             "learn_suggested": learn_suggested_out,
             "learn_applied": learn_applied_out,
             "loop_guard": (bundle.get("loop_guard") or {}) if isinstance(bundle.get("loop_guard"), dict) else {},
@@ -856,6 +875,32 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 q = str(decide_next_out.get("ask_user_question") or "").strip()
                 if q:
                     print("\nask_user_question:\n" + q)
+        if isinstance(why_trace_out, dict) and why_trace_out:
+            out2 = why_trace_out.get("output") if isinstance(why_trace_out.get("output"), dict) else {}
+            st2 = str(why_trace_out.get("state") or "").strip()
+            status2 = str(out2.get("status") or "").strip()
+            cf2 = out2.get("confidence")
+            chosen2 = out2.get("chosen_claim_ids") if isinstance(out2.get("chosen_claim_ids"), list) else []
+            edges2 = why_trace_out.get("written_edge_ids") if isinstance(why_trace_out.get("written_edge_ids"), list) else []
+            try:
+                cf2_s = f"{float(cf2):.2f}" if cf2 is not None else ""
+            except Exception:
+                cf2_s = str(cf2 or "")
+            parts2 = []
+            if st2:
+                parts2.append(f"state={st2}")
+            if status2:
+                parts2.append(f"status={status2}")
+            if cf2_s:
+                parts2.append(f"confidence={cf2_s}")
+            parts2.append(f"chosen={len(chosen2)}")
+            parts2.append(f"edges_written={len(edges2)}")
+            print("\nwhy_trace:\n" + " ".join([x for x in parts2 if x]))
+            if chosen2:
+                print("chosen_claim_ids:")
+                for cid in chosen2[:5]:
+                    if isinstance(cid, str) and cid.strip():
+                        print(f"- {cid.strip()}")
         mts = out.get("mind_transcripts")
         if isinstance(mts, list) and mts:
             # Keep this short; `mi last --json` is the main interface for pointers.

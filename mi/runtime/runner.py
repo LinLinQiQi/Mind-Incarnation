@@ -1381,6 +1381,229 @@ def run_autopilot(
     if str(task or "").strip():
         _maybe_cross_project_recall(batch_id="b0.recall", reason="run_start", query=task)
 
+    def _append_check_plan_record(*, batch_id: str, checks_obj: Any, mind_transcript_ref: str) -> dict[str, Any]:
+        """Append a check_plan record and keep evidence_window/segment in sync (single source of truth)."""
+
+        obj = checks_obj if isinstance(checks_obj, dict) else _empty_check_plan()
+        rec = evw.append(
+            {
+                "kind": "check_plan",
+                "batch_id": str(batch_id),
+                "ts": now_rfc3339(),
+                "thread_id": thread_id,
+                "mind_transcript_ref": str(mind_transcript_ref or ""),
+                "checks": obj,
+            }
+        )
+        evidence_window.append({"kind": "check_plan", "batch_id": str(batch_id), "event_id": rec.get("event_id"), **obj})
+        evidence_window[:] = evidence_window[-8:]
+        _segment_add({"kind": "check_plan", "batch_id": str(batch_id), "event_id": rec.get("event_id"), **obj})
+        _persist_segment_state()
+        return rec
+
+    def _call_plan_min_checks(
+        *,
+        batch_id: str,
+        tag: str,
+        thought_db_context: dict[str, Any],
+        repo_observation: dict[str, Any],
+        notes_on_skipped: str,
+        notes_on_error: str,
+    ) -> tuple[dict[str, Any], str, str]:
+        """Call plan_min_checks and normalize failure into an empty plan with notes."""
+
+        checks_prompt = plan_min_checks_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay,
+            thought_db_context=thought_db_context,
+            recent_evidence=evidence_window,
+            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+        )
+        checks_obj, mind_ref, state = _mind_call(
+            schema_filename="plan_min_checks.json",
+            prompt=checks_prompt,
+            tag=str(tag or ""),
+            batch_id=str(batch_id or ""),
+        )
+        if checks_obj is None:
+            checks_obj = _empty_check_plan()
+            checks_obj["notes"] = notes_on_skipped if state == "skipped" else notes_on_error
+        return (checks_obj if isinstance(checks_obj, dict) else _empty_check_plan()), str(mind_ref or ""), str(state or "")
+
+    def _sync_tls_overlay_from_thoughtdb(*, as_of_ts: str) -> tuple[str, str, bool]:
+        """Sync canonical testless strategy claim -> derived overlay pointer (best-effort)."""
+
+        nonlocal overlay
+
+        tls = overlay.get("testless_verification_strategy") if isinstance(overlay, dict) else None
+        tls_chosen_once = bool(tls.get("chosen_once", False)) if isinstance(tls, dict) else False
+
+        tls_claim = _find_testless_strategy_claim(as_of_ts=as_of_ts)
+        tls_claim_strategy = ""
+        tls_claim_id = ""
+        if isinstance(tls_claim, dict):
+            tls_claim_id = str(tls_claim.get("claim_id") or "").strip()
+            tls_claim_strategy = _parse_testless_strategy_from_claim_text(str(tls_claim.get("text") or ""))
+
+        if tls_claim_strategy:
+            tls_chosen_once = True
+            # Keep overlay aligned (derived cache pointer) and to avoid decide_next prompting.
+            cur_cid = str(tls.get("claim_id") or "").strip() if isinstance(tls, dict) else ""
+            if tls_claim_id and cur_cid.strip() != tls_claim_id.strip():
+                overlay.setdefault("testless_verification_strategy", {})
+                overlay["testless_verification_strategy"] = {
+                    "chosen_once": True,
+                    "claim_id": tls_claim_id,
+                    "rationale": f"derived from Thought DB {tls_claim_id}",
+                }
+                write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
+                _refresh_overlay_refs()
+
+        return tls_claim_strategy, tls_claim_id, tls_chosen_once
+
+    def _resolve_tls_for_checks(
+        *,
+        checks_obj: dict[str, Any],
+        codex_last_message: str,
+        repo_observation: dict[str, Any],
+        user_input_batch_id: str,
+        batch_id_after_testless: str,
+        batch_id_after_tls_claim: str,
+        tag_after_testless: str,
+        tag_after_tls_claim: str,
+        notes_prefix: str,
+        source: str,
+        rationale: str,
+    ) -> tuple[dict[str, Any], str]:
+        """Resolve testless strategy for a check plan (ask once + re-plan; best-effort).
+
+        Returns: (final_checks_obj, block_reason). block_reason=="" means OK.
+        """
+
+        nonlocal overlay
+
+        def _notes_label(label: str) -> str:
+            n = str(notes_prefix or "").strip()
+            if n:
+                return n + " " + str(label or "").strip()
+            return str(label or "").strip()
+
+        tls_claim_strategy, _, tls_chosen_once = _sync_tls_overlay_from_thoughtdb(as_of_ts=now_rfc3339())
+
+        needs_tls = bool(checks_obj.get("needs_testless_strategy", False)) if isinstance(checks_obj, dict) else False
+        if needs_tls and not tls_chosen_once:
+            q = str(checks_obj.get("testless_strategy_question") or "").strip()
+            if not q:
+                q = "This project appears to have no tests. What testless verification strategy should MI use for this project (one-time)?"
+            answer = _read_user_answer(q)
+            if not answer:
+                return checks_obj, "user did not provide required input"
+
+            ui = evw.append(
+                {
+                    "kind": "user_input",
+                    "batch_id": str(user_input_batch_id),
+                    "ts": now_rfc3339(),
+                    "thread_id": thread_id,
+                    "question": q,
+                    "answer": answer,
+                }
+            )
+            evidence_window.append(
+                {
+                    "kind": "user_input",
+                    "batch_id": str(user_input_batch_id),
+                    "event_id": ui.get("event_id"),
+                    "question": q,
+                    "answer": answer,
+                }
+            )
+            evidence_window[:] = evidence_window[-8:]
+            _segment_add(ui)
+            _persist_segment_state()
+
+            # Canonicalize into Thought DB as a project preference claim.
+            src_eid = str(ui.get("event_id") or "").strip()
+            tls_cid = _upsert_testless_strategy_claim(
+                strategy_text=answer.strip(),
+                source_event_id=src_eid,
+                source=source,
+                rationale=rationale,
+            )
+
+            overlay.setdefault("testless_verification_strategy", {})
+            overlay["testless_verification_strategy"] = {
+                "chosen_once": True,
+                "claim_id": tls_cid,
+                "rationale": (f"user provided (canonical claim {tls_cid})" if tls_cid else "user provided testless verification strategy"),
+            }
+            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
+            _refresh_overlay_refs()
+
+            # Re-plan checks now that the project has a strategy to follow.
+            tdb_ctx2 = build_decide_next_thoughtdb_context(
+                tdb=tdb,
+                as_of_ts=now_rfc3339(),
+                task=task,
+                hands_last_message=codex_last_message,
+                recent_evidence=evidence_window,
+                mem=mem.service,
+            )
+            tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
+            checks_obj2, checks_ref2, _ = _call_plan_min_checks(
+                batch_id=batch_id_after_testless,
+                tag=tag_after_testless,
+                thought_db_context=tdb_ctx2_obj,
+                repo_observation=repo_observation,
+                notes_on_skipped=f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_testless')})",
+                notes_on_error=f"mind_error: plan_min_checks({_notes_label('after_testless')}) failed; see EvidenceLog kind=mind_error",
+            )
+            _append_check_plan_record(batch_id=batch_id_after_testless, checks_obj=checks_obj2, mind_transcript_ref=checks_ref2)
+            checks_obj = checks_obj2
+
+            tls_claim_strategy, _, tls_chosen_once = _sync_tls_overlay_from_thoughtdb(as_of_ts=now_rfc3339())
+
+        # If Thought DB already provides a canonical testless strategy but the check planner
+        # still requested it, re-plan once (best-effort) to avoid blocking.
+        needs_tls2 = bool(checks_obj.get("needs_testless_strategy", False)) if isinstance(checks_obj, dict) else False
+        if needs_tls2 and tls_claim_strategy:
+            tdb_ctx_tls = build_decide_next_thoughtdb_context(
+                tdb=tdb,
+                as_of_ts=now_rfc3339(),
+                task=task,
+                hands_last_message=codex_last_message,
+                recent_evidence=evidence_window,
+                mem=mem.service,
+            )
+            tdb_ctx_tls_obj = tdb_ctx_tls.to_prompt_obj()
+            checks_obj3, checks_ref3, state3 = _call_plan_min_checks(
+                batch_id=batch_id_after_tls_claim,
+                tag=tag_after_tls_claim,
+                thought_db_context=tdb_ctx_tls_obj,
+                repo_observation=repo_observation,
+                notes_on_skipped=f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_tls_claim')})",
+                notes_on_error=f"mind_error: plan_min_checks({_notes_label('after_tls_claim')}) failed; using Thought DB strategy",
+            )
+            if state3 != "ok":
+                # Ensure we don't ask again; proceed with a conservative "no checks" plan.
+                checks_obj["needs_testless_strategy"] = False
+                checks_obj["testless_strategy_question"] = ""
+                base_note = str(checks_obj.get("notes") or "").strip()
+                extra = (
+                    f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_tls_claim')})"
+                    if state3 == "skipped"
+                    else f"mind_error: plan_min_checks({_notes_label('after_tls_claim')}) failed; using Thought DB strategy"
+                )
+                checks_obj["notes"] = (base_note + "; " + extra).strip("; ").strip()
+                _append_check_plan_record(batch_id=batch_id_after_tls_claim, checks_obj=checks_obj, mind_transcript_ref=checks_ref3)
+            else:
+                checks_obj = checks_obj3
+                _append_check_plan_record(batch_id=batch_id_after_tls_claim, checks_obj=checks_obj3, mind_transcript_ref=checks_ref3)
+
+        return checks_obj, ""
+
     def _mine_workflow_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
         if not bool(wf_auto_mine):
             return
@@ -2439,177 +2662,37 @@ def run_autopilot(
                     chk_text = str(check_plan.get("codex_check_input") or "").strip()
 
                 if not chk_text:
-                    checks_prompt = plan_min_checks_prompt(
-                        task=task,
-                        hands_provider=cur_provider,
-                        mindspec_base=_mindspec_base_runtime(),
-                        project_overlay=overlay,
-                        thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
-                        recent_evidence=evidence_window,
-                        repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-                    )
-                    checks_obj2, checks_ref2, checks_state2 = _mind_call(
-                        schema_filename="plan_min_checks.json",
-                        prompt=checks_prompt,
-                        tag=f"checks_loopbreak:{batch_id}",
+                    checks_obj2, checks_ref2, _ = _call_plan_min_checks(
                         batch_id=f"{batch_id}.loop_break_checks",
+                        tag=f"checks_loopbreak:{batch_id}",
+                        thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
+                        repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+                        notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
+                        notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
                     )
-                    if checks_obj2 is None:
-                        checks_obj2 = _empty_check_plan()
-                        if checks_state2 == "skipped":
-                            checks_obj2["notes"] = "skipped: mind_circuit_open (plan_min_checks loop_break)"
-                        else:
-                            checks_obj2["notes"] = "mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error"
-
-                    checks_rec2 = evw.append(
-                        {
-                            "kind": "check_plan",
-                            "batch_id": f"{batch_id}.loop_break_checks",
-                            "ts": now_rfc3339(),
-                            "thread_id": thread_id,
-                            "mind_transcript_ref": checks_ref2,
-                            "checks": checks_obj2,
-                        }
+                    _append_check_plan_record(
+                        batch_id=f"{batch_id}.loop_break_checks",
+                        checks_obj=checks_obj2,
+                        mind_transcript_ref=checks_ref2,
                     )
-                    evidence_window.append(
-                        {"kind": "check_plan", "batch_id": f"{batch_id}.loop_break_checks", "event_id": checks_rec2.get("event_id"), **checks_obj2}
+
+                    checks_obj2, block_reason = _resolve_tls_for_checks(
+                        checks_obj=checks_obj2 if isinstance(checks_obj2, dict) else _empty_check_plan(),
+                        codex_last_message=codex_last_message,
+                        repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+                        user_input_batch_id=f"{batch_id}.loop_break",
+                        batch_id_after_testless=f"{batch_id}.loop_break_after_testless",
+                        batch_id_after_tls_claim=f"{batch_id}.loop_break_after_tls_claim",
+                        tag_after_testless=f"checks_loopbreak_after_tls:{batch_id}",
+                        tag_after_tls_claim=f"checks_loopbreak_after_tls_claim:{batch_id}",
+                        notes_prefix="loop_break",
+                        source="user_input:testless_strategy(loop_break)",
+                        rationale="user provided testless verification strategy (loop_break)",
                     )
-                    evidence_window[:] = evidence_window[-8:]
-                    _segment_add(
-                        {
-                            "kind": "check_plan",
-                            "batch_id": f"{batch_id}.loop_break_checks",
-                            "event_id": checks_rec2.get("event_id"),
-                            **(checks_obj2 if isinstance(checks_obj2, dict) else {}),
-                        }
-                    )
-                    _persist_segment_state()
-
-                    # If checks planning needs a one-time testless strategy, ask once per project (canonicalize into Thought DB),
-                    # then re-plan checks.
-                    tls = overlay.get("testless_verification_strategy") if isinstance(overlay, dict) else None
-                    tls_chosen_once = bool(tls.get("chosen_once", False)) if isinstance(tls, dict) else False
-                    tls_claim = _find_testless_strategy_claim(as_of_ts=now_rfc3339())
-                    tls_claim_strategy = ""
-                    tls_claim_id = ""
-                    if isinstance(tls_claim, dict):
-                        tls_claim_id = str(tls_claim.get("claim_id") or "").strip()
-                        tls_claim_strategy = _parse_testless_strategy_from_claim_text(str(tls_claim.get("text") or ""))
-                    if tls_claim_strategy:
-                        tls_chosen_once = True
-                        cur_cid = str(tls.get("claim_id") or "").strip() if isinstance(tls, dict) else ""
-                        if tls_claim_id and cur_cid.strip() != tls_claim_id.strip():
-                            overlay.setdefault("testless_verification_strategy", {})
-                            overlay["testless_verification_strategy"] = {
-                                "chosen_once": True,
-                                "claim_id": tls_claim_id,
-                                "rationale": f"derived from Thought DB {tls_claim_id}",
-                            }
-                            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-                            _refresh_overlay_refs()
-
-                    needs_tls = bool(checks_obj2.get("needs_testless_strategy", False)) if isinstance(checks_obj2, dict) else False
-                    if needs_tls and not tls_chosen_once:
-                        q = str(checks_obj2.get("testless_strategy_question") or "").strip()
-                        if not q:
-                            q = "This project appears to have no tests. What testless verification strategy should MI use for this project (one-time)?"
-                        answer = _read_user_answer(q)
-                        if not answer:
-                            status = "blocked"
-                            notes = "user did not provide required input"
-                            return False
-                        ui3 = evw.append(
-                            {
-                                "kind": "user_input",
-                                "batch_id": f"{batch_id}.loop_break",
-                                "ts": now_rfc3339(),
-                                "thread_id": thread_id,
-                                "question": q,
-                                "answer": answer,
-                            }
-                        )
-                        evidence_window.append(
-                            {"kind": "user_input", "batch_id": f"{batch_id}.loop_break", "event_id": ui3.get("event_id"), "question": q, "answer": answer}
-                        )
-                        evidence_window[:] = evidence_window[-8:]
-                        _segment_add(ui3)
-                        _persist_segment_state()
-
-                        src_eid = str(ui3.get("event_id") or "").strip()
-                        tls_cid = _upsert_testless_strategy_claim(
-                            strategy_text=answer.strip(),
-                            source_event_id=src_eid,
-                            source="user_input:testless_strategy(loop_break)",
-                            rationale="user provided testless verification strategy (loop_break)",
-                        )
-                        overlay.setdefault("testless_verification_strategy", {})
-                        overlay["testless_verification_strategy"] = {
-                            "chosen_once": True,
-                            "claim_id": tls_cid,
-                            "rationale": (f"user provided (canonical claim {tls_cid})" if tls_cid else "user provided testless verification strategy"),
-                        }
-                        write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-                        _refresh_overlay_refs()
-
-                        tdb_ctx_tls = build_decide_next_thoughtdb_context(
-                            tdb=tdb,
-                            as_of_ts=now_rfc3339(),
-                            task=task,
-                            hands_last_message=codex_last_message,
-                            recent_evidence=evidence_window,
-                            mem=mem.service,
-                        )
-                        tdb_ctx_tls_obj = tdb_ctx_tls.to_prompt_obj()
-                        checks_prompt3 = plan_min_checks_prompt(
-                            task=task,
-                            hands_provider=cur_provider,
-                            mindspec_base=_mindspec_base_runtime(),
-                            project_overlay=overlay,
-                            thought_db_context=tdb_ctx_tls_obj,
-                            recent_evidence=evidence_window,
-                            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-                        )
-                        checks_obj3, checks_ref3, checks_state3 = _mind_call(
-                            schema_filename="plan_min_checks.json",
-                            prompt=checks_prompt3,
-                            tag=f"checks_loopbreak_after_tls:{batch_id}",
-                            batch_id=f"{batch_id}.loop_break_after_testless",
-                        )
-                        if checks_obj3 is None:
-                            checks_obj3 = _empty_check_plan()
-                            if checks_state3 == "skipped":
-                                checks_obj3["notes"] = "skipped: mind_circuit_open (plan_min_checks loop_break after_testless)"
-                            else:
-                                checks_obj3["notes"] = "mind_error: plan_min_checks(loop_break after_testless) failed; see EvidenceLog kind=mind_error"
-                        checks_rec3 = evw.append(
-                            {
-                                "kind": "check_plan",
-                                "batch_id": f"{batch_id}.loop_break_after_testless",
-                                "ts": now_rfc3339(),
-                                "thread_id": thread_id,
-                                "mind_transcript_ref": checks_ref3,
-                                "checks": checks_obj3,
-                            }
-                        )
-                        evidence_window.append(
-                            {
-                                "kind": "check_plan",
-                                "batch_id": f"{batch_id}.loop_break_after_testless",
-                                "event_id": checks_rec3.get("event_id"),
-                                **checks_obj3,
-                            }
-                        )
-                        evidence_window[:] = evidence_window[-8:]
-                        _segment_add(
-                            {
-                                "kind": "check_plan",
-                                "batch_id": f"{batch_id}.loop_break_after_testless",
-                                "event_id": checks_rec3.get("event_id"),
-                                **(checks_obj3 if isinstance(checks_obj3, dict) else {}),
-                            }
-                        )
-                        _persist_segment_state()
-                        checks_obj2 = checks_obj3
+                    if block_reason:
+                        status = "blocked"
+                        notes = block_reason
+                        return False
 
                     if isinstance(checks_obj2, dict) and bool(checks_obj2.get("should_run_checks", False)):
                         chk_text = str(checks_obj2.get("codex_check_input") or "").strip()
@@ -3042,58 +3125,25 @@ def run_autopilot(
 
         # Plan minimal checks (LLM) only when uncertainty/risk/change suggests it.
         checks_obj = _empty_check_plan()
+        checks_mind_ref = ""
         if _should_plan_checks(
             summary=summary,
             evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
             codex_last_message=codex_last,
             repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
         ):
-            checks_prompt = plan_min_checks_prompt(
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay,
-                thought_db_context=tdb_ctx_batch_obj,
-                recent_evidence=evidence_window,
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            )
-            checks_obj, checks_mind_ref, checks_state = _mind_call(
-                schema_filename="plan_min_checks.json",
-                prompt=checks_prompt,
-                tag=f"checks_b{batch_idx}",
+            checks_obj, checks_mind_ref, _ = _call_plan_min_checks(
                 batch_id=batch_id,
+                tag=f"checks_b{batch_idx}",
+                thought_db_context=tdb_ctx_batch_obj,
+                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                notes_on_skipped="skipped: mind_circuit_open (plan_min_checks)",
+                notes_on_error="mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error",
             )
-            if checks_obj is None:
-                checks_obj = _empty_check_plan()
-                if checks_state == "skipped":
-                    checks_obj["notes"] = "skipped: mind_circuit_open (plan_min_checks)"
-                else:
-                    checks_obj["notes"] = "mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error"
         else:
             checks_obj = _empty_check_plan()
             checks_obj["notes"] = "skipped: no uncertainty/risk/question detected"
-            checks_mind_ref = ""
-        checks_rec = evw.append(
-            {
-                "kind": "check_plan",
-                "batch_id": f"b{batch_idx}",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "mind_transcript_ref": checks_mind_ref,
-                "checks": checks_obj,
-            }
-        )
-        evidence_window.append({"kind": "check_plan", "batch_id": f"b{batch_idx}", "event_id": checks_rec.get("event_id"), **checks_obj})
-        evidence_window = evidence_window[-8:]
-        _segment_add(
-            {
-                "kind": "check_plan",
-                "batch_id": f"b{batch_idx}",
-                "event_id": checks_rec.get("event_id"),
-                **(checks_obj if isinstance(checks_obj, dict) else {}),
-            }
-        )
-        _persist_segment_state()
+        _append_check_plan_record(batch_id=f"b{batch_idx}", checks_obj=checks_obj, mind_transcript_ref=checks_mind_ref)
 
         # Auto-answer Hands when it is asking the user questions; only ask the user if MI cannot answer.
         auto_answer_obj = _empty_auto_answer()
@@ -3268,195 +3318,23 @@ def run_autopilot(
                 break
             continue
 
-        tls = overlay.get("testless_verification_strategy") if isinstance(overlay, dict) else None
-        tls_chosen_once = bool(tls.get("chosen_once", False)) if isinstance(tls, dict) else False
-
-        # Thought DB is canonical: treat a tagged strategy claim as the one-time choice.
-        tls_claim = _find_testless_strategy_claim(as_of_ts=now_rfc3339())
-        tls_claim_strategy = ""
-        tls_claim_id = ""
-        if isinstance(tls_claim, dict):
-            tls_claim_id = str(tls_claim.get("claim_id") or "").strip()
-            tls_claim_strategy = _parse_testless_strategy_from_claim_text(str(tls_claim.get("text") or ""))
-        if tls_claim_strategy:
-            tls_chosen_once = True
-            # Keep overlay aligned (derived cache pointer) and to avoid decide_next prompting.
-            cur_cid = str(tls.get("claim_id") or "").strip() if isinstance(tls, dict) else ""
-            if tls_claim_id and cur_cid.strip() != tls_claim_id.strip():
-                overlay.setdefault("testless_verification_strategy", {})
-                overlay["testless_verification_strategy"] = {
-                    "chosen_once": True,
-                    "claim_id": tls_claim_id,
-                    "rationale": f"derived from Thought DB {tls_claim_id}",
-                }
-                write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-                _refresh_overlay_refs()
-
-        needs_tls = bool(checks_obj.get("needs_testless_strategy", False)) if isinstance(checks_obj, dict) else False
-        if needs_tls and not tls_chosen_once:
-            q = str(checks_obj.get("testless_strategy_question") or "").strip()
-            if not q:
-                q = "This project appears to have no tests. What testless verification strategy should MI use for this project (one-time)?"
-            answer = _read_user_answer(q)
-            if not answer:
-                status = "blocked"
-                notes = "user did not provide required input"
-                break
-            ui3 = evw.append(
-                {
-                    "kind": "user_input",
-                    "batch_id": f"b{batch_idx}",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "question": q,
-                    "answer": answer,
-                }
-            )
-            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "event_id": ui3.get("event_id"), "question": q, "answer": answer})
-            evidence_window = evidence_window[-8:]
-            _segment_add(ui3)
-            _persist_segment_state()
-
-            # Canonicalize into Thought DB as a project preference claim.
-            src_eid = str(ui3.get("event_id") or "").strip()
-            tls_cid = _upsert_testless_strategy_claim(
-                strategy_text=answer.strip(),
-                source_event_id=src_eid,
-                source="user_input:testless_strategy",
-                rationale="user provided testless verification strategy",
-            )
-
-            overlay.setdefault("testless_verification_strategy", {})
-            overlay["testless_verification_strategy"] = {
-                "chosen_once": True,
-                "claim_id": tls_cid,
-                "rationale": (f"user provided (canonical claim {tls_cid})" if tls_cid else "user provided testless verification strategy"),
-            }
-            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-            _refresh_overlay_refs()
-
-            # Re-plan checks now that the project has a strategy to follow.
-            tdb_ctx2 = build_decide_next_thoughtdb_context(
-                tdb=tdb,
-                as_of_ts=now_rfc3339(),
-                task=task,
-                hands_last_message=codex_last,
-                recent_evidence=evidence_window,
-                mem=mem.service,
-            )
-            tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
-            checks_prompt2 = plan_min_checks_prompt(
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay,
-                thought_db_context=tdb_ctx2_obj,
-                recent_evidence=evidence_window,
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            )
-            checks_obj2, checks_mind_ref2, checks_state2 = _mind_call(
-                schema_filename="plan_min_checks.json",
-                prompt=checks_prompt2,
-                tag=f"checks_after_tls_b{batch_idx}",
-                batch_id=f"b{batch_idx}.after_testless",
-            )
-            if checks_obj2 is None:
-                checks_obj2 = _empty_check_plan()
-                if checks_state2 == "skipped":
-                    checks_obj2["notes"] = "skipped: mind_circuit_open (plan_min_checks after_testless)"
-                else:
-                    checks_obj2["notes"] = "mind_error: plan_min_checks(after_testless) failed; see EvidenceLog kind=mind_error"
-            checks_obj = checks_obj2
-            checks2_rec = evw.append(
-                {
-                    "kind": "check_plan",
-                    "batch_id": f"b{batch_idx}.after_testless",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "mind_transcript_ref": checks_mind_ref2,
-                    "checks": checks_obj,
-                }
-            )
-            evidence_window.append(
-                {"kind": "check_plan", "batch_id": f"b{batch_idx}.after_testless", "event_id": checks2_rec.get("event_id"), **checks_obj}
-            )
-            evidence_window = evidence_window[-8:]
-            _segment_add(
-                {
-                    "kind": "check_plan",
-                    "batch_id": f"b{batch_idx}.after_testless",
-                    "event_id": checks2_rec.get("event_id"),
-                    **(checks_obj if isinstance(checks_obj, dict) else {}),
-                }
-            )
-            _persist_segment_state()
-
-        # If Thought DB already provides a canonical testless strategy but the check planner
-        # still requested it, re-plan once (best-effort) to avoid blocking.
-        needs_tls2 = bool(checks_obj.get("needs_testless_strategy", False)) if isinstance(checks_obj, dict) else False
-        if needs_tls2 and tls_claim_strategy:
-            tdb_ctx_tls = build_decide_next_thoughtdb_context(
-                tdb=tdb,
-                as_of_ts=now_rfc3339(),
-                task=task,
-                hands_last_message=codex_last,
-                recent_evidence=evidence_window,
-                mem=mem.service,
-            )
-            tdb_ctx_tls_obj = tdb_ctx_tls.to_prompt_obj()
-            checks_prompt_tls = plan_min_checks_prompt(
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay,
-                thought_db_context=tdb_ctx_tls_obj,
-                recent_evidence=evidence_window,
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            )
-            checks_obj3, checks_mind_ref3, checks_state3 = _mind_call(
-                schema_filename="plan_min_checks.json",
-                prompt=checks_prompt_tls,
-                tag=f"checks_after_tls_claim_b{batch_idx}",
-                batch_id=f"b{batch_idx}.after_tls_claim",
-            )
-            if checks_obj3 is None:
-                # Ensure we don't ask again; proceed with a conservative "no checks" plan.
-                if not isinstance(checks_obj, dict):
-                    checks_obj = _empty_check_plan()
-                checks_obj["needs_testless_strategy"] = False
-                checks_obj["testless_strategy_question"] = ""
-                base_note = str(checks_obj.get("notes") or "").strip()
-                extra = (
-                    "skipped: mind_circuit_open (plan_min_checks after_tls_claim)"
-                    if checks_state3 == "skipped"
-                    else "mind_error: plan_min_checks(after_tls_claim) failed; using Thought DB strategy"
-                )
-                checks_obj["notes"] = (base_note + "; " + extra).strip("; ").strip()
-            else:
-                checks_obj = checks_obj3
-            checks3_rec = evw.append(
-                {
-                    "kind": "check_plan",
-                    "batch_id": f"b{batch_idx}.after_tls_claim",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "mind_transcript_ref": checks_mind_ref3,
-                    "checks": checks_obj,
-                }
-            )
-            evidence_window.append(
-                {"kind": "check_plan", "batch_id": f"b{batch_idx}.after_tls_claim", "event_id": checks3_rec.get("event_id"), **checks_obj}
-            )
-            evidence_window = evidence_window[-8:]
-            _segment_add(
-                {
-                    "kind": "check_plan",
-                    "batch_id": f"b{batch_idx}.after_tls_claim",
-                    "event_id": checks3_rec.get("event_id"),
-                    **(checks_obj if isinstance(checks_obj, dict) else {}),
-                }
-            )
-            _persist_segment_state()
+        checks_obj, block_reason = _resolve_tls_for_checks(
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else _empty_check_plan(),
+            codex_last_message=codex_last,
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            user_input_batch_id=f"b{batch_idx}",
+            batch_id_after_testless=f"b{batch_idx}.after_testless",
+            batch_id_after_tls_claim=f"b{batch_idx}.after_tls_claim",
+            tag_after_testless=f"checks_after_tls_b{batch_idx}",
+            tag_after_tls_claim=f"checks_after_tls_claim_b{batch_idx}",
+            notes_prefix="",
+            source="user_input:testless_strategy",
+            rationale="user provided testless verification strategy",
+        )
+        if block_reason:
+            status = "blocked"
+            notes = block_reason
+            break
 
         answer_text = ""
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("should_answer", False)):

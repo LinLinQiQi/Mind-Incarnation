@@ -58,6 +58,8 @@ make check
 make doccheck
 ```
 
+注：CI 会以严格模式运行 doccheck。
+
 如果没有 `make`：
 
 ```bash

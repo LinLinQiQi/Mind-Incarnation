@@ -10,6 +10,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -22,3 +24,5 @@ jobs:
       - name: Unit Tests
         run: python -m unittest discover -s tests
 
+      - name: Doccheck (strict)
+        run: MI_DOCCHECK_STRICT=1 python scripts/doccheck.py --ci

@@ -58,6 +58,8 @@ Best-effort doc drift check (warning-only by default; set `MI_DOCCHECK_STRICT=1`
 make doccheck
 ```
 
+Note: CI runs doccheck in strict mode.
+
 Or without `make`:
 
 ```bash

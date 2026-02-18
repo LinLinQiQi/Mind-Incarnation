@@ -761,6 +761,8 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
 
         evidence_item_out = evidence_item or {}
         decide_next_out = decide_next or {}
+        state_corrupt_recent_raw = bundle.get("state_corrupt_recent") if isinstance(bundle.get("state_corrupt_recent"), dict) else None
+        state_corrupt_recent_out = dict(state_corrupt_recent_raw) if isinstance(state_corrupt_recent_raw, dict) else {}
         why_trace_raw = bundle.get("why_trace") if isinstance(bundle.get("why_trace"), dict) else None
         why_traces_raw = bundle.get("why_traces") if isinstance(bundle.get("why_traces"), list) else []
         why_trace_out = dict(why_trace_raw) if isinstance(why_trace_raw, dict) else {}
@@ -815,6 +817,15 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                         v = out2.get(k)
                         if isinstance(v, str) and v:
                             out2[k] = redact_text(v)
+            # Redact state recovery paths/errors (they may reveal local filesystem layout).
+            items = state_corrupt_recent_out.get("items") if isinstance(state_corrupt_recent_out.get("items"), list) else []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                for k in ("path", "quarantined_to", "error", "quarantine_error"):
+                    v = it.get(k)
+                    if isinstance(v, str) and v:
+                        it[k] = redact_text(v)
 
         out = {
             "project_root": str(project_root),
@@ -829,6 +840,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             "check_plan": (bundle.get("check_plan") or {}) if isinstance(bundle.get("check_plan"), dict) else {},
             "auto_answer": (bundle.get("auto_answer") or {}) if isinstance(bundle.get("auto_answer"), dict) else {},
             "risk_event": (bundle.get("risk_event") or {}) if isinstance(bundle.get("risk_event"), dict) else {},
+            "state_corrupt_recent": state_corrupt_recent_out,
             "why_trace": why_trace_out,
             "why_traces": why_traces_out,
             "learn_suggested": learn_suggested_out,
@@ -846,6 +858,17 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         print(f"thread_id={out['thread_id']} batch_id={out['batch_id']}")
         print(f"project_dir={out['project_dir']}")
         print(f"evidence_log={out['evidence_log']}")
+        items2 = state_corrupt_recent_out.get("items") if isinstance(state_corrupt_recent_out.get("items"), list) else []
+        if items2:
+            labels: list[str] = []
+            for it in items2:
+                if isinstance(it, dict):
+                    lab = str(it.get("label") or "").strip()
+                    if lab:
+                        labels.append(lab)
+            label_s = ",".join(sorted(set(labels))[:6])
+            msg = f"state_corrupt_recent: n={len(items2)}" + (f" labels={label_s}" if label_s else "")
+            print(msg)
         if transcript_path:
             print(f"hands_transcript={transcript_path}")
         if out["mi_input"].strip():

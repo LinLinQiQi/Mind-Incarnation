@@ -21,9 +21,11 @@ class TestStateCorruption(unittest.TestCase):
             # Simulate a partial write / corruption.
             pp.overlay_path.write_text("{", encoding="utf-8")
 
-            overlay = load_project_overlay(home_dir=Path(home), project_root=Path(project_root))
+            warnings: list[dict] = []
+            overlay = load_project_overlay(home_dir=Path(home), project_root=Path(project_root), warnings=warnings)
             self.assertIsInstance(overlay, dict)
             self.assertTrue(str(overlay.get("project_id") or "").strip())
+            self.assertTrue(warnings)
 
             # A fresh overlay.json should exist and be valid JSON.
             obj = read_json(pp.overlay_path, default=None)
@@ -41,13 +43,15 @@ class TestStateCorruption(unittest.TestCase):
             pp.workflow_candidates_path.write_text("{", encoding="utf-8")
             pp.preference_candidates_path.write_text("{", encoding="utf-8")
 
-            wf = load_workflow_candidates(pp)
-            pref = load_preference_candidates(pp)
+            warnings: list[dict] = []
+            wf = load_workflow_candidates(pp, warnings=warnings)
+            pref = load_preference_candidates(pp, warnings=warnings)
 
             self.assertIsInstance(wf, dict)
             self.assertIsInstance(wf.get("by_signature"), dict)
             self.assertIsInstance(pref, dict)
             self.assertIsInstance(pref.get("by_signature"), dict)
+            self.assertTrue(warnings)
 
             q1 = list(pp.workflow_candidates_path.parent.glob("workflow_candidates.json.corrupt.*"))
             q2 = list(pp.preference_candidates_path.parent.glob("preference_candidates.json.corrupt.*"))
@@ -72,7 +76,9 @@ class TestStateCorruption(unittest.TestCase):
             manifest = gen / "manifest.json"
             manifest.write_text("{", encoding="utf-8")
 
-            _res = sync_host_binding(binding=binding, project_id="p_test", workflows=[])
+            warnings: list[dict] = []
+            _res = sync_host_binding(binding=binding, project_id="p_test", workflows=[], warnings=warnings)
+            self.assertTrue(warnings)
 
             obj = read_json(manifest, default=None)
             self.assertIsInstance(obj, dict)
@@ -83,4 +89,3 @@ class TestStateCorruption(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

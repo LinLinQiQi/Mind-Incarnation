@@ -186,7 +186,7 @@ mi last --cd /path/to/your/project
 mi last --cd /path/to/your/project --redact
 ```
 
-注：`mi last --json` 在存在 WhyTrace（例如通过 `mi run --why`）时，会包含 `why_trace` / `why_traces`；在 MI 检测到并尝试打破“重复卡住”的循环时，会包含 `loop_guard` 和 `loop_break` 字段。
+注：`mi last --json` 在存在 WhyTrace（例如通过 `mi run --why`）时，会包含 `why_trace` / `why_traces`；当 MI 需要 quarantine 损坏的 state 文件时，会包含 `state_corrupt_recent`；在 MI 检测到并尝试打破“重复卡住”的循环时，会包含 `loop_guard` 和 `loop_break` 字段。你也可以通过 `MI_STATE_WARNINGS_STDERR=1`（强制打印）/ `0`（静默）控制底层 state 告警的 stderr 输出。
 
 查看项目级状态（overlay + 存储路径解析）：
 

@@ -67,6 +67,28 @@ def write_json_atomic(path: Path, obj: Any) -> None:
     atomic_write_json(path, obj)
 
 
+def _env_tristate_bool(name: str) -> bool | None:
+    """Parse an environment variable into a tri-state boolean.
+
+    - unset/empty -> None
+    - truthy -> True
+    - falsy -> False
+    - unknown non-empty -> True (prefer being loud over silently hiding warnings)
+    """
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    s = str(raw).strip().lower()
+    if not s:
+        return None
+    if s in ("1", "true", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "no", "n", "off"):
+        return False
+    return True
+
+
 def _filename_safe_ts(ts: str) -> str:
     # RFC3339 -> filename-safe stamp (YYYYMMDDTHHMMSSZ)
     return str(ts or "").replace("-", "").replace(":", "")
@@ -123,7 +145,10 @@ def read_json_best_effort(
         }
         if warnings is not None:
             warnings.append(item)
-        print(f"[mi] state read failed; quarantined and continued. label={item['label']} path={item['path']}", file=sys.stderr)
+        force = _env_tristate_bool("MI_STATE_WARNINGS_STDERR")
+        should_print = force if force is not None else (warnings is None)
+        if should_print:
+            print(f"[mi] state read failed; quarantined and continued. label={item['label']} path={item['path']}", file=sys.stderr)
         return default
 
     try:
@@ -140,5 +165,8 @@ def read_json_best_effort(
         }
         if warnings is not None:
             warnings.append(item)
-        print(f"[mi] state JSON corrupt; quarantined and continued. label={item['label']} path={item['path']}", file=sys.stderr)
+        force = _env_tristate_bool("MI_STATE_WARNINGS_STDERR")
+        should_print = force if force is not None else (warnings is None)
+        if should_print:
+            print(f"[mi] state JSON corrupt; quarantined and continued. label={item['label']} path={item['path']}", file=sys.stderr)
         return default

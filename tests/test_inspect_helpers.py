@@ -36,6 +36,15 @@ class TestInspectHelpers(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "evidence.jsonl"
             lines = [
+                json.dumps(
+                    {
+                        "kind": "state_corrupt",
+                        "batch_id": "b0.state_recovery",
+                        "ts": "x",
+                        "thread_id": "t",
+                        "items": [{"label": "overlay", "path": "/tmp/overlay.json", "error": "JSONDecodeError"}],
+                    }
+                ),
                 json.dumps({"kind": "codex_input", "batch_id": "b0", "thread_id": "t", "input": "hi", "transcript_path": "t0"}),
                 json.dumps(
                     {
@@ -165,6 +174,10 @@ class TestInspectHelpers(unittest.TestCase):
             self.assertIsNotNone(bundle["why_trace"])
             self.assertIsInstance(bundle.get("why_traces"), list)
             self.assertTrue(any(isinstance(x, dict) and x.get("kind") == "why_trace" for x in (bundle.get("why_traces") or [])))
+            self.assertIsNotNone(bundle.get("state_corrupt_recent"))
+            scr = bundle.get("state_corrupt_recent")
+            self.assertIsInstance(scr, dict)
+            self.assertTrue(isinstance(scr.get("items"), list) and len(scr.get("items")) > 0)
             ls = bundle.get("learn_suggested")
             self.assertIsInstance(ls, list)
             self.assertTrue(any(isinstance(x, dict) and x.get("id") == "ls_123" for x in ls))

@@ -212,6 +212,8 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
         "check_plan": None,
         "auto_answer": None,
         "risk_event": None,
+        # Convenience: most recent state recovery record (may not match the latest batch_id prefix).
+        "state_corrupt_recent": None,
         # Optional: WhyTrace record(s) related to the last batch cycle.
         "why_trace": None,
         "why_traces": [],
@@ -226,6 +228,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
         "user_inputs": [],
     }
     last_bid = ""
+    last_state_corrupt: dict[str, Any] | None = None
 
     def is_related_batch_id(bid: str) -> bool:
         if not last_bid or not bid:
@@ -265,6 +268,12 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                 bid = str(obj.get("batch_id") or "")
                 tid = obj.get("thread_id")
 
+                # This record may use a fixed batch id like "b0.state_recovery", so it won't
+                # reliably match the latest batch prefix. Keep the most recent one as a pointer.
+                if kind == "state_corrupt":
+                    last_state_corrupt = obj
+                    continue
+
                 if kind in ("codex_input", "hands_input") and bid:
                     last_bid = bid
                     bundle = {
@@ -275,6 +284,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                         "check_plan": None,
                         "auto_answer": None,
                         "risk_event": None,
+                        "state_corrupt_recent": None,
                         "why_trace": None,
                         "why_traces": [],
                         "learn_suggested": [],
@@ -346,6 +356,8 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                         bundle["user_inputs"] = [obj]
 
     except FileNotFoundError:
+        bundle["state_corrupt_recent"] = last_state_corrupt
         return bundle
 
+    bundle["state_corrupt_recent"] = last_state_corrupt
     return bundle

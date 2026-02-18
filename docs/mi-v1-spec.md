@@ -1008,7 +1008,7 @@ Transcript archiving (optional): `mi gc transcripts` can gzip older transcripts 
 
 Thought DB compaction (optional): `mi gc thoughtdb` archives Thought DB JSONL files into `thoughtdb/archive/<ts>/` as `.gz`, then rewrites compacted JSONL files (still append-only from that point onward). It also deletes `view.snapshot.json` and rebuilds it on the next load.
 
-Crash-safe state (V1): MI writes MI-owned JSON state files using atomic replace (to avoid partial writes). If an MI-owned state file is unreadable/corrupt (e.g., JSON parse error), MI quarantines it as `*.corrupt.<ts>` and continues with defaults (best-effort). `mi run` records a `kind=state_corrupt` EvidenceLog record when this happens.
+Crash-safe state (V1): MI writes MI-owned JSON state files using atomic replace (to avoid partial writes). If an MI-owned state file is unreadable/corrupt (e.g., JSON parse error), MI quarantines it as `*.corrupt.<ts>` and continues with defaults (best-effort). `mi run` records a `kind=state_corrupt` EvidenceLog record when this happens. By default, low-level state reads only print to stderr when no warning collector is used; you can force printing with `$MI_STATE_WARNINGS_STDERR=1` or force silence with `$MI_STATE_WARNINGS_STDERR=0`.
 
 ## CLI Usage (V1)
 
@@ -1138,7 +1138,7 @@ mi --home ~/.mind-incarnation last --cd <project_root> --json
 mi --home ~/.mind-incarnation last --cd <project_root> --redact
 ```
 
-Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`. When MI records WhyTrace for the latest batch cycle (e.g., via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true`), `mi last --json` also includes `why_trace` and `why_traces`. When MI detects a stuck repetition loop, `mi last --json` also includes `loop_guard` and `loop_break`.
+Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`. When MI records WhyTrace for the latest batch cycle (e.g., via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true`), `mi last --json` also includes `why_trace` and `why_traces`. `mi last --json` also includes `state_corrupt_recent` (a pointer to the most recent `kind=state_corrupt` record) for on-demand diagnosis. When MI detects a stuck repetition loop, `mi last --json` also includes `loop_guard` and `loop_break`.
 
 Inspect per-project state (overlay + resolved paths):
 

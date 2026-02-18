@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,7 +55,15 @@ class TestProjectSelectionRegistry(unittest.TestCase):
             gp.project_selection_path.parent.mkdir(parents=True, exist_ok=True)
             gp.project_selection_path.write_text("{not json", encoding="utf-8")
 
-            obj = load_project_selection(home)
+            old = os.environ.get("MI_STATE_WARNINGS_STDERR")
+            os.environ["MI_STATE_WARNINGS_STDERR"] = "0"
+            try:
+                obj = load_project_selection(home)
+            finally:
+                if old is None:
+                    del os.environ["MI_STATE_WARNINGS_STDERR"]
+                else:
+                    os.environ["MI_STATE_WARNINGS_STDERR"] = old
             self.assertIsInstance(obj, dict)
             self.assertEqual(str(obj.get("version") or ""), "v1")
 
@@ -68,4 +77,3 @@ class TestProjectSelectionRegistry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

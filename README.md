@@ -186,7 +186,7 @@ mi last --cd /path/to/your/project
 mi last --cd /path/to/your/project --redact
 ```
 
-Note: `mi last --json` includes `why_trace` / `why_traces` when present (e.g., from `mi run --why`), and includes `loop_guard` and `loop_break` when MI detects and tries to break a stuck repetition loop.
+Note: `mi last --json` includes `why_trace` / `why_traces` when present (e.g., from `mi run --why`), includes `state_corrupt_recent` when MI had to quarantine a corrupt state file, and includes `loop_guard` and `loop_break` when MI detects and tries to break a stuck repetition loop. You can control low-level state warning stderr printing via `MI_STATE_WARNINGS_STDERR=1` (force) / `0` (silence).
 
 Show per-project overlay + resolved storage paths:
 

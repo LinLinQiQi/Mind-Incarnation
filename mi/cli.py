@@ -161,12 +161,36 @@ def main(argv: list[str] | None = None) -> int:
     p_cll.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_cll.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to list.")
     p_cll.add_argument("--all", action="store_true", help="Include superseded/retracted and alias claims.")
+    p_cll.add_argument("--tag", action="append", default=[], help="Filter by tag (repeatable).")
+    p_cll.add_argument("--contains", default="", help="Case-insensitive substring filter over claim text.")
+    p_cll.add_argument(
+        "--type",
+        dest="claim_type",
+        action="append",
+        default=[],
+        help="Filter by claim_type (fact/preference/assumption/goal). Repeatable.",
+    )
+    p_cll.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        choices=["active", "superseded", "retracted"],
+        help="Filter by derived status (repeatable).",
+    )
+    p_cll.add_argument("--as-of", default="", help="RFC3339 as-of timestamp (filters valid_from/valid_to; defaults to now).")
+    p_cll.add_argument("--limit", type=int, default=0, help="Limit number of results (0 means no limit).")
     p_cll.add_argument("--json", action="store_true", help="Print as JSON.")
 
     p_cls = claim_sub.add_parser("show", help="Show a claim by id.")
     p_cls.add_argument("id", help="Claim id (cl_...).")
     p_cls.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_cls.add_argument("--scope", choices=["project", "global", "effective"], default="effective", help="Where to resolve the id.")
+    p_cls.add_argument("--graph", action="store_true", help="Include a subgraph (JSON-only).")
+    p_cls.add_argument("--depth", type=int, default=1, help="Subgraph depth (0..6).")
+    p_cls.add_argument("--direction", choices=["out", "in", "both"], default="both", help="Subgraph traversal direction.")
+    p_cls.add_argument("--edge-type", action="append", default=[], dest="edge_types", help="Filter subgraph by edge_type (repeatable).")
+    p_cls.add_argument("--include-inactive", action="store_true", help="Include superseded/retracted items in subgraph.")
+    p_cls.add_argument("--include-aliases", action="store_true", help="Include same_as alias ids in subgraph.")
     p_cls.add_argument("--json", action="store_true", help="Print as JSON.")
 
     p_clm = claim_sub.add_parser("mine", help="On-demand mine claims from the current segment buffer (best-effort).")
@@ -220,12 +244,29 @@ def main(argv: list[str] | None = None) -> int:
     p_nl.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_nl.add_argument("--scope", choices=["project", "global", "effective"], default="project", help="Which store to list.")
     p_nl.add_argument("--all", action="store_true", help="Include superseded/retracted and alias nodes.")
+    p_nl.add_argument("--tag", action="append", default=[], help="Filter by tag (repeatable).")
+    p_nl.add_argument("--contains", default="", help="Case-insensitive substring filter over node title/text.")
+    p_nl.add_argument("--type", dest="node_type", action="append", default=[], help="Filter by node_type (decision/action/summary). Repeatable.")
+    p_nl.add_argument(
+        "--status",
+        action="append",
+        default=[],
+        choices=["active", "superseded", "retracted"],
+        help="Filter by derived status (repeatable).",
+    )
+    p_nl.add_argument("--limit", type=int, default=0, help="Limit number of results (0 means no limit).")
     p_nl.add_argument("--json", action="store_true", help="Print as JSON.")
 
     p_ns = node_sub.add_parser("show", help="Show a node by id.")
     p_ns.add_argument("id", help="Node id (nd_...).")
     p_ns.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_ns.add_argument("--scope", choices=["project", "global", "effective"], default="effective", help="Where to resolve the id.")
+    p_ns.add_argument("--graph", action="store_true", help="Include a subgraph (JSON-only).")
+    p_ns.add_argument("--depth", type=int, default=1, help="Subgraph depth (0..6).")
+    p_ns.add_argument("--direction", choices=["out", "in", "both"], default="both", help="Subgraph traversal direction.")
+    p_ns.add_argument("--edge-type", action="append", default=[], dest="edge_types", help="Filter subgraph by edge_type (repeatable).")
+    p_ns.add_argument("--include-inactive", action="store_true", help="Include superseded/retracted items in subgraph.")
+    p_ns.add_argument("--include-aliases", action="store_true", help="Include same_as alias ids in subgraph.")
     p_ns.add_argument("--json", action="store_true", help="Print as JSON.")
 
     p_nc = node_sub.add_parser("create", help="Create a node (append-only).")
@@ -426,6 +467,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p_evidence = sub.add_parser("evidence", help="Inspect EvidenceLog (JSONL).")
     ev_sub = p_evidence.add_subparsers(dest="evidence_cmd", required=True)
+
+    p_ev_show = ev_sub.add_parser("show", help="Show an EvidenceLog record by event_id.")
+    p_ev_show.add_argument("event_id", help="EvidenceLog event_id (ev_...).")
+    p_ev_show.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_ev_show.add_argument("--global", dest="ev_global", action="store_true", help="Search the global EvidenceLog instead of the project one.")
+    p_ev_show.add_argument("--json", action="store_true", help="Print as JSON.")
+    p_ev_show.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
+
     p_ev_tail = ev_sub.add_parser("tail", help="Tail EvidenceLog records.")
     p_ev_tail.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_ev_tail.add_argument("-n", "--lines", type=int, default=20, help="Number of records to show.")

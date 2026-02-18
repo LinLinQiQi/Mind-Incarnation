@@ -214,6 +214,8 @@ Tail EvidenceLog / show raw transcript:
 
 ```bash
 mi evidence tail --cd /path/to/your/project -n 20
+mi evidence show <event_id> --cd /path/to/your/project
+mi evidence show <event_id> --cd /path/to/your/project --redact
 mi transcript show --cd /path/to/your/project -n 200
 mi transcript show --cd /path/to/your/project -n 200 --redact
 ```
@@ -263,7 +265,9 @@ MI can maintain an append-only "Thought DB" of atomic reusable `Claim`s (fact/pr
 
 ```bash
 mi claim list --cd /path/to/your/project --scope effective
+mi claim list --cd /path/to/your/project --scope effective --type preference --tag values:base --contains "tests"
 mi claim show <claim_id> --cd /path/to/your/project
+mi claim show <claim_id> --cd /path/to/your/project --json --graph --depth 2
 mi claim mine --cd /path/to/your/project
 mi claim retract <claim_id> --cd /path/to/your/project
 mi claim supersede <claim_id> --cd /path/to/your/project --text "..."
@@ -276,6 +280,7 @@ Nodes (Decision/Action/Summary):
 mi node list --cd /path/to/your/project --scope effective
 mi node create --cd /path/to/your/project --scope project --type decision --title "..." --text "..."
 mi node show <node_id> --cd /path/to/your/project
+mi node show <node_id> --cd /path/to/your/project --json --graph --depth 2
 mi node retract <node_id> --cd /path/to/your/project
 ```
 

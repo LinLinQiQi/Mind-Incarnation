@@ -1,7 +1,7 @@
 # Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-17
+Last updated: 2026-02-18
 
 ## Goal
 
@@ -953,7 +953,7 @@ Behavior in `mi run` (V1):
 
 Notes:
 
-- Root-cause tracing is implemented via `mi why ...` (WhyTrace) and may materialize `depends_on(event_id -> claim_id)` edges (best-effort). Optional: `mi run --why` (or `config.runtime.thought_db.why_trace.auto_on_run_end=true`) runs one WhyTrace at run end for auditability. More advanced subgraph traversal + refactors remain future work; see `docs/mi-thought-db.md`.
+- Root-cause tracing is implemented via `mi why ...` (WhyTrace) and may materialize `depends_on(event_id -> claim_id)` edges (best-effort). Optional: `mi run --why` (or `config.runtime.thought_db.why_trace.auto_on_run_end=true`) runs one WhyTrace at run end for auditability. Bounded subgraph inspection is available via `mi claim show --graph` / `mi node show --graph` (JSON-only; best-effort). Whole-graph refactors remain future work; see `docs/mi-thought-db.md`.
 - Claims are optionally indexed into the memory text index as `kind=claim` (active, canonical only).
 - Performance note: within a single `mi run`, MI keeps a hot in-memory Thought DB view and incrementally updates it after append-only writes (claims/nodes/edges). To keep cold-start fast across runs, MI also flushes `view.snapshot.json` at run end (best-effort).
 
@@ -1171,6 +1171,14 @@ mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw
 mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw --redact
 ```
 
+Show an EvidenceLog record by `event_id`:
+
+```bash
+mi --home ~/.mind-incarnation evidence show <event_id> --cd <project_root>
+mi --home ~/.mind-incarnation evidence show <event_id> --cd <project_root> --redact
+mi --home ~/.mind-incarnation evidence show <event_id> --global
+```
+
 Memory index (for cross-project recall; materialized view):
 
 ```bash
@@ -1216,12 +1224,17 @@ mi --home ~/.mind-incarnation claim retract <claim_id> --cd <project_root> --sco
 
 Manage Thought DB claims (project/global/effective):
 
+- `mi claim list` supports filters: `--tag` (AND), `--contains`, `--type`, `--status`, `--as-of`, `--limit`.
+- `mi claim show --graph` adds a bounded subgraph to the JSON output (inspection only).
+
 ```bash
 mi --home ~/.mind-incarnation claim list --cd <project_root> --scope project
 mi --home ~/.mind-incarnation claim list --cd <project_root> --scope global
 mi --home ~/.mind-incarnation claim list --cd <project_root> --scope effective
+mi --home ~/.mind-incarnation claim list --cd <project_root> --scope effective --type preference --tag values:base --contains "tests"
 
 mi --home ~/.mind-incarnation claim show <claim_id> --cd <project_root> --scope effective
+mi --home ~/.mind-incarnation claim show <claim_id> --cd <project_root> --scope effective --json --graph --depth 2 --direction both --edge-type depends_on
 mi --home ~/.mind-incarnation claim mine --cd <project_root>
 
 mi --home ~/.mind-incarnation claim retract <claim_id> --cd <project_root> --scope project
@@ -1231,13 +1244,18 @@ mi --home ~/.mind-incarnation claim same-as <dup_id> <canonical_id> --cd <projec
 
 Manage Thought DB nodes (Decision/Action/Summary):
 
+- `mi node list` supports filters: `--tag` (AND), `--contains`, `--type`, `--status`, `--limit`.
+- `mi node show --graph` adds a bounded subgraph to the JSON output (inspection only).
+
 ```bash
 mi --home ~/.mind-incarnation node list --cd <project_root> --scope project
 mi --home ~/.mind-incarnation node list --cd <project_root> --scope global
 mi --home ~/.mind-incarnation node list --cd <project_root> --scope effective
+mi --home ~/.mind-incarnation node list --cd <project_root> --scope effective --type summary --tag values:summary
 
 mi --home ~/.mind-incarnation node create --cd <project_root> --scope project --type decision --title "..." --text "..."
 mi --home ~/.mind-incarnation node show <node_id> --cd <project_root> --scope effective --json
+mi --home ~/.mind-incarnation node show <node_id> --cd <project_root> --scope effective --json --graph --depth 2 --direction both --edge-type derived_from
 mi --home ~/.mind-incarnation node retract <node_id> --cd <project_root> --scope project
 ```
 

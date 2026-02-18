@@ -80,6 +80,7 @@ from .thoughtdb.operational_defaults import (
     ask_when_uncertain_claim_text,
     refactor_intent_claim_text,
 )
+from .thoughtdb.graph import build_subgraph_for_id
 from .thoughtdb.pins import ASK_WHEN_UNCERTAIN_TAG, REFACTOR_INTENT_TAG
 from .project.overlay_store import load_project_overlay, write_project_overlay
 
@@ -984,6 +985,27 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 0
 
     if args.cmd == "evidence":
+        if args.evidence_cmd == "show":
+            eid = str(getattr(args, "event_id", "") or "").strip()
+            use_global = bool(getattr(args, "ev_global", False))
+            if use_global:
+                path = GlobalPaths(home_dir=home_dir).global_evidence_log_path
+                obj = find_evidence_event(evidence_log_path=path, event_id=eid)
+            else:
+                project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
+                pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+                path = pp.evidence_log_path
+                obj = find_evidence_event(evidence_log_path=path, event_id=eid)
+
+            if obj is None:
+                where = "global" if use_global else "project"
+                print(f"evidence event not found: {eid} (scope={where})", file=sys.stderr)
+                return 2
+
+            s = json.dumps(obj, indent=2, sort_keys=True)
+            print(redact_text(s) if bool(getattr(args, "redact", False)) else s)
+            return 0
+
         project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         if args.evidence_cmd == "tail":
@@ -1347,7 +1369,13 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 sc = "project"
             return tdb.load_view(scope=sc)
 
-        def _iter_effective_claims(*, include_inactive: bool, include_aliases: bool) -> list[dict]:
+        def _iter_effective_claims(
+            *,
+            include_inactive: bool,
+            include_aliases: bool,
+            as_of_ts: str,
+            filter_fn: Any,
+        ) -> list[dict]:
             proj = tdb.load_view(scope="project")
             glob = tdb.load_view(scope="global")
             out: list[dict] = []
@@ -1358,16 +1386,20 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 text = str(c.get("text") or "").strip()
                 return claim_signature(claim_type=ct, scope="effective", project_id="", text=text)
 
-            for c in proj.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases):
+            for c in proj.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases, as_of_ts=as_of_ts):
                 if not isinstance(c, dict):
+                    continue
+                if not filter_fn(c):
                     continue
                 s = sig_for(c)
                 if s:
                     seen.add(s)
                 out.append(c)
 
-            for c in glob.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases):
+            for c in glob.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases, as_of_ts=as_of_ts):
                 if not isinstance(c, dict):
+                    continue
+                if not filter_fn(c):
                     continue
                 s = sig_for(c)
                 if s and s in seen:
@@ -1401,15 +1433,56 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
 
         if args.claim_cmd == "list":
             scope = str(getattr(args, "scope", "project") or "project").strip()
-            include_inactive = bool(getattr(args, "all", False))
+            raw_statuses = getattr(args, "status", None) or []
+            want_statuses = {str(x).strip() for x in raw_statuses if str(x).strip()}
+            include_inactive = bool(getattr(args, "all", False)) or (bool(want_statuses) and want_statuses != {"active"})
             include_aliases = bool(getattr(args, "all", False))
 
+            raw_tags = getattr(args, "tag", None) or []
+            want_tags = {str(x).strip().lower() for x in raw_tags if str(x).strip()}
+            contains = str(getattr(args, "contains", "") or "").strip().lower()
+            raw_types = getattr(args, "claim_type", None) or []
+            want_types = {str(x).strip() for x in raw_types if str(x).strip()}
+            try:
+                limit = int(getattr(args, "limit", 0) or 0)
+            except Exception:
+                limit = 0
+            as_of_ts = str(getattr(args, "as_of", "") or "").strip() or now_rfc3339()
+
+            def _claim_matches(c: dict[str, Any]) -> bool:
+                if want_types and str(c.get("claim_type") or "").strip() not in want_types:
+                    return False
+                if want_statuses and str(c.get("status") or "").strip() not in want_statuses:
+                    return False
+                if want_tags:
+                    tags = c.get("tags") if isinstance(c.get("tags"), list) else []
+                    tagset = {str(x).strip().lower() for x in tags if str(x).strip()}
+                    if not all(t in tagset for t in want_tags):
+                        return False
+                if contains:
+                    text = str(c.get("text") or "")
+                    if contains not in text.lower():
+                        return False
+                return True
+
             if scope == "effective":
-                items = _iter_effective_claims(include_inactive=include_inactive, include_aliases=include_aliases)
+                items = _iter_effective_claims(
+                    include_inactive=include_inactive,
+                    include_aliases=include_aliases,
+                    as_of_ts=as_of_ts,
+                    filter_fn=_claim_matches,
+                )
             else:
                 v = tdb.load_view(scope=scope)
-                items = list(v.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases))
+                items = [
+                    x
+                    for x in v.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases, as_of_ts=as_of_ts)
+                    if isinstance(x, dict) and _claim_matches(x)
+                ]
                 items.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
+
+            if limit > 0:
+                items = items[:limit]
 
             if getattr(args, "json", False):
                 print(json.dumps(items, indent=2, sort_keys=True))
@@ -1437,6 +1510,11 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             found_scope = ""
             obj: dict[str, Any] | None = None
             edges: list[dict[str, Any]] = []
+
+            want_graph = bool(getattr(args, "graph", False))
+            if want_graph and not bool(getattr(args, "json", False)):
+                print("--graph requires --json", file=sys.stderr)
+                return 2
 
             if scope == "effective":
                 found_scope, obj = _find_claim_effective(cid)
@@ -1480,6 +1558,20 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 return 2
 
             payload = {"scope": found_scope, "claim": obj, "edges": edges}
+            if want_graph:
+                edge_types_raw = getattr(args, "edge_types", None) or []
+                etypes = {str(x).strip() for x in edge_types_raw if str(x).strip()}
+                graph_scope = scope if scope == "effective" else found_scope
+                payload["graph"] = build_subgraph_for_id(
+                    tdb=tdb,
+                    scope=graph_scope,
+                    root_id=str(obj.get("claim_id") or cid).strip() or cid,
+                    depth=int(getattr(args, "depth", 1) or 1),
+                    direction=str(getattr(args, "direction", "both") or "both").strip(),
+                    edge_types=etypes,
+                    include_inactive=bool(getattr(args, "include_inactive", False)),
+                    include_aliases=bool(getattr(args, "include_aliases", False)),
+                )
             if getattr(args, "json", False):
                 print(json.dumps(payload, indent=2, sort_keys=True))
                 return 0
@@ -1933,8 +2025,38 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
 
         if args.node_cmd == "list":
             scope = str(getattr(args, "scope", "project") or "project").strip()
-            include_inactive = bool(getattr(args, "all", False))
+            raw_statuses = getattr(args, "status", None) or []
+            want_statuses = {str(x).strip() for x in raw_statuses if str(x).strip()}
+            include_inactive = bool(getattr(args, "all", False)) or (bool(want_statuses) and want_statuses != {"active"})
             include_aliases = bool(getattr(args, "all", False))
+
+            raw_tags = getattr(args, "tag", None) or []
+            want_tags = {str(x).strip().lower() for x in raw_tags if str(x).strip()}
+            contains = str(getattr(args, "contains", "") or "").strip().lower()
+            raw_types = getattr(args, "node_type", None) or []
+            want_types = {str(x).strip() for x in raw_types if str(x).strip()}
+            try:
+                limit = int(getattr(args, "limit", 0) or 0)
+            except Exception:
+                limit = 0
+
+            def _node_matches(n: dict[str, Any]) -> bool:
+                if want_types and str(n.get("node_type") or "").strip() not in want_types:
+                    return False
+                if want_statuses and str(n.get("status") or "").strip() not in want_statuses:
+                    return False
+                if want_tags:
+                    tags = n.get("tags") if isinstance(n.get("tags"), list) else []
+                    tagset = {str(x).strip().lower() for x in tags if str(x).strip()}
+                    if not all(t in tagset for t in want_tags):
+                        return False
+                if contains:
+                    title = str(n.get("title") or "")
+                    text = str(n.get("text") or "")
+                    blob = (title + "\n" + text).lower()
+                    if contains not in blob:
+                        return False
+                return True
 
             if scope == "effective":
                 items = _iter_effective_nodes(include_inactive=include_inactive, include_aliases=include_aliases)
@@ -1942,6 +2064,10 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 v = tdb.load_view(scope=scope)
                 items = list(v.iter_nodes(include_inactive=include_inactive, include_aliases=include_aliases))
                 items.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
+
+            items = [x for x in items if isinstance(x, dict) and _node_matches(x)]
+            if limit > 0:
+                items = items[:limit]
 
             if getattr(args, "json", False):
                 print(json.dumps(items, indent=2, sort_keys=True))
@@ -1969,6 +2095,11 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             found_scope = ""
             obj: dict[str, Any] | None = None
             edges: list[dict[str, Any]] = []
+
+            want_graph = bool(getattr(args, "graph", False))
+            if want_graph and not bool(getattr(args, "json", False)):
+                print("--graph requires --json", file=sys.stderr)
+                return 2
 
             if scope == "effective":
                 found_scope, obj = _find_node_effective(nid)
@@ -2012,6 +2143,20 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 return 2
 
             payload = {"scope": found_scope, "node": obj, "edges": edges}
+            if want_graph:
+                edge_types_raw = getattr(args, "edge_types", None) or []
+                etypes = {str(x).strip() for x in edge_types_raw if str(x).strip()}
+                graph_scope = scope if scope == "effective" else found_scope
+                payload["graph"] = build_subgraph_for_id(
+                    tdb=tdb,
+                    scope=graph_scope,
+                    root_id=str(obj.get("node_id") or nid).strip() or nid,
+                    depth=int(getattr(args, "depth", 1) or 1),
+                    direction=str(getattr(args, "direction", "both") or "both").strip(),
+                    edge_types=etypes,
+                    include_inactive=bool(getattr(args, "include_inactive", False)),
+                    include_aliases=bool(getattr(args, "include_aliases", False)),
+                )
             if getattr(args, "json", False):
                 print(json.dumps(payload, indent=2, sort_keys=True))
                 return 0

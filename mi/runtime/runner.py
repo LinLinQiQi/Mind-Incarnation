@@ -1622,6 +1622,56 @@ def run_autopilot(
 
         return checks_obj, ""
 
+    def _apply_set_testless_strategy_overlay_update(
+        *,
+        set_tls: Any,
+        decide_event_id: str,
+        fallback_batch_id: str,
+        default_rationale: str,
+        source: str,
+    ) -> None:
+        """Apply update_project_overlay.set_testless_strategy (canonicalized via Thought DB)."""
+
+        nonlocal overlay
+
+        if not isinstance(set_tls, dict):
+            return
+
+        strategy = str(set_tls.get("strategy") or "").strip()
+        rationale = str(set_tls.get("rationale") or "").strip()
+        if not strategy:
+            return
+
+        src_eid = str(decide_event_id or "").strip()
+        if not src_eid:
+            rec = evw.append(
+                {
+                    "kind": "testless_strategy_set",
+                    "batch_id": str(fallback_batch_id or "").strip(),
+                    "ts": now_rfc3339(),
+                    "thread_id": thread_id,
+                    "strategy": strategy,
+                    "rationale": rationale or str(default_rationale or "").strip(),
+                }
+            )
+            src_eid = str(rec.get("event_id") or "").strip()
+
+        tls_cid = _upsert_testless_strategy_claim(
+            strategy_text=strategy,
+            source_event_id=src_eid,
+            source=str(source or "").strip(),
+            rationale=rationale or str(default_rationale or "").strip(),
+        )
+
+        overlay.setdefault("testless_verification_strategy", {})
+        overlay["testless_verification_strategy"] = {
+            "chosen_once": True,
+            "claim_id": tls_cid,
+            "rationale": (f"{rationale} (canonical claim {tls_cid})" if tls_cid else rationale),
+        }
+        write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
+        _refresh_overlay_refs()
+
     def _mine_workflow_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
         if not bool(wf_auto_mine):
             return
@@ -2534,6 +2584,55 @@ def run_autopilot(
         segment_state["records"] = segment_records
         _persist_segment_state()
 
+    def _loop_break_get_checks_input(
+        *,
+        base_batch_id: str,
+        codex_last_message: str,
+        thought_db_context: dict[str, Any] | None,
+        repo_observation: dict[str, Any] | None,
+        existing_check_plan: dict[str, Any] | None,
+    ) -> tuple[str, str]:
+        """Return checks input text for loop_break run_checks_then_continue (best-effort).
+
+        Returns: (checks_input_text, block_reason). block_reason=="" means OK.
+        """
+
+        chk_text = ""
+        if isinstance(existing_check_plan, dict) and bool(existing_check_plan.get("should_run_checks", False)):
+            chk_text = str(existing_check_plan.get("codex_check_input") or "").strip()
+        if chk_text:
+            return chk_text, ""
+
+        checks_obj2, checks_ref2, _ = _call_plan_min_checks(
+            batch_id=f"{base_batch_id}.loop_break_checks",
+            tag=f"checks_loopbreak:{base_batch_id}",
+            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
+            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
+            notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
+        )
+        _append_check_plan_record(batch_id=f"{base_batch_id}.loop_break_checks", checks_obj=checks_obj2, mind_transcript_ref=checks_ref2)
+
+        checks_obj2, block_reason = _resolve_tls_for_checks(
+            checks_obj=checks_obj2 if isinstance(checks_obj2, dict) else _empty_check_plan(),
+            codex_last_message=codex_last_message,
+            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            user_input_batch_id=f"{base_batch_id}.loop_break",
+            batch_id_after_testless=f"{base_batch_id}.loop_break_after_testless",
+            batch_id_after_tls_claim=f"{base_batch_id}.loop_break_after_tls_claim",
+            tag_after_testless=f"checks_loopbreak_after_tls:{base_batch_id}",
+            tag_after_tls_claim=f"checks_loopbreak_after_tls_claim:{base_batch_id}",
+            notes_prefix="loop_break",
+            source="user_input:testless_strategy(loop_break)",
+            rationale="user provided testless verification strategy (loop_break)",
+        )
+        if block_reason:
+            return "", block_reason
+
+        if isinstance(checks_obj2, dict) and bool(checks_obj2.get("should_run_checks", False)):
+            chk_text = str(checks_obj2.get("codex_check_input") or "").strip()
+        return chk_text, ""
+
     def _queue_next_input(
         *,
         nxt: str,
@@ -2674,46 +2773,17 @@ def run_autopilot(
                     action = ""  # fall through to fallback
 
             if action == "run_checks_then_continue":
-                # Prefer using an existing check plan (if present). Otherwise, plan checks now.
-                chk_text = ""
-                if isinstance(check_plan, dict) and bool(check_plan.get("should_run_checks", False)):
-                    chk_text = str(check_plan.get("codex_check_input") or "").strip()
-
-                if not chk_text:
-                    checks_obj2, checks_ref2, _ = _call_plan_min_checks(
-                        batch_id=f"{batch_id}.loop_break_checks",
-                        tag=f"checks_loopbreak:{batch_id}",
-                        thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
-                        repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-                        notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
-                        notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
-                    )
-                    _append_check_plan_record(
-                        batch_id=f"{batch_id}.loop_break_checks",
-                        checks_obj=checks_obj2,
-                        mind_transcript_ref=checks_ref2,
-                    )
-
-                    checks_obj2, block_reason = _resolve_tls_for_checks(
-                        checks_obj=checks_obj2 if isinstance(checks_obj2, dict) else _empty_check_plan(),
-                        codex_last_message=codex_last_message,
-                        repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-                        user_input_batch_id=f"{batch_id}.loop_break",
-                        batch_id_after_testless=f"{batch_id}.loop_break_after_testless",
-                        batch_id_after_tls_claim=f"{batch_id}.loop_break_after_tls_claim",
-                        tag_after_testless=f"checks_loopbreak_after_tls:{batch_id}",
-                        tag_after_tls_claim=f"checks_loopbreak_after_tls_claim:{batch_id}",
-                        notes_prefix="loop_break",
-                        source="user_input:testless_strategy(loop_break)",
-                        rationale="user provided testless verification strategy (loop_break)",
-                    )
-                    if block_reason:
-                        status = "blocked"
-                        notes = block_reason
-                        return False
-
-                    if isinstance(checks_obj2, dict) and bool(checks_obj2.get("should_run_checks", False)):
-                        chk_text = str(checks_obj2.get("codex_check_input") or "").strip()
+                chk_text, block_reason = _loop_break_get_checks_input(
+                    base_batch_id=batch_id,
+                    codex_last_message=codex_last_message,
+                    thought_db_context=thought_db_context,
+                    repo_observation=repo_observation,
+                    existing_check_plan=check_plan,
+                )
+                if block_reason:
+                    status = "blocked"
+                    notes = block_reason
+                    return False
 
                 if chk_text:
                     candidate = chk_text
@@ -3503,38 +3573,13 @@ def run_autopilot(
         # Apply project overlay updates (e.g., testless verification strategy).
         overlay_update = decision_obj.get("update_project_overlay") or {}
         if isinstance(overlay_update, dict):
-            set_tls = overlay_update.get("set_testless_strategy")
-            if isinstance(set_tls, dict):
-                strategy = str(set_tls.get("strategy") or "").strip()
-                rationale = str(set_tls.get("rationale") or "").strip()
-                if strategy:
-                    src_eid = str((decide_rec or {}).get("event_id") or "").strip()
-                    if not src_eid:
-                        rec = evw.append(
-                            {
-                                "kind": "testless_strategy_set",
-                                "batch_id": f"b{batch_idx}.set_testless",
-                                "ts": now_rfc3339(),
-                                "thread_id": thread_id,
-                                "strategy": strategy,
-                                "rationale": rationale or "decide_next overlay update",
-                            }
-                        )
-                        src_eid = str(rec.get("event_id") or "").strip()
-                    tls_cid = _upsert_testless_strategy_claim(
-                        strategy_text=strategy,
-                        source_event_id=src_eid,
-                        source="decide_next:set_testless_strategy",
-                        rationale=rationale or "decide_next overlay update",
-                    )
-                    overlay.setdefault("testless_verification_strategy", {})
-                    overlay["testless_verification_strategy"] = {
-                        "chosen_once": True,
-                        "claim_id": tls_cid,
-                        "rationale": (f"{rationale} (canonical claim {tls_cid})" if tls_cid else rationale),
-                    }
-                    write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-                    _refresh_overlay_refs()
+            _apply_set_testless_strategy_overlay_update(
+                set_tls=overlay_update.get("set_testless_strategy"),
+                decide_event_id=str((decide_rec or {}).get("event_id") or ""),
+                fallback_batch_id=f"b{batch_idx}.set_testless",
+                default_rationale="decide_next overlay update",
+                source="decide_next:set_testless_strategy",
+            )
 
         # Write learned changes (append-only; reversible via future tooling).
         applied = _handle_learned_changes(
@@ -3842,38 +3887,13 @@ def run_autopilot(
             # Apply overlay + learned from the post-user decision.
             overlay_update = decision_obj.get("update_project_overlay") or {}
             if isinstance(overlay_update, dict):
-                set_tls = overlay_update.get("set_testless_strategy")
-                if isinstance(set_tls, dict):
-                    strategy = str(set_tls.get("strategy") or "").strip()
-                    rationale = str(set_tls.get("rationale") or "").strip()
-                    if strategy:
-                        src_eid = str((decide_rec2 or {}).get("event_id") or "").strip()
-                        if not src_eid:
-                            rec = evw.append(
-                                {
-                                    "kind": "testless_strategy_set",
-                                    "batch_id": f"b{batch_idx}.after_user.set_testless",
-                                    "ts": now_rfc3339(),
-                                    "thread_id": thread_id,
-                                    "strategy": strategy,
-                                    "rationale": rationale or "decide_next(after_user) overlay update",
-                                }
-                            )
-                            src_eid = str(rec.get("event_id") or "").strip()
-                        tls_cid = _upsert_testless_strategy_claim(
-                            strategy_text=strategy,
-                            source_event_id=src_eid,
-                            source="decide_next.after_user:set_testless_strategy",
-                            rationale=rationale or "decide_next(after_user) overlay update",
-                        )
-                        overlay.setdefault("testless_verification_strategy", {})
-                        overlay["testless_verification_strategy"] = {
-                            "chosen_once": True,
-                            "claim_id": tls_cid,
-                            "rationale": (f"{rationale} (canonical claim {tls_cid})" if tls_cid else rationale),
-                        }
-                        write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-                        _refresh_overlay_refs()
+                _apply_set_testless_strategy_overlay_update(
+                    set_tls=overlay_update.get("set_testless_strategy"),
+                    decide_event_id=str((decide_rec2 or {}).get("event_id") or ""),
+                    fallback_batch_id=f"b{batch_idx}.after_user.set_testless",
+                    default_rationale="decide_next(after_user) overlay update",
+                    source="decide_next.after_user:set_testless_strategy",
+                )
 
             applied2 = _handle_learned_changes(
                 learned_changes=decision_obj.get("learned_changes"),

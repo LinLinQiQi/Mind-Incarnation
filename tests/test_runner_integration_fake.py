@@ -18,6 +18,7 @@ from mi.providers.mind_errors import MindCallError
 from mi.runtime.runner import run_autopilot
 from mi.thoughtdb import ThoughtDbStore
 from mi.thoughtdb.operational_defaults import ensure_operational_defaults_claims_current
+from mi.thoughtdb.pins import TESTLESS_STRATEGY_TAG
 from mi.thoughtdb.values import VALUES_BASE_TAG, write_values_set_event
 
 
@@ -1059,6 +1060,188 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                         found_after_testless = True
             self.assertTrue(found_user_input)
             self.assertTrue(found_after_testless)
+
+    def test_decide_next_overlay_update_sets_testless_strategy_claim_and_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            fake_hands = _FakeHands([_mk_result(thread_id="t_tls_overlay", last_message="All done.", command="ls")])
+            strategy = "compileall + import smoke"
+
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": ["ran ls"], "actions": [], "results": ["ok"], "unknowns": [], "risk_signals": []},
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": {"strategy": strategy, "rationale": "test"}},
+                            "notes": "done",
+                        },
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="smoke task",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=1,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+            self.assertEqual(result.status, "done")
+
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            overlay = json.loads(pp.overlay_path.read_text(encoding="utf-8"))
+            tls = overlay.get("testless_verification_strategy") if isinstance(overlay, dict) else {}
+            self.assertTrue(bool(tls.get("chosen_once", False)))
+            claim_id = str(tls.get("claim_id") or "").strip()
+            self.assertTrue(claim_id.startswith("cl_"))
+
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            v = tdb.load_view(scope="project")
+            found_claim: dict | None = None
+            for c in v.iter_claims(include_inactive=True, include_aliases=True):
+                if str(c.get("claim_id") or "").strip() == claim_id:
+                    found_claim = c
+                    break
+            self.assertTrue(isinstance(found_claim, dict))
+            tags = found_claim.get("tags") if isinstance(found_claim.get("tags"), list) else []
+            tagset = {str(x).strip() for x in tags if str(x).strip()}
+            self.assertIn(TESTLESS_STRATEGY_TAG, tagset)
+            self.assertIn(strategy, str(found_claim.get("text") or ""))
+
+    def test_decide_next_after_user_overlay_update_sets_testless_strategy_claim_and_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            fake_hands = _FakeHands([_mk_result(thread_id="t_tls_after_user", last_message="Working.", command="ls")])
+            strategy = "compileall + import smoke"
+
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": ["ran ls"], "actions": [], "results": ["ok"], "unknowns": [], "risk_signals": []},
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "ask_user",
+                            "status": "not_done",
+                            "confidence": 0.7,
+                            "next_codex_input": "",
+                            "ask_user_question": "Need your input:",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "ask user",
+                        },
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": {"strategy": strategy, "rationale": "test"}},
+                            "notes": "done",
+                        },
+                    ],
+                    "auto_answer_to_codex.json": [
+                        {
+                            "should_answer": False,
+                            "confidence": 0.2,
+                            "codex_answer_input": "",
+                            "needs_user_input": True,
+                            "ask_user_question": "Need your input:",
+                            "unanswered_questions": [],
+                            "notes": "need user",
+                        },
+                        {
+                            "should_answer": False,
+                            "confidence": 0.2,
+                            "codex_answer_input": "",
+                            "needs_user_input": True,
+                            "ask_user_question": "Need your input:",
+                            "unanswered_questions": [],
+                            "notes": "need user",
+                        },
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
+                    ],
+                }
+            )
+
+            old_stdin = sys.stdin
+            old_stderr = sys.stderr
+            sys.stdin = io.StringIO("ok\n")
+            sys.stderr = io.StringIO()
+            try:
+                result = run_autopilot(
+                    task="smoke task",
+                    project_root=project_root,
+                    home_dir=home,
+                    max_batches=2,
+                    hands_exec=fake_hands.exec,
+                    hands_resume=fake_hands.resume,
+                    llm=fake_llm,
+                )
+            finally:
+                sys.stdin = old_stdin
+                sys.stderr = old_stderr
+
+            self.assertEqual(result.status, "done")
+            self.assertEqual(
+                fake_llm.calls,
+                [
+                    "extract_evidence.json",
+                    "decide_next.json",
+                    "auto_answer_to_codex.json",
+                    "auto_answer_to_codex.json",
+                    "decide_next.json",
+                    "checkpoint_decide.json",
+                ],
+            )
+
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            overlay = json.loads(pp.overlay_path.read_text(encoding="utf-8"))
+            tls = overlay.get("testless_verification_strategy") if isinstance(overlay, dict) else {}
+            self.assertTrue(bool(tls.get("chosen_once", False)))
+            claim_id = str(tls.get("claim_id") or "").strip()
+            self.assertTrue(claim_id.startswith("cl_"))
+
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            v = tdb.load_view(scope="project")
+            found_claim2: dict | None = None
+            for c in v.iter_claims(include_inactive=True, include_aliases=True):
+                if str(c.get("claim_id") or "").strip() == claim_id:
+                    found_claim2 = c
+                    break
+            self.assertTrue(isinstance(found_claim2, dict))
+            tags = found_claim2.get("tags") if isinstance(found_claim2.get("tags"), list) else []
+            tagset = {str(x).strip() for x in tags if str(x).strip()}
+            self.assertIn(TESTLESS_STRATEGY_TAG, tagset)
+            self.assertIn(strategy, str(found_claim2.get("text") or ""))
 
     def test_loop_break_run_checks_then_continue_can_prompt_for_testless_strategy(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:

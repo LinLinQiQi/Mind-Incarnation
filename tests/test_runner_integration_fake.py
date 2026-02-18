@@ -1061,6 +1061,106 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             self.assertTrue(found_user_input)
             self.assertTrue(found_after_testless)
 
+    def test_plan_min_checks_after_tls_claim_failure_does_not_prompt_user(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
+            tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
+            # Seed a canonical TLS claim so MI should not prompt the user.
+            tdb.append_claim_create(
+                claim_type="preference",
+                text="When this project has no tests, use this verification strategy: smoke",
+                scope="project",
+                visibility="project",
+                valid_from=None,
+                valid_to=None,
+                tags=[TESTLESS_STRATEGY_TAG],
+                source_event_ids=["ev_seed_tls_0001"],
+                confidence=1.0,
+                notes="seed tls",
+            )
+
+            fake_hands = _FakeHands([_mk_result(thread_id="t_tls_fail", last_message="Working.", command="ls")])
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": ["ran ls"], "actions": [], "results": ["ok"], "unknowns": ["need verify"], "risk_signals": []},
+                    ],
+                    "plan_min_checks.json": [
+                        {
+                            "should_run_checks": False,
+                            "needs_testless_strategy": True,
+                            "testless_strategy_question": "Choose a testless verification strategy:",
+                            "check_goals": [],
+                            "commands_hints": [],
+                            "codex_check_input": "",
+                            "notes": "need tls",
+                        },
+                        RuntimeError("boom"),
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        },
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
+                    ],
+                }
+            )
+
+            old_stdin = sys.stdin
+            old_stderr = sys.stderr
+            sys.stdin = io.StringIO("\n")
+            sys.stderr = io.StringIO()
+            try:
+                result = run_autopilot(
+                    task="smoke task",
+                    project_root=project_root,
+                    home_dir=home,
+                    max_batches=1,
+                    hands_exec=fake_hands.exec,
+                    hands_resume=fake_hands.resume,
+                    llm=fake_llm,
+                )
+            finally:
+                sys.stdin = old_stdin
+                sys.stderr = old_stderr
+
+            self.assertEqual(result.status, "done")
+
+            found_user_input = False
+            found_after_tls_claim = False
+            needs_flag = None
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if not isinstance(obj, dict):
+                        continue
+                    if obj.get("kind") == "user_input":
+                        found_user_input = True
+                    if obj.get("kind") == "check_plan" and obj.get("batch_id") == "b0.after_tls_claim":
+                        found_after_tls_claim = True
+                        checks = obj.get("checks") if isinstance(obj.get("checks"), dict) else {}
+                        needs_flag = checks.get("needs_testless_strategy")
+
+            self.assertFalse(found_user_input)
+            self.assertTrue(found_after_tls_claim)
+            self.assertEqual(needs_flag, False)
+
     def test_decide_next_overlay_update_sets_testless_strategy_claim_and_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             fake_hands = _FakeHands([_mk_result(thread_id="t_tls_overlay", last_message="All done.", command="ls")])

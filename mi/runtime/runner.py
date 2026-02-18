@@ -1419,6 +1419,15 @@ def run_autopilot(
         _persist_segment_state()
         return rec
 
+    def _get_check_input(checks_obj: dict[str, Any] | None) -> str:
+        """Return codex_check_input when should_run_checks=true (best-effort)."""
+
+        if not isinstance(checks_obj, dict):
+            return ""
+        if not bool(checks_obj.get("should_run_checks", False)):
+            return ""
+        return str(checks_obj.get("codex_check_input") or "").strip()
+
     def _call_plan_min_checks(
         *,
         batch_id: str,
@@ -1450,6 +1459,37 @@ def run_autopilot(
             checks_obj["notes"] = notes_on_skipped if state == "skipped" else notes_on_error
         return (checks_obj if isinstance(checks_obj, dict) else _empty_check_plan()), str(mind_ref or ""), str(state or "")
 
+    def _plan_checks_and_record(
+        *,
+        batch_id: str,
+        tag: str,
+        thought_db_context: dict[str, Any],
+        repo_observation: dict[str, Any],
+        should_plan: bool,
+        notes_on_skip: str,
+        notes_on_skipped: str,
+        notes_on_error: str,
+    ) -> tuple[dict[str, Any], str, str]:
+        """Plan minimal checks and always record a check_plan event (best-effort)."""
+
+        if not should_plan:
+            checks_obj = _empty_check_plan()
+            checks_obj["notes"] = str(notes_on_skip or "").strip()
+            checks_ref = ""
+            state = "skipped"
+        else:
+            checks_obj, checks_ref, state = _call_plan_min_checks(
+                batch_id=batch_id,
+                tag=tag,
+                thought_db_context=thought_db_context,
+                repo_observation=repo_observation,
+                notes_on_skipped=notes_on_skipped,
+                notes_on_error=notes_on_error,
+            )
+
+        _append_check_plan_record(batch_id=batch_id, checks_obj=checks_obj, mind_transcript_ref=checks_ref)
+        return checks_obj, checks_ref, state
+
     def _sync_tls_overlay_from_thoughtdb(*, as_of_ts: str) -> tuple[str, str, bool]:
         """Sync canonical testless strategy claim -> derived overlay pointer (best-effort)."""
 
@@ -1480,6 +1520,56 @@ def run_autopilot(
                 _refresh_overlay_refs()
 
         return tls_claim_strategy, tls_claim_id, tls_chosen_once
+
+    def _canonicalize_tls_and_update_overlay(
+        *,
+        strategy_text: str,
+        source_event_id: str,
+        fallback_batch_id: str,
+        overlay_rationale: str,
+        overlay_rationale_default: str,
+        claim_rationale: str,
+        default_rationale: str,
+        source: str,
+    ) -> str:
+        """Canonicalize a testless strategy into Thought DB and mirror a pointer into ProjectOverlay (best-effort)."""
+
+        nonlocal overlay
+
+        strategy = str(strategy_text or "").strip()
+        if not strategy:
+            return ""
+
+        src_eid = str(source_event_id or "").strip()
+        if not src_eid:
+            rec = evw.append(
+                {
+                    "kind": "testless_strategy_set",
+                    "batch_id": str(fallback_batch_id or "").strip(),
+                    "ts": now_rfc3339(),
+                    "thread_id": thread_id,
+                    "strategy": strategy,
+                    "rationale": str(claim_rationale or default_rationale or "").strip(),
+                }
+            )
+            src_eid = str(rec.get("event_id") or "").strip()
+
+        tls_cid = _upsert_testless_strategy_claim(
+            strategy_text=strategy,
+            source_event_id=src_eid,
+            source=str(source or "").strip(),
+            rationale=str(claim_rationale or default_rationale or "").strip(),
+        )
+
+        overlay.setdefault("testless_verification_strategy", {})
+        overlay["testless_verification_strategy"] = {
+            "chosen_once": True,
+            "claim_id": tls_cid,
+            "rationale": (f"{overlay_rationale} (canonical claim {tls_cid})" if tls_cid else str(overlay_rationale_default or "").strip()),
+        }
+        write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
+        _refresh_overlay_refs()
+        return tls_cid
 
     def _resolve_tls_for_checks(
         *,
@@ -1544,21 +1634,16 @@ def run_autopilot(
 
             # Canonicalize into Thought DB as a project preference claim.
             src_eid = str(ui.get("event_id") or "").strip()
-            tls_cid = _upsert_testless_strategy_claim(
+            _canonicalize_tls_and_update_overlay(
                 strategy_text=answer.strip(),
                 source_event_id=src_eid,
+                fallback_batch_id=str(user_input_batch_id),
+                overlay_rationale="user provided",
+                overlay_rationale_default="user provided testless verification strategy",
+                claim_rationale=rationale,
+                default_rationale=rationale,
                 source=source,
-                rationale=rationale,
             )
-
-            overlay.setdefault("testless_verification_strategy", {})
-            overlay["testless_verification_strategy"] = {
-                "chosen_once": True,
-                "claim_id": tls_cid,
-                "rationale": (f"user provided (canonical claim {tls_cid})" if tls_cid else "user provided testless verification strategy"),
-            }
-            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-            _refresh_overlay_refs()
 
             # Re-plan checks now that the project has a strategy to follow.
             tdb_ctx2 = build_decide_next_thoughtdb_context(
@@ -1570,15 +1655,16 @@ def run_autopilot(
                 mem=mem.service,
             )
             tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
-            checks_obj2, checks_ref2, _ = _call_plan_min_checks(
+            checks_obj2, checks_ref2, _ = _plan_checks_and_record(
                 batch_id=batch_id_after_testless,
                 tag=tag_after_testless,
                 thought_db_context=tdb_ctx2_obj,
                 repo_observation=repo_observation,
+                should_plan=True,
+                notes_on_skip="",
                 notes_on_skipped=f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_testless')})",
                 notes_on_error=f"mind_error: plan_min_checks({_notes_label('after_testless')}) failed; see EvidenceLog kind=mind_error",
             )
-            _append_check_plan_record(batch_id=batch_id_after_testless, checks_obj=checks_obj2, mind_transcript_ref=checks_ref2)
             checks_obj = checks_obj2
 
             tls_claim_strategy, _, tls_chosen_once = _sync_tls_overlay_from_thoughtdb(as_of_ts=now_rfc3339())
@@ -1642,35 +1728,16 @@ def run_autopilot(
         if not strategy:
             return
 
-        src_eid = str(decide_event_id or "").strip()
-        if not src_eid:
-            rec = evw.append(
-                {
-                    "kind": "testless_strategy_set",
-                    "batch_id": str(fallback_batch_id or "").strip(),
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "strategy": strategy,
-                    "rationale": rationale or str(default_rationale or "").strip(),
-                }
-            )
-            src_eid = str(rec.get("event_id") or "").strip()
-
-        tls_cid = _upsert_testless_strategy_claim(
+        _canonicalize_tls_and_update_overlay(
             strategy_text=strategy,
-            source_event_id=src_eid,
+            source_event_id=str(decide_event_id or "").strip(),
+            fallback_batch_id=str(fallback_batch_id or "").strip(),
+            overlay_rationale=rationale,
+            overlay_rationale_default=rationale,
+            claim_rationale=rationale or str(default_rationale or "").strip(),
+            default_rationale=str(default_rationale or "").strip(),
             source=str(source or "").strip(),
-            rationale=rationale or str(default_rationale or "").strip(),
         )
-
-        overlay.setdefault("testless_verification_strategy", {})
-        overlay["testless_verification_strategy"] = {
-            "chosen_once": True,
-            "claim_id": tls_cid,
-            "rationale": (f"{rationale} (canonical claim {tls_cid})" if tls_cid else rationale),
-        }
-        write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-        _refresh_overlay_refs()
 
     def _mine_workflow_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
         if not bool(wf_auto_mine):
@@ -2597,21 +2664,20 @@ def run_autopilot(
         Returns: (checks_input_text, block_reason). block_reason=="" means OK.
         """
 
-        chk_text = ""
-        if isinstance(existing_check_plan, dict) and bool(existing_check_plan.get("should_run_checks", False)):
-            chk_text = str(existing_check_plan.get("codex_check_input") or "").strip()
+        chk_text = _get_check_input(existing_check_plan if isinstance(existing_check_plan, dict) else None)
         if chk_text:
             return chk_text, ""
 
-        checks_obj2, checks_ref2, _ = _call_plan_min_checks(
+        checks_obj2, checks_ref2, _ = _plan_checks_and_record(
             batch_id=f"{base_batch_id}.loop_break_checks",
             tag=f"checks_loopbreak:{base_batch_id}",
             thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
             repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            should_plan=True,
+            notes_on_skip="",
             notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
             notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
         )
-        _append_check_plan_record(batch_id=f"{base_batch_id}.loop_break_checks", checks_obj=checks_obj2, mind_transcript_ref=checks_ref2)
 
         checks_obj2, block_reason = _resolve_tls_for_checks(
             checks_obj=checks_obj2 if isinstance(checks_obj2, dict) else _empty_check_plan(),
@@ -2629,9 +2695,7 @@ def run_autopilot(
         if block_reason:
             return "", block_reason
 
-        if isinstance(checks_obj2, dict) and bool(checks_obj2.get("should_run_checks", False)):
-            chk_text = str(checks_obj2.get("codex_check_input") or "").strip()
-        return chk_text, ""
+        return _get_check_input(checks_obj2 if isinstance(checks_obj2, dict) else None), ""
 
     def _queue_next_input(
         *,
@@ -3216,26 +3280,22 @@ def run_autopilot(
         repo_obs = evidence_item.get("repo_observation") or {}
 
         # Plan minimal checks (LLM) only when uncertainty/risk/change suggests it.
-        checks_obj = _empty_check_plan()
-        checks_mind_ref = ""
-        if _should_plan_checks(
+        should_plan_checks = _should_plan_checks(
             summary=summary,
             evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
             codex_last_message=codex_last,
             repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-        ):
-            checks_obj, checks_mind_ref, _ = _call_plan_min_checks(
-                batch_id=batch_id,
-                tag=f"checks_b{batch_idx}",
-                thought_db_context=tdb_ctx_batch_obj,
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                notes_on_skipped="skipped: mind_circuit_open (plan_min_checks)",
-                notes_on_error="mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error",
-            )
-        else:
-            checks_obj = _empty_check_plan()
-            checks_obj["notes"] = "skipped: no uncertainty/risk/question detected"
-        _append_check_plan_record(batch_id=f"b{batch_idx}", checks_obj=checks_obj, mind_transcript_ref=checks_mind_ref)
+        )
+        checks_obj, checks_mind_ref, _ = _plan_checks_and_record(
+            batch_id=batch_id,
+            tag=f"checks_b{batch_idx}",
+            thought_db_context=tdb_ctx_batch_obj,
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            should_plan=should_plan_checks,
+            notes_on_skip="skipped: no uncertainty/risk/question detected",
+            notes_on_skipped="skipped: mind_circuit_open (plan_min_checks)",
+            notes_on_error="mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error",
+        )
 
         # Auto-answer Hands when it is asking the user questions; only ask the user if MI cannot answer.
         auto_answer_obj = _empty_auto_answer()
@@ -3352,9 +3412,7 @@ def run_autopilot(
             if isinstance(aa_retry, dict) and bool(aa_retry.get("should_answer", False)):
                 aa_text2 = str(aa_retry.get("codex_answer_input") or "").strip()
             if aa_text2:
-                check_text2 = ""
-                if isinstance(checks_obj, dict) and bool(checks_obj.get("should_run_checks", False)):
-                    check_text2 = str(checks_obj.get("codex_check_input") or "").strip()
+                check_text2 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
                 combined2 = "\n\n".join([x for x in [aa_text2, check_text2] if x])
                 if combined2:
                     if not _queue_next_input(
@@ -3394,9 +3452,7 @@ def run_autopilot(
             _segment_add(ui2)
             _persist_segment_state()
 
-            check_text = ""
-            if isinstance(checks_obj, dict) and bool(checks_obj.get("should_run_checks", False)):
-                check_text = str(checks_obj.get("codex_check_input") or "").strip()
+            check_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
             combined_user = "\n\n".join([x for x in [answer.strip(), check_text] if x])
             if not _queue_next_input(
                 nxt=combined_user,
@@ -3431,9 +3487,7 @@ def run_autopilot(
         answer_text = ""
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("should_answer", False)):
             answer_text = str(auto_answer_obj.get("codex_answer_input") or "").strip()
-        check_text = ""
-        if isinstance(checks_obj, dict) and bool(checks_obj.get("should_run_checks", False)):
-            check_text = str(checks_obj.get("codex_check_input") or "").strip()
+        check_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
         combined = "\n\n".join([x for x in [answer_text, check_text] if x])
         if combined:
             if not _queue_next_input(
@@ -3665,9 +3719,7 @@ def run_autopilot(
                 aa_text = ""
                 if isinstance(aa_from_decide, dict) and bool(aa_from_decide.get("should_answer", False)):
                     aa_text = str(aa_from_decide.get("codex_answer_input") or "").strip()
-                chk_text = ""
-                if isinstance(checks_obj, dict) and bool(checks_obj.get("should_run_checks", False)):
-                    chk_text = str(checks_obj.get("codex_check_input") or "").strip()
+                chk_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
                 combined2 = "\n\n".join([x for x in [aa_text, chk_text] if x])
                 if combined2:
                     if not _queue_next_input(
@@ -3762,9 +3814,7 @@ def run_autopilot(
                 aa_text3 = ""
                 if isinstance(aa_retry2, dict) and bool(aa_retry2.get("should_answer", False)):
                     aa_text3 = str(aa_retry2.get("codex_answer_input") or "").strip()
-                chk_text3 = ""
-                if isinstance(checks_obj, dict) and bool(checks_obj.get("should_run_checks", False)):
-                    chk_text3 = str(checks_obj.get("codex_check_input") or "").strip()
+                chk_text3 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
                 combined3 = "\n\n".join([x for x in [aa_text3, chk_text3] if x])
                 if combined3:
                     if not _queue_next_input(
@@ -3850,9 +3900,7 @@ def run_autopilot(
             if decision_obj2 is None:
                 # Safe fallback: send the user answer to Hands (optionally with checks),
                 # rather than blocking on a missing post-user decision.
-                chk_text2 = ""
-                if isinstance(checks_obj, dict) and bool(checks_obj.get("should_run_checks", False)):
-                    chk_text2 = str(checks_obj.get("codex_check_input") or "").strip()
+                chk_text2 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
                 combined_user2 = "\n\n".join([x for x in [answer.strip(), chk_text2] if x])
                 if not _queue_next_input(
                     nxt=combined_user2,

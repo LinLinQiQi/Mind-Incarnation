@@ -159,10 +159,12 @@ mi run --cd /path/to/your/project --why --show "完成 X，并用最小检查验
 
 关于 `--cd`（项目根目录）的说明：
 
+- 大多数“项目级”命令都支持 `--cd <project_root>` 来指定要操作的项目。
+- 你也可以用 `mi -C <project_root> <cmd> ...` 为本次命令设置默认项目根目录（argparse：`-C/--cd` 需要写在子命令之前）。如果同时提供了 `-C/--cd` 和子命令自己的 `--cd`，则以子命令 `--cd` 为准。
 - `--cd` 可省略：
   - 在 git repo 内部：MI 默认会使用 git toplevel（仓库根目录），除非当前目录曾经被你作为一个独立的 MI project root 使用过（例如 monorepo 子项目）。
-  - 不在 git repo 内：MI 会优先使用 `@last`（如果已记录），否则使用当前目录。
-- 你也可以设置环境变量 `$MI_PROJECT_ROOT`，从任意目录运行 MI 命令而无需反复写 `--cd`。
+  - 不在 git repo 内：MI 会优先使用 `@pinned`（如果已记录），否则使用 `@last`（如果已记录），否则使用当前目录。
+- 你也可以设置环境变量 `$MI_CD`（推荐）或 `$MI_PROJECT_ROOT`（legacy），从任意目录运行 MI 命令而无需反复写 `--cd`/`-C`。
 - 也可以用选择 token：
   - `--cd @last` / `--cd @pinned` / `--cd @<alias>`
   - 通过 `mi project use`、`mi project pin/unpin`、`mi project alias add/rm/list` 管理

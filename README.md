@@ -159,10 +159,12 @@ mi run --cd /path/to/your/project --why --show "Do X, then verify with minimal c
 
 Notes on `--cd`:
 
+- Most project-scoped commands accept `--cd <project_root>` to choose which project to operate on.
+- You can also set a per-invocation default project root via `mi -C <project_root> <cmd> ...` (argparse: `-C/--cd` must appear before the subcommand). Subcommand `--cd` overrides `-C/--cd` if both are provided.
 - `--cd` is optional:
   - Inside a git repo: MI defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject).
-  - Outside git: MI uses `@last` (if recorded), otherwise uses the current directory.
-- You can set `$MI_PROJECT_ROOT` to run MI commands from anywhere without repeating `--cd`.
+  - Outside git: MI uses `@pinned` (if recorded), otherwise `@last` (if recorded), otherwise uses the current directory.
+- You can set `$MI_CD` (preferred) or `$MI_PROJECT_ROOT` (legacy) to run MI commands from anywhere without repeating `--cd`/`-C`.
 - You can also use selection tokens:
   - `--cd @last` / `--cd @pinned` / `--cd @<alias>`
   - Manage them via `mi project use`, `mi project pin/unpin`, `mi project alias add/rm/list`

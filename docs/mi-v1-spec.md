@@ -1110,10 +1110,12 @@ mi --home ~/.mind-incarnation run --cd <project_root> --show "<task>"
 
 Notes on `--cd` (project root):
 
+- Most project-scoped commands accept `--cd <project_root>` to choose which project to operate on.
+- You can also set a per-invocation default project root via `mi -C <project_root> <cmd> ...` (argparse: `-C/--cd` must appear **before** the subcommand). Subcommand `--cd` overrides `-C/--cd` if both are provided.
 - `--cd` is optional. If omitted, MI infers a project root from your current working directory:
   - for git repos: defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject)
-  - for non-git dirs: uses `@last` (if recorded), otherwise uses the current directory
-- You can also set `$MI_PROJECT_ROOT` to run MI commands from anywhere without repeating `--cd`.
+  - for non-git dirs: uses `@pinned` (if recorded), otherwise `@last` (if recorded), otherwise uses the current directory
+- You can also set `$MI_CD` (preferred) or `$MI_PROJECT_ROOT` (legacy) to run MI commands from anywhere without repeating `--cd`/`-C`.
 - `--cd` also supports selection tokens:
   - `--cd @last` (last used project)
   - `--cd @pinned` (pinned project)

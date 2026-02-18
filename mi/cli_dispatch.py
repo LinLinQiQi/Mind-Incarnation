@@ -109,6 +109,18 @@ def _unified_diff(a: str, b: str, *, fromfile: str, tofile: str, limit_lines: in
     return "".join(diff).rstrip() + "\n" if diff else ""
 
 
+def _effective_cd_arg(args: argparse.Namespace) -> str:
+    """Return the effective project selection argument for project-scoped commands.
+
+    Precedence: subcommand --cd (if any) overrides global -C/--cd.
+    """
+
+    cd = str(getattr(args, "cd", "") or "").strip()
+    if cd:
+        return cd
+    return str(getattr(args, "global_cd", "") or "").strip()
+
+
 def _resolve_project_root_from_args(home_dir: Path, cd_arg: str, *, cfg: dict[str, Any] | None = None) -> Path:
     """Resolve an effective project root for CLI handlers.
 
@@ -547,7 +559,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
 
     if args.cmd == "settings":
         if args.settings_cmd == "show":
-            cd = str(getattr(args, "cd", "") or "").strip()
+            cd = _effective_cd_arg(args)
             if cd:
                 project_root = _resolve_project_root_from_args(home_dir, cd, cfg=cfg)
                 pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
@@ -600,7 +612,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 return 0
 
             # Project-scoped overrides: write setting claims into the project store (append-only).
-            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+            project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
             pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
             tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
             evw = EvidenceWriter(path=pp.evidence_log_path, run_id=new_run_id("cli"))
@@ -699,7 +711,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
 
     if args.cmd == "run":
         hands_exec, hands_resume = make_hands_functions(cfg)
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
         llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=project_paths.transcripts_dir)
         hands_provider = ""
@@ -726,7 +738,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 0 if result.status == "done" else 1
 
     if args.cmd == "last":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
 
         bundle = load_last_batch_bundle(pp.evidence_log_path)
@@ -904,7 +916,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 0
 
     if args.cmd == "evidence":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         if args.evidence_cmd == "tail":
             if args.raw:
@@ -917,7 +929,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             return 0
 
     if args.cmd == "transcript":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         if args.tr_cmd == "show":
             if args.path:
@@ -1042,7 +1054,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 return 0
 
             if alias_cmd == "add":
-                project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+                project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
                 name = str(getattr(args, "name", "") or "").strip()
                 try:
                     entry = set_project_alias(home_dir, name=name, project_root=project_root)
@@ -1086,7 +1098,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             return 0
 
         if subcmd == "pin":
-            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+            project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
             entry = set_pinned_project_selection(home_dir, project_root)
             payload = {"ok": True, "pinned": entry}
             if bool(getattr(args, "json", False)):
@@ -1096,7 +1108,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             return 0
 
         if subcmd == "use":
-            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+            project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
             entry = record_last_project_selection(home_dir, project_root)
             payload = {"ok": True, "last": entry}
             if bool(getattr(args, "json", False)):
@@ -1106,7 +1118,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             return 0
 
         if subcmd == "show":
-            project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+            project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
             pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
             overlay = load_project_overlay(home_dir=home_dir, project_root=project_root)
 
@@ -1177,7 +1189,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
 
     if args.cmd == "gc":
         if args.gc_cmd == "transcripts":
-            project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
+            project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
             pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
             res = archive_project_transcripts(
                 transcripts_dir=pp.transcripts_dir,
@@ -1209,7 +1221,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 res = compact_thoughtdb_dir(thoughtdb_dir=gp.thoughtdb_global_dir, snapshot_path=snap, dry_run=dry_run)
                 res["scope"] = "global"
             else:
-                project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+                project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
                 pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
                 snap = pp.thoughtdb_dir / "view.snapshot.json"
                 res = compact_thoughtdb_dir(thoughtdb_dir=pp.thoughtdb_dir, snapshot_path=snap, dry_run=dry_run)
@@ -1253,7 +1265,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             return 0
 
     if args.cmd == "claim":
-        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         overlay2 = load_project_overlay(home_dir=home_dir, project_root=project_root)
         if not isinstance(overlay2, dict):
@@ -1801,7 +1813,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "node":
-        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
 
@@ -2079,7 +2091,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "edge":
-        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
 
@@ -2221,7 +2233,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "why":
-        project_root = _resolve_project_root_from_args(home_dir, str(getattr(args, "cd", "") or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
 
         # Providers/stores.
@@ -2442,7 +2454,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "workflow":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         overlay2 = load_project_overlay(home_dir=home_dir, project_root=project_root)
         if not isinstance(overlay2, dict):
@@ -2796,7 +2808,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         return 2
 
     if args.cmd == "host":
-        project_root = _resolve_project_root_from_args(home_dir, str(args.cd or ""), cfg=cfg)
+        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg)
         overlay2 = load_project_overlay(home_dir=home_dir, project_root=project_root)
         if not isinstance(overlay2, dict):
             overlay2 = {}

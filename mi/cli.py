@@ -18,6 +18,13 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("MI_HOME"),
         help="MI home directory (defaults to $MI_HOME or ~/.mind-incarnation).",
     )
+    parser.add_argument(
+        "-C",
+        "--cd",
+        dest="global_cd",
+        default="",
+        help="Default project root for project-scoped commands (supports @last/@pinned/@alias). Must appear before subcommand; subcommand --cd overrides.",
+    )
 
     sub = parser.add_subparsers(dest="cmd", required=True)
 

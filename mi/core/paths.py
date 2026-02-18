@@ -271,10 +271,12 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
 
     Resolution order:
     1) Explicit `--cd` (if provided; supports `@last/@pinned/@alias`)
-    2) $MI_PROJECT_ROOT (if set)
-    3) If inside git and the current dir is not a known project root, use git toplevel
-    4) If not inside git and a last-used project exists, use it
-    5) Fall back to cwd
+    2) $MI_CD (if set)
+    3) $MI_PROJECT_ROOT (if set)
+    4) If inside git and the current dir is not a known project root, use git toplevel
+    5) If not inside git and a pinned project exists, use it
+    6) If not inside git and a last-used project exists, use it
+    7) Fall back to cwd
 
     Returns: (project_root_path, reason)
     """
@@ -288,6 +290,12 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
                 return (cwd or Path.cwd()).resolve(), f"error:alias_missing:{token}"
             return p, f"arg:{token}"
         return Path(cd_s).expanduser().resolve(), "arg"
+
+    env_cd = str(os.environ.get("MI_CD") or "").strip()
+    if env_cd:
+        p = Path(env_cd).expanduser().resolve()
+        if p.exists():
+            return p, "env:MI_CD"
 
     env_root = str(os.environ.get("MI_PROJECT_ROOT") or "").strip()
     if env_root:
@@ -316,7 +324,10 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
                 return top, "known:git_toplevel"
             return top, "git_toplevel"
 
-    # Outside of git, allow falling back to the last-used project to reduce `--cd` burden.
+    # Outside of git, allow falling back to pinned/last selections to reduce `--cd` burden.
+    pinned = resolve_project_selection_token(home_dir, "@pinned")
+    if pinned is not None:
+        return pinned, "pinned"
     last = resolve_project_selection_token(home_dir, "@last")
     if last is not None:
         return last, "last"

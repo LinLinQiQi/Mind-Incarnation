@@ -141,6 +141,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print MI summaries plus pointers to raw transcript and evidence log.",
     )
+    p_run.add_argument(
+        "--why",
+        action="store_true",
+        help="Opt-in: run one WhyTrace at run end (writes kind=why_trace; may materialize depends_on edges).",
+    )
 
     p_claim = sub.add_parser("claim", help="Manage Thought DB claims (atomic reusable arguments).")
     claim_sub = p_claim.add_subparsers(dest="claim_cmd", required=True)

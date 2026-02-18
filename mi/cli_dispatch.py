@@ -70,6 +70,7 @@ from .thoughtdb.why import (
     find_evidence_event,
     query_from_evidence_event,
     collect_candidate_claims,
+    collect_candidate_claims_for_target,
     run_why_trace,
     default_as_of_ts,
 )
@@ -718,6 +719,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             hands_provider=hands_provider,
             continue_hands=continue_hands,
             reset_hands=bool(args.reset_hands),
+            why_trace_on_run_end=bool(getattr(args, "why", False)),
         )
         if args.show:
             print(result.render_text())
@@ -2255,12 +2257,14 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                     return 2
 
             query = query_from_evidence_event(target_obj)
-            candidates = collect_candidate_claims(
+            candidates = collect_candidate_claims_for_target(
                 tdb=tdb,
                 mem=mem,
                 project_paths=pp,
+                target_obj=target_obj,
                 query=query,
                 top_k=top_k,
+                as_of_ts=as_of_ts,
                 target_event_id=event_id,
             )
             if not candidates:
@@ -2274,6 +2278,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                         "as_of_ts": as_of_ts,
                         "query": query,
                         "candidate_claim_ids": [],
+                        "state": "ok",
                         "mind_transcript_ref": "",
                         "output": {"status": "insufficient", "confidence": 0.0, "chosen_claim_ids": [], "explanation": "", "notes": "no candidate claims"},
                         "written_edge_ids": [],
@@ -2312,6 +2317,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                     "as_of_ts": as_of_ts,
                     "query": query,
                     "candidate_claim_ids": [str(c.get("claim_id") or "") for c in candidates if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
+                    "state": "ok",
                     "mind_transcript_ref": outcome.mind_transcript_ref,
                     "output": outcome.obj,
                     "written_edge_ids": list(outcome.written_edge_ids),
@@ -2409,6 +2415,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                     "as_of_ts": as_of_ts,
                     "query": query,
                     "candidate_claim_ids": [str(c.get("claim_id") or "") for c in candidates if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
+                    "state": "ok",
                     "mind_transcript_ref": outcome.mind_transcript_ref,
                     "output": outcome.obj,
                     "written_edge_ids": list(outcome.written_edge_ids),

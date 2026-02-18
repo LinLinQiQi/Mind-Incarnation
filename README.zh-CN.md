@@ -151,6 +151,12 @@ mi settings set --scope project --cd /path/to/your/project --ask-when-uncertain 
 mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。"
 ```
 
+可选：在 run 结束时跑一次 WhyTrace（opt-in；会写入 `kind=why_trace`，并可能 materialize `depends_on` 边）：
+
+```bash
+mi run --cd /path/to/your/project --why --show "完成 X，并用最小检查验证。"
+```
+
 关于 `--cd`（项目根目录）的说明：
 
 - `--cd` 可省略：

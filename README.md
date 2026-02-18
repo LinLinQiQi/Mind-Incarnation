@@ -151,6 +151,12 @@ Run MI batch autopilot above Hands (stores transcripts + evidence under `~/.mind
 mi run --cd /path/to/your/project --show "Do X, then verify with minimal checks."
 ```
 
+Optional: run one WhyTrace at run end (opt-in; writes `kind=why_trace` and may materialize `depends_on` edges):
+
+```bash
+mi run --cd /path/to/your/project --why --show "Do X, then verify with minimal checks."
+```
+
 Notes on `--cd`:
 
 - `--cd` is optional:

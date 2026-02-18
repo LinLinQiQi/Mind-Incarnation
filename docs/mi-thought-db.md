@@ -1,7 +1,7 @@
 # MI Thought DB (Design Notes)
 
 Status: implemented (partial, V1)
-Last updated: 2026-02-17
+Last updated: 2026-02-18
 
 This document captures the "Thought DB" direction for Mind Incarnation (MI):
 
@@ -30,7 +30,8 @@ Implemented in V1 (incremental; safe foundation):
 - Persisted `view.snapshot.json` for faster cold loads; during `mi run`, MI keeps a hot in-memory view and updates it incrementally after Thought DB appends, then flushes the snapshot at run end (best-effort).
 - When the model outputs high-confidence edges, MI also appends `Edge` records (best-effort; scoped to project/global).
 - On-demand mining + basic management via CLI (`mi claim ...`)
-- On-demand root-cause tracing via `mi why ...`: selects a minimal support set of claim ids for an EvidenceLog `event_id` (and may materialize `depends_on(event_id -> claim_id)` edges).
+- Root-cause tracing via `mi why ...` (WhyTrace): selects a minimal support set of claim ids for an EvidenceLog `event_id` and may materialize `depends_on(event_id -> claim_id)` edges. Candidate selection prefers deterministic ids recorded in `decide_next.thought_db` when available (fallback: memory FTS).
+- Optional (opt-in): run one WhyTrace at `mi run` end via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true` (best-effort; one call per run).
 - Manual node/edge management via CLI (`mi node ...`, `mi edge ...`)
 - Memory index ingestion of **active canonical** claims (`kind=claim`) and nodes (`kind=node`) for optional text recall/search
 - Deterministic decide-next subgraph retrieval:

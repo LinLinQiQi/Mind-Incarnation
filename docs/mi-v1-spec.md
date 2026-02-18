@@ -497,7 +497,7 @@ Minimal shape:
 - `testless_strategy_set` (internal: recorded a testless strategy set/update so a canonical preference Claim can cite an EvidenceLog `event_id`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
-- `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object and a Mind transcript pointer)
+- `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object, a Mind transcript pointer, and a compact `thought_db` summary of claim/node ids used)
 - `workflow_progress` (best-effort workflow cursor update from `workflow_progress`; helps MI infer completed/next steps without forcing step-by-step reporting)
 - `checkpoint` (segment boundary judgement from `checkpoint_decide`; may trigger workflow/preference mining and segment reset)
 - `snapshot` (a compact segment snapshot written at checkpoint boundaries; used for cross-project recall; includes `snapshot_id`; traceable via `source_refs` which may include `event_ids`)
@@ -517,7 +517,7 @@ Minimal shape:
 - `node_create` (user-driven append-only Thought DB node creation via CLI; Decision/Action/Summary)
 - `node_retract` (user-driven append-only Thought DB node retraction via CLI)
 - `edge_create` (user-driven append-only Thought DB edge creation via CLI)
-- `why_trace` (root-cause tracing output: minimal support set of claim ids + explanation; may materialize `depends_on(event_id -> claim_id)` edges; best-effort, on-demand)
+- `why_trace` (root-cause tracing output: minimal support set of claim ids + explanation; may materialize `depends_on(event_id -> claim_id)` edges; best-effort; on-demand via `mi why ...` and optionally auto at `mi run` end via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true`)
 - `loop_guard` (repeat-pattern detection for stuck loops)
 - `loop_break` (Mind-guided loop breaking invoked after `loop_guard`; may rewrite the next instruction or force checks; best-effort)
 - `user_input` (answers captured when MI asks the user)
@@ -693,9 +693,42 @@ Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g
   "ask_user_question": "string",
   "next_codex_input": "string",
   "mind_transcript_ref": "path",
+  "thought_db": {
+    "as_of_ts": "RFC3339 timestamp",
+    "node_ids": ["string"],
+    "values_claim_ids": ["string"],
+    "pref_goal_claim_ids": ["string"],
+    "query_claim_ids": ["string"],
+    "edges_n": 0,
+    "notes": "string"
+  },
   "decision": {
     "...": "raw decide_next.json object"
   }
+}
+```
+
+`why_trace` record shape (root-cause tracing output; on-demand and optional run-end auto):
+
+```json
+{
+  "kind": "why_trace",
+  "batch_id": "string",
+  "ts": "RFC3339 timestamp",
+  "thread_id": "string",
+  "target": {
+    "target_type": "evidence_event|claim",
+    "...": "target metadata"
+  },
+  "as_of_ts": "RFC3339 timestamp",
+  "query": "string",
+  "candidate_claim_ids": ["string"],
+  "state": "ok|error|skipped",
+  "mind_transcript_ref": "path",
+  "output": {
+    "...": "raw why_trace.json object"
+  },
+  "written_edge_ids": ["string"]
 }
 ```
 
@@ -906,6 +939,11 @@ Knobs in `config.runtime.thought_db`:
 - `auto_materialize_nodes`: create `Decision` / `Action` / `Summary` nodes at checkpoint boundaries (deterministic; no extra model calls) (default true)
 - `min_confidence`: skip claims below this confidence (default 0.9)
 - `max_claims_per_checkpoint`: cap the number of claims written per checkpoint (default 6)
+- `why_trace` (optional run-end explainability; best-effort; one call per `mi run`):
+  - `auto_on_run_end`: when true, run one `why_trace` at `mi run` end (default false)
+  - `top_k`: number of candidate claims to consider (default 12)
+  - `min_write_confidence`: minimum confidence required to materialize `depends_on(event_id -> claim_id)` edges (default 0.7)
+  - `write_edges`: when true, allow materializing `depends_on` edges from the target event to chosen claims (default true)
 
 Behavior in `mi run` (V1):
 
@@ -915,7 +953,7 @@ Behavior in `mi run` (V1):
 
 Notes:
 
-- On-demand root-cause tracing is implemented via `mi why ...` (WhyTrace) and may materialize `depends_on(event_id -> claim_id)` edges (best-effort). More advanced subgraph traversal + refactors remain future work; see `docs/mi-thought-db.md`.
+- Root-cause tracing is implemented via `mi why ...` (WhyTrace) and may materialize `depends_on(event_id -> claim_id)` edges (best-effort). Optional: `mi run --why` (or `config.runtime.thought_db.why_trace.auto_on_run_end=true`) runs one WhyTrace at run end for auditability. More advanced subgraph traversal + refactors remain future work; see `docs/mi-thought-db.md`.
 - Claims are optionally indexed into the memory text index as `kind=claim` (active, canonical only).
 - Performance note: within a single `mi run`, MI keeps a hot in-memory Thought DB view and incrementally updates it after append-only writes (claims/nodes/edges). To keep cold-start fast across runs, MI also flushes `view.snapshot.json` at run end (best-effort).
 
@@ -1088,6 +1126,7 @@ Common run flags:
 - `--max-batches N`: cap the number of Hands batches
 - `--continue-hands`: try to resume the last stored Hands thread/session id for this project (best-effort)
 - `--reset-hands`: clear the stored Hands thread/session id for this project before running
+- `--why`: opt-in: run one WhyTrace at run end (writes `kind=why_trace`; may materialize `depends_on(event_id -> claim_id)` edges)
 
 Inspect latest batch bundle (MI input + last agent message + evidence pointers + mind transcript pointers):
 

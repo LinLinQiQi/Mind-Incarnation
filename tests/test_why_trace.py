@@ -9,7 +9,7 @@ from pathlib import Path
 from mi.core.paths import ProjectPaths
 from mi.memory.service import MemoryService
 from mi.thoughtdb import ThoughtDbStore
-from mi.thoughtdb.why import collect_candidate_claims, query_from_evidence_event, run_why_trace
+from mi.thoughtdb.why import collect_candidate_claims_for_target, query_from_evidence_event, run_why_trace
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,53 @@ class _FakeMind:
 
 
 class TestWhyTrace(unittest.TestCase):
+    def test_collect_candidate_claims_for_target_prefers_decide_next_hints(self) -> None:
+        with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:
+            home = Path(td_home)
+            project_root = Path(td_proj)
+
+            pp = ProjectPaths(home_dir=home, project_root=project_root)
+            tdb = ThoughtDbStore(home_dir=home, project_paths=pp)
+            mem = MemoryService(home)
+
+            cid = tdb.append_claim_create(
+                claim_type="goal",
+                text="Prefer deterministic explainability via WhyTrace hints",
+                scope="project",
+                visibility="project",
+                valid_from=None,
+                valid_to=None,
+                tags=["test"],
+                source_event_ids=["ev_hint_000001"],
+                confidence=1.0,
+                notes="",
+            )
+
+            target_obj = {
+                "kind": "decide_next",
+                "event_id": "ev_decide_000001",
+                "batch_id": "b0",
+                "thought_db": {
+                    "values_claim_ids": [],
+                    "pref_goal_claim_ids": [cid],
+                    "query_claim_ids": [],
+                    "node_ids": [],
+                },
+            }
+
+            # No query and no target_event_id -> should still find the hinted claim without relying on memory search.
+            candidates = collect_candidate_claims_for_target(
+                tdb=tdb,
+                mem=mem,
+                project_paths=pp,
+                target_obj=target_obj,
+                query="",
+                top_k=12,
+                as_of_ts="2026-01-01T00:00:00Z",
+                target_event_id="",
+            )
+            self.assertTrue(any(str(c.get("claim_id") or "") == cid for c in candidates if isinstance(c, dict)))
+
     def test_why_trace_writes_event_depends_on_edges(self) -> None:
         with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:
             home = Path(td_home)
@@ -67,7 +114,16 @@ class TestWhyTrace(unittest.TestCase):
             )
 
             query = query_from_evidence_event(ev)
-            candidates = collect_candidate_claims(tdb=tdb, mem=mem, project_paths=pp, query=query, top_k=12, target_event_id=event_id)
+            candidates = collect_candidate_claims_for_target(
+                tdb=tdb,
+                mem=mem,
+                project_paths=pp,
+                target_obj=ev,
+                query=query,
+                top_k=12,
+                as_of_ts="2026-01-01T00:00:00Z",
+                target_event_id=event_id,
+            )
             self.assertTrue(any(str(c.get("claim_id") or "") == cid for c in candidates if isinstance(c, dict)))
 
             fake_mind = _FakeMind(

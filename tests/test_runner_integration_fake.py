@@ -872,6 +872,81 @@ class TestRunnerIntegrationFake(unittest.TestCase):
             self.assertIn("check_plan", kinds)
             self.assertIn("decide_next", kinds)
 
+    def test_run_can_auto_why_trace_on_end_when_opted_in(self) -> None:
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
+            cfg = default_config()
+            cfg.setdefault("runtime", {})
+            cfg["runtime"].setdefault("thought_db", {})
+            cfg["runtime"]["thought_db"].setdefault("why_trace", {})
+            cfg["runtime"]["thought_db"]["why_trace"]["auto_on_run_end"] = True
+            write_json(config_path(Path(home)), cfg)
+
+            fake_hands = _FakeHands(
+                [
+                    _mk_result(thread_id="t_why", last_message="All done.", command="ls"),
+                ]
+            )
+            fake_llm = _FakeLlm(
+                {
+                    "extract_evidence.json": [
+                        {"facts": ["ran ls"], "actions": [], "results": ["ok"], "unknowns": [], "risk_signals": []},
+                    ],
+                    "decide_next.json": [
+                        {
+                            "next_action": "stop",
+                            "status": "done",
+                            "confidence": 0.9,
+                            "next_codex_input": "",
+                            "ask_user_question": "",
+                            "learned_changes": [],
+                            "update_project_overlay": {"set_testless_strategy": None},
+                            "notes": "done",
+                        },
+                    ],
+                    "checkpoint_decide.json": [
+                        {
+                            "should_checkpoint": False,
+                            "checkpoint_kind": "none",
+                            "should_mine_workflow": False,
+                            "should_mine_preferences": False,
+                            "confidence": 0.9,
+                            "notes": "no",
+                        }
+                    ],
+                    "why_trace.json": [
+                        {
+                            "status": "insufficient",
+                            "confidence": 0.2,
+                            "chosen_claim_ids": [],
+                            "explanation": "Not enough context.",
+                            "notes": "auto run_end",
+                        }
+                    ],
+                }
+            )
+
+            result = run_autopilot(
+                task="smoke task",
+                project_root=project_root,
+                home_dir=home,
+                max_batches=2,
+                hands_exec=fake_hands.exec,
+                hands_resume=fake_hands.resume,
+                llm=fake_llm,
+            )
+
+            self.assertEqual(result.status, "done")
+            self.assertEqual(fake_llm.calls, ["extract_evidence.json", "decide_next.json", "checkpoint_decide.json", "why_trace.json"])
+
+            found = False
+            with open(result.evidence_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict) and obj.get("kind") == "why_trace":
+                        found = True
+                        break
+            self.assertTrue(found)
+
     def test_plan_min_checks_prompts_for_testless_strategy_and_replans(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             fake_hands = _FakeHands(

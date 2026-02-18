@@ -122,6 +122,13 @@ def default_config() -> dict[str, Any]:
                 "min_confidence": 0.9,
                 "max_claims_per_checkpoint": 6,
                 "auto_materialize_nodes": True,
+                "why_trace": {
+                    # Optional: run a single WhyTrace at `mi run` end for auditability.
+                    "auto_on_run_end": False,
+                    "top_k": 12,
+                    "min_write_confidence": 0.7,
+                    "write_edges": True,
+                },
             },
             "violation_response": {
                 "auto_learn": True,

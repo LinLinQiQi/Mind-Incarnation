@@ -9,6 +9,7 @@ from ..memory.service import MemoryService
 from ..core.paths import ProjectPaths
 from ..runtime.prompts import why_trace_prompt
 from ..core.storage import iter_jsonl, now_rfc3339
+from .retrieval import expand_one_hop
 from .store import ThoughtDbStore
 
 
@@ -31,7 +32,9 @@ def find_evidence_event(*, evidence_log_path: Path, event_id: str) -> dict[str, 
 
 def query_from_evidence_event(obj: dict[str, Any]) -> str:
     kind = str(obj.get("kind") or "").strip()
-    if kind == "evidence":
+    # EvidenceItem records in V1 may omit `kind`. Treat the presence of the standard
+    # evidence fields as an evidence-like record for query extraction.
+    if kind == "evidence" or (not kind and ("facts" in obj or "results" in obj or "unknowns" in obj)):
         facts = obj.get("facts") if isinstance(obj.get("facts"), list) else []
         results = obj.get("results") if isinstance(obj.get("results"), list) else []
         unknowns = obj.get("unknowns") if isinstance(obj.get("unknowns"), list) else []
@@ -155,6 +158,230 @@ def collect_candidate_claims(
 
         if len(out) >= k:
             break
+
+    return out
+
+
+def _extract_thought_db_hints(obj: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Extract deterministic hint ids recorded in EvidenceLog by MI (best-effort).
+
+    This is designed to work with `kind=decide_next` records that contain a compact
+    `thought_db` summary (claim/node ids) so WhyTrace can be less dependent on FTS recall.
+    """
+
+    if not isinstance(obj, dict):
+        return [], []
+
+    tdb = obj.get("thought_db") if isinstance(obj.get("thought_db"), dict) else {}
+    if not isinstance(tdb, dict):
+        return [], []
+
+    claim_ids: list[str] = []
+    node_ids: list[str] = []
+
+    def _add_many(dst: list[str], items: object) -> None:
+        if not isinstance(items, list):
+            return
+        for x in items:
+            if not isinstance(x, str):
+                continue
+            xs = x.strip()
+            if xs:
+                dst.append(xs)
+
+    # Keep this order stable: values/defaults -> preferences/goals -> query-seeded.
+    _add_many(claim_ids, tdb.get("values_claim_ids"))
+    _add_many(claim_ids, tdb.get("pref_goal_claim_ids"))
+    _add_many(claim_ids, tdb.get("query_claim_ids"))
+    _add_many(node_ids, tdb.get("node_ids"))
+
+    # Dedupe while preserving order.
+    out_claims: list[str] = []
+    seen_c: set[str] = set()
+    for cid in claim_ids:
+        if cid in seen_c:
+            continue
+        seen_c.add(cid)
+        out_claims.append(cid)
+
+    out_nodes: list[str] = []
+    seen_n: set[str] = set()
+    for nid in node_ids:
+        if nid in seen_n:
+            continue
+        seen_n.add(nid)
+        out_nodes.append(nid)
+
+    return out_claims, out_nodes
+
+
+def collect_candidate_claims_for_target(
+    *,
+    tdb: ThoughtDbStore,
+    mem: MemoryService,
+    project_paths: ProjectPaths,
+    target_obj: dict[str, Any],
+    query: str,
+    top_k: int,
+    as_of_ts: str,
+    target_event_id: str = "",
+) -> list[dict[str, Any]]:
+    """Collect candidate claims for WhyTrace, preferring deterministic EvidenceLog hints when present."""
+
+    hint_claim_ids, hint_node_ids = _extract_thought_db_hints(target_obj if isinstance(target_obj, dict) else {})
+    if not hint_claim_ids and not hint_node_ids:
+        # Preserve legacy behavior when no hints exist.
+        return collect_candidate_claims(
+            tdb=tdb,
+            mem=mem,
+            project_paths=project_paths,
+            query=query,
+            top_k=top_k,
+            target_event_id=target_event_id,
+        )
+
+    try:
+        k = int(top_k)
+    except Exception:
+        k = 12
+    k = max(1, min(40, k))
+
+    t = str(as_of_ts or "").strip()
+    ev_id = str(target_event_id or "").strip()
+
+    # Load views once.
+    v_proj = tdb.load_view(scope="project")
+    v_glob = tdb.load_view(scope="global")
+
+    def _claim_active_and_valid(view: Any, cid: str) -> bool:
+        ccid = str(cid or "").strip()
+        if not ccid:
+            return False
+        if view.claim_status(ccid) != "active":
+            return False
+        c = view.claims_by_id.get(ccid)
+        if not isinstance(c, dict):
+            return False
+        if t:
+            vf = c.get("valid_from")
+            vt = c.get("valid_to")
+            if isinstance(vf, str) and vf.strip() and vf.strip() > t:
+                return False
+            if isinstance(vt, str) and vt.strip() and t >= vt.strip():
+                return False
+        return True
+
+    def _load_claim_by_id(cid: str) -> tuple[dict[str, Any] | None, Any | None, str]:
+        """Resolve to a canonical claim record + view."""
+
+        raw = str(cid or "").strip()
+        if not raw:
+            return None, None, ""
+
+        if raw in v_proj.claims_by_id:
+            canon = v_proj.resolve_id(raw)
+            return v_proj.claims_by_id.get(canon), v_proj, canon
+        if raw in v_glob.claims_by_id:
+            canon = v_glob.resolve_id(raw)
+            return v_glob.claims_by_id.get(canon), v_glob, canon
+
+        canon_p = v_proj.resolve_id(raw)
+        if canon_p and canon_p in v_proj.claims_by_id:
+            return v_proj.claims_by_id.get(canon_p), v_proj, canon_p
+        canon_g = v_glob.resolve_id(raw)
+        if canon_g and canon_g in v_glob.claims_by_id:
+            return v_glob.claims_by_id.get(canon_g), v_glob, canon_g
+
+        return None, None, ""
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add_claim_id(cid: str) -> None:
+        nonlocal out
+        if len(out) >= k:
+            return
+        c, view, canon = _load_claim_by_id(cid)
+        if not isinstance(c, dict) or view is None or not canon:
+            return
+        if canon in seen:
+            return
+        if not _claim_active_and_valid(view, canon):
+            return
+        seen.add(canon)
+        out.append(_compact_claim(c, status=view.claim_status(canon), canonical_id=view.resolve_id(canon)))
+
+    # 1) Prefer deterministic hints from the decide_next record.
+    for cid in hint_claim_ids:
+        _add_claim_id(cid)
+        if len(out) >= k:
+            return out
+
+    # 2) Include any claims that directly cite the target event id (best-effort).
+    if ev_id:
+        te = ev_id
+        for view in (v_proj, v_glob):
+            for c in view.claims_by_id.values():
+                if len(out) >= k:
+                    return out
+                if not isinstance(c, dict):
+                    continue
+                refs = c.get("source_refs") if isinstance(c.get("source_refs"), list) else []
+                if not any(isinstance(r, dict) and str(r.get("event_id") or "").strip() == te for r in refs):
+                    continue
+                cid = str(c.get("claim_id") or "").strip()
+                if not cid:
+                    continue
+                canon = view.resolve_id(cid)
+                if canon in seen:
+                    continue
+                if not _claim_active_and_valid(view, canon):
+                    continue
+                seen.add(canon)
+                cc = view.claims_by_id.get(canon)
+                if not isinstance(cc, dict):
+                    continue
+                out.append(_compact_claim(cc, status=view.claim_status(canon), canonical_id=view.resolve_id(canon)))
+
+    # 3) One-hop expansion from (hint claims + hint nodes + target event id).
+    rem = max(0, k - len(out))
+    if rem > 0:
+        seed_ids: set[str] = set(hint_claim_ids) | set(hint_node_ids)
+        if ev_id:
+            seed_ids.add(ev_id)
+        exp = expand_one_hop(
+            v_proj=v_proj,
+            v_glob=v_glob,
+            seed_ids=seed_ids,
+            as_of_ts=t,
+            max_new_claims=rem,
+            max_new_nodes=0,
+            edge_types={"depends_on", "supports", "contradicts", "derived_from", "mentions", "supersedes", "same_as"},
+        )
+        for cid in exp.claim_ids:
+            _add_claim_id(cid)
+            if len(out) >= k:
+                return out
+
+    # 4) Backfill from memory search (FTS) if needed (same policy as legacy collector).
+    q = str(query or "").strip() or ev_id
+    if len(out) < k and q:
+        mem.ingest_structured()
+        hits = mem.search(query=q, top_k=min(80, k * 5), kinds={"claim"}, include_global=True, exclude_project_id="")
+        for it in hits:
+            if len(out) >= k:
+                break
+            if it.kind != "claim":
+                continue
+            if it.scope == "project" and str(it.project_id or "").strip() != project_paths.project_id:
+                continue
+            parts = str(it.item_id or "").split(":")
+            if len(parts) < 4:
+                continue
+            cid = parts[-1].strip()
+            if not cid:
+                continue
+            _add_claim_id(cid)
 
     return out
 

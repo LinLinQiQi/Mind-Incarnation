@@ -19,7 +19,7 @@ def _schema_path(name: str) -> Path:
 
 
 def _extract_text_from_openai_like(payload: dict[str, Any]) -> str:
-    # OpenAI-style chat.completions
+    # OpenAI-style chat.completions only.
     try:
         choices = payload.get("choices")
         if isinstance(choices, list) and choices:
@@ -28,22 +28,6 @@ def _extract_text_from_openai_like(payload: dict[str, Any]) -> str:
                 msg = c0.get("message")
                 if isinstance(msg, dict) and isinstance(msg.get("content"), str):
                     return msg["content"]
-                if isinstance(c0.get("text"), str):
-                    return c0["text"]
-    except Exception:
-        pass
-
-    # OpenAI "responses" style (best-effort)
-    try:
-        out = payload.get("output")
-        if isinstance(out, list) and out:
-            o0 = out[0]
-            if isinstance(o0, dict):
-                content = o0.get("content")
-                if isinstance(content, list) and content:
-                    c0 = content[0]
-                    if isinstance(c0, dict) and isinstance(c0.get("text"), str):
-                        return c0["text"]
     except Exception:
         pass
 
@@ -213,11 +197,15 @@ class OpenAICompatibleMindProvider:
                 text = _extract_text_from_openai_like(payload).strip()
                 last_text = text
 
-                try:
-                    obj = _extract_json(text)
-                except Exception as e:
-                    last_errors = [f"json_parse: {e}"]
+                if not text:
+                    last_errors = ["unsupported_response_shape: expected choices[0].message.content"]
                     obj = None
+                else:
+                    try:
+                        obj = _extract_json(text)
+                    except Exception as e:
+                        last_errors = [f"json_parse: {e}"]
+                        obj = None
 
                 if isinstance(obj, dict):
                     errs = validate_json_schema(obj, schema_obj)

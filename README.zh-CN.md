@@ -98,6 +98,8 @@ mi config rollback
 }
 ```
 
+说明：MI 只支持 Chat Completions 风格的返回：`choices[0].message.content` 必须包含 JSON 输出。旧的 `choices[0].text` 以及 Responses API 的 payload 形状不支持。
+
 可选：用其他 agent CLI 作为 Hands（wrapper）
 
 MI 可以通过 `hands.provider=cli` 包装大多数 agent CLI。你需要提供 *你本机安装的工具* 的启动命令与参数（不同版本的 flags 可能不同）。

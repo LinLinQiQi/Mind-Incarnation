@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from mi.providers.mind_anthropic import AnthropicMindProvider
+from mi.providers.mind_errors import MindCallError
 from mi.providers.mind_openai_compat import OpenAICompatibleMindProvider
 
 
@@ -22,6 +23,48 @@ _DECIDE_NEXT_OK = {
 
 
 class TestMindProvidersFakeHttp(unittest.TestCase):
+    def test_openai_compatible_provider_rejects_choices_text_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td)
+
+            def fake_http(_url: str, _body: dict, _headers: dict, _timeout_s: int) -> dict:
+                # Legacy completions-like shape; should be rejected.
+                return {"choices": [{"text": json.dumps(_DECIDE_NEXT_OK)}]}
+
+            p = OpenAICompatibleMindProvider(
+                base_url="https://example.com/v1",
+                model="fake-model",
+                api_key="fake-key",
+                transcripts_dir=out_dir,
+                timeout_s=1,
+                max_retries=0,
+                http_post_json=fake_http,
+            )
+            with self.assertRaises(MindCallError) as ctx:
+                p.call(schema_filename="decide_next.json", prompt="x", tag="t")
+            self.assertIn("unsupported_response_shape", str(ctx.exception))
+
+    def test_openai_compatible_provider_rejects_responses_style_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td)
+
+            def fake_http(_url: str, _body: dict, _headers: dict, _timeout_s: int) -> dict:
+                # OpenAI Responses-style shape; should be rejected.
+                return {"output": [{"content": [{"text": json.dumps(_DECIDE_NEXT_OK)}]}]}
+
+            p = OpenAICompatibleMindProvider(
+                base_url="https://example.com/v1",
+                model="fake-model",
+                api_key="fake-key",
+                transcripts_dir=out_dir,
+                timeout_s=1,
+                max_retries=0,
+                http_post_json=fake_http,
+            )
+            with self.assertRaises(MindCallError) as ctx:
+                p.call(schema_filename="decide_next.json", prompt="x", tag="t")
+            self.assertIn("unsupported_response_shape", str(ctx.exception))
+
     def test_openai_compatible_provider_validates_and_writes_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out_dir = Path(td)
@@ -67,6 +110,29 @@ class TestMindProvidersFakeHttp(unittest.TestCase):
             r = p.call(schema_filename="decide_next.json", prompt="x", tag="t")
             self.assertEqual(r.obj, _DECIDE_NEXT_OK)
             self.assertEqual(calls["n"], 2)
+
+    def test_anthropic_provider_rejects_legacy_completion_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td)
+
+            def fake_http(_url: str, _body: dict, _headers: dict, _timeout_s: int) -> dict:
+                # Legacy completions-style payload; should be rejected.
+                return {"completion": json.dumps(_DECIDE_NEXT_OK)}
+
+            p = AnthropicMindProvider(
+                base_url="https://example.com",
+                model="fake-model",
+                api_key="fake-key",
+                transcripts_dir=out_dir,
+                timeout_s=1,
+                max_retries=0,
+                anthropic_version="2023-06-01",
+                max_tokens=256,
+                http_post_json=fake_http,
+            )
+            with self.assertRaises(MindCallError) as ctx:
+                p.call(schema_filename="decide_next.json", prompt="x", tag="t")
+            self.assertIn("unsupported_response_shape", str(ctx.exception))
 
     def test_anthropic_provider_validates_and_writes_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as td:

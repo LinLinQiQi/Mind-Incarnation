@@ -19,7 +19,7 @@ def _schema_path(name: str) -> Path:
 
 
 def _extract_text_from_anthropic(payload: dict[str, Any]) -> str:
-    # Messages API style
+    # Messages API style only.
     try:
         content = payload.get("content")
         if isinstance(content, list) and content:
@@ -31,13 +31,6 @@ def _extract_text_from_anthropic(payload: dict[str, Any]) -> str:
                     parts.append(blk["text"])
             if parts:
                 return "\n".join(parts)
-    except Exception:
-        pass
-
-    # Legacy completions API style (best-effort)
-    try:
-        if isinstance(payload.get("completion"), str):
-            return payload["completion"]
     except Exception:
         pass
 
@@ -226,11 +219,15 @@ class AnthropicMindProvider:
                 text = _extract_text_from_anthropic(payload).strip()
                 last_text = text
 
-                try:
-                    obj = _extract_json(text)
-                except Exception as e:
-                    last_errors = [f"json_parse: {e}"]
+                if not text:
+                    last_errors = ["unsupported_response_shape: expected content[].text (Messages API)"]
                     obj = None
+                else:
+                    try:
+                        obj = _extract_json(text)
+                    except Exception as e:
+                        last_errors = [f"json_parse: {e}"]
+                        obj = None
 
                 if isinstance(obj, dict):
                     errs = validate_json_schema(obj, schema_obj)

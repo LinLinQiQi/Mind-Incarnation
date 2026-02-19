@@ -98,6 +98,8 @@ Edit `~/.mind-incarnation/config.json`:
 }
 ```
 
+Note: MI expects Chat Completions-style responses: `choices[0].message.content` must contain the JSON output. Legacy `choices[0].text` and Responses API payload shapes are not supported.
+
 Optional: Use another agent CLI as Hands (wrapper)
 
 MI can wrap most agent CLIs via `hands.provider=cli`. You provide the command + args for *your installed tool* (flags vary by version).

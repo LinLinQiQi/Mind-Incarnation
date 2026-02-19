@@ -173,10 +173,12 @@ Mind providers:
 - `mind.provider=openai_compatible`
   - Calls an OpenAI-compatible Chat Completions endpoint.
   - Uses local JSON Schema validation + repair retries (best-effort across vendors).
+  - Response shape requirement: MI expects `choices[0].message.content` (string) to contain the JSON output. Legacy `choices[0].text` and "Responses API" payload shapes are not supported.
   - Works with many vendors (e.g., DeepSeek/Qwen/GLM) as long as they expose an OpenAI-compatible endpoint; configure `base_url` + `model` + API key env in `config.json`.
 - `mind.provider=anthropic`
   - Calls Anthropic Messages API.
   - Uses local JSON Schema validation + repair retries.
+  - Response shape requirement: MI expects `content[]` text blocks (Messages API). Legacy `completion` payloads are not supported.
 
 Context isolation (important): Mind and Hands do **not** share a session/thread context by default. Mind calls run as separate requests/runs and do not reuse Hands thread state.
 

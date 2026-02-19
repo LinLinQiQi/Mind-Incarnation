@@ -136,6 +136,16 @@ def default_config() -> dict[str, Any]:
                 "ask_user_risk_severities": ["high", "critical"],
                 "ask_user_risk_categories": [],
                 "ask_user_respect_should_ask_user": True,
+                # Optional: consolidate multiple per-batch learn_suggested items into a small canonical set.
+                # This is a run-end Mind call (at most one per `mi run`), gated conservatively.
+                "learn_update": {
+                    "enabled": True,
+                    "min_new_suggestions_per_run": 2,
+                    "min_active_learned_claims": 3,
+                    "min_confidence": 0.9,
+                    "max_claims": 6,
+                    "max_retracts": 6,
+                },
             },
         },
     }

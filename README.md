@@ -298,6 +298,8 @@ mi claim retract <claim_id> --cd /path/to/your/project --scope project
 
 Note: `learn_suggested` suggestions are always recorded in EvidenceLog (`kind=learn_suggested`). If `violation_response.auto_learn=true` (default), MI also materializes them as Thought DB preference Claims (`applied_claim_ids`). If false, use `mi claim apply-suggested ...` to apply them later.
 
+Optional: if `config.runtime.violation_response.learn_update.enabled=true` (default) and `violation_response.auto_learn=true`, MI may run a single run-end consolidation step (`kind=learn_update`) to reduce noisy duplicates. This may write a small canonical patch (claims/edges) and append-only retractions of prior learned claims (best-effort).
+
 Experimental: preference mining
 
 - If `config.runtime.preference_mining.auto_mine=true` (default), MI may call `mine_preferences` at LLM-judged checkpoints during `mi run` (including at run end) and may emit `kind=learn_suggested` after repeated occurrences (see `docs/mi-v1-spec.md`).

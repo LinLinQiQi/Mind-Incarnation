@@ -298,6 +298,8 @@ mi claim retract <claim_id> --cd /path/to/your/project --scope project
 
 说明：`learn_suggested` 建议都会记录到 EvidenceLog（`kind=learn_suggested`）。如果 `violation_response.auto_learn=true`（默认），MI 也会把它们落盘为 Thought DB 的 preference Claim（`applied_claim_ids`）。如果为 false，可用 `mi claim apply-suggested ...` 之后再应用。
 
+可选：当 `config.runtime.violation_response.learn_update.enabled=true`（默认）且 `violation_response.auto_learn=true` 时，MI 可能在 `mi run` 结束时执行一次 consolidation（`kind=learn_update`）来减少重复噪声。该步骤会尽量写入少量规范化 patch（claims/edges）并对旧的 learned claim 做 append-only retract（best-effort）。
+
 实验性：偏好预测（preference mining）
 
 - 如果 `config.runtime.preference_mining.auto_mine=true`（默认），MI 会在 `mi run` 过程中根据大模型判断的 checkpoint（包含 run 结束时）调用 `mine_preferences`，并在重复出现时输出 `kind=learn_suggested`（详见 `docs/mi-v1-spec.md`）。

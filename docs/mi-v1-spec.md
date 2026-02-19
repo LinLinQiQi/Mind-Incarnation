@@ -297,9 +297,9 @@ MI uses the following internal prompts (all should return strict JSON):
    - Input: `values_text` + `compiled_values` + existing global values claims + allowed `event_id` list + allowed retract claim ids
    - Output: a small patch of global preference/goal Claims (plus optional supersedes/same_as edges) and a list of old claim_ids to retract. Used by `mi init` / `mi values set` (explicit user action) to keep values canonical as Thought DB claims (tagged `values:base`), citing a `values_set` event_id for provenance.
 
-Planned (not required for V1 loop to function; can be added incrementally):
-
-- `learn_update` (beyond the simple claim-based preference tightening)
+16) `learn_update` (implemented; optional; run-end)
+   - Input: runtime config + `ProjectOverlay`, recent `learn_suggested` events (this run), and a compact list of existing learned claims + an allowed `event_id` list + an allowed retract list.
+   - Output: a small Thought DB patch (claims+edges) plus optional retractions. MI applies it best-effort as append-only updates (citing **EvidenceLog `event_id` only**) and records `kind=learn_update`.
 
 ## Data Models (Minimal Schemas)
 
@@ -380,7 +380,15 @@ Minimal shape:
     "ask_user_on_high_risk": true,
     "ask_user_risk_severities": ["high", "critical"],
     "ask_user_risk_categories": [],
-    "ask_user_respect_should_ask_user": true
+    "ask_user_respect_should_ask_user": true,
+    "learn_update": {
+      "enabled": true,
+      "min_new_suggestions_per_run": 2,
+      "min_active_learned_claims": 3,
+      "min_confidence": 0.9,
+      "max_claims": 6,
+      "max_retracts": 6
+    }
   }
 }
 ```
@@ -503,6 +511,7 @@ Minimal shape:
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
 - `learn_suggested` (a suggested preference tightening produced by Mind; may be auto-applied as Thought DB preference Claims depending on `violation_response.auto_learn`)
 - `learn_applied` (a manual application of a prior `learn_suggested` record; written by `mi claim apply-suggested ...`)
+- `learn_update` (optional run-end consolidation of multiple `learn_suggested` items into a smaller canonical set; may write learned claims/edges and append-only retractions; best-effort)
 - `testless_strategy_set` (internal: recorded a testless strategy set/update so a canonical preference Claim can cite an EvidenceLog `event_id`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
 - `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_hands`)
@@ -866,6 +875,20 @@ Rollback:
 
 - Retract an auto-learned preference Claim via `mi claim retract <claim_id> ...` (append-only).
 
+Optional consolidation (`learn_update`) (run-end):
+
+- When `config.runtime.violation_response.learn_update.enabled=true` and `violation_response.auto_learn=true`, MI may run **at most one** additional Mind call at `mi run` end to consolidate the run's `learn_suggested` noise into a small canonical Thought DB patch.
+- Gated conservatively by thresholds such as:
+  - `min_new_suggestions_per_run` (default 2)
+  - `min_active_learned_claims` (default 3; project scope)
+  - `min_confidence` / `max_claims` / `max_retracts`
+- The model may emit:
+  - new learned preference/goal Claims (tagged `mi:learned`)
+  - evolution edges (`supersedes` / `same_as`) between claims
+  - optional append-only retractions of prior learned claims (allowlisted)
+- Provenance: every new claim/edge/retraction must cite **EvidenceLog `event_id` only** from the allowed list (the `learn_suggested` events produced in the same run).
+- MI records `kind=learn_update` with the raw output and an `applied` summary (written claims/edges + retractions).
+
 Legacy note:
 
 - Older MI versions wrote free-form learned rules into `mindspec/learned.jsonl` and `projects/<project_id>/learned.jsonl`.
@@ -1228,7 +1251,7 @@ mi --home ~/.mind-incarnation last --cd <project_root> --json
 mi --home ~/.mind-incarnation last --cd <project_root> --redact
 ```
 
-Note: `mi last` also includes any `learn_suggested` / `learn_applied` records related to the latest batch, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`. When MI records WhyTrace for the latest batch cycle (e.g., via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true`), `mi last --json` also includes `why_trace` and `why_traces`. `mi last --json` also includes `state_corrupt_recent` (a pointer to the most recent `kind=state_corrupt` record) for on-demand diagnosis. When MI detects a stuck repetition loop, `mi last --json` also includes `loop_guard` and `loop_break`.
+Note: `mi last` also includes any `learn_update` / `learn_suggested` / `learn_applied` records related to the latest batch cycle, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`. When MI records WhyTrace for the latest batch cycle (e.g., via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true`), `mi last --json` also includes `why_trace` and `why_traces`. `mi last --json` also includes `state_corrupt_recent` (a pointer to the most recent `kind=state_corrupt` record) for on-demand diagnosis. When MI detects a stuck repetition loop, `mi last --json` also includes `loop_guard` and `loop_break`.
 
 Inspect per-project state (overlay + resolved paths):
 

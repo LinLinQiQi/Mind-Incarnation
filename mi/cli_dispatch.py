@@ -1172,6 +1172,8 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         why_traces_raw = bundle.get("why_traces") if isinstance(bundle.get("why_traces"), list) else []
         why_trace_out = dict(why_trace_raw) if isinstance(why_trace_raw, dict) else {}
         why_traces_out = [dict(x) for x in why_traces_raw if isinstance(x, dict)]
+        learn_update_raw = bundle.get("learn_update") if isinstance(bundle.get("learn_update"), dict) else None
+        learn_update_out = dict(learn_update_raw) if isinstance(learn_update_raw, dict) else {}
         learn_suggested_out = (bundle.get("learn_suggested") or []) if isinstance(bundle.get("learn_suggested"), list) else []
         learn_applied_out = (bundle.get("learn_applied") or []) if isinstance(bundle.get("learn_applied"), list) else []
         if args.redact:
@@ -1193,6 +1195,26 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                         v = inner.get(k)
                         if isinstance(v, str) and v:
                             inner[k] = redact_text(v)
+            # Redact learn_update patch claim texts/rationales.
+            if isinstance(learn_update_out, dict) and learn_update_out:
+                out0 = learn_update_out.get("output")
+                if isinstance(out0, dict):
+                    patch0 = out0.get("patch")
+                    if isinstance(patch0, dict):
+                        claims = patch0.get("claims") if isinstance(patch0.get("claims"), list) else []
+                        for c in claims:
+                            if isinstance(c, dict) and isinstance(c.get("text"), str) and c.get("text"):
+                                c["text"] = redact_text(str(c.get("text") or ""))
+                            if isinstance(c, dict) and isinstance(c.get("notes"), str) and c.get("notes"):
+                                c["notes"] = redact_text(str(c.get("notes") or ""))
+                        edges = patch0.get("edges") if isinstance(patch0.get("edges"), list) else []
+                        for e in edges:
+                            if isinstance(e, dict) and isinstance(e.get("notes"), str) and e.get("notes"):
+                                e["notes"] = redact_text(str(e.get("notes") or ""))
+                    retracts = out0.get("retract") if isinstance(out0.get("retract"), list) else []
+                    for r in retracts:
+                        if isinstance(r, dict) and isinstance(r.get("rationale"), str) and r.get("rationale"):
+                            r["rationale"] = redact_text(str(r.get("rationale") or ""))
             # Redact learned suggestion texts/rationales (they may contain tokens/URLs).
             for rec in learn_suggested_out:
                 if not isinstance(rec, dict):
@@ -1248,6 +1270,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             "state_corrupt_recent": state_corrupt_recent_out,
             "why_trace": why_trace_out,
             "why_traces": why_traces_out,
+            "learn_update": learn_update_out,
             "learn_suggested": learn_suggested_out,
             "learn_applied": learn_applied_out,
             "loop_guard": (bundle.get("loop_guard") or {}) if isinstance(bundle.get("loop_guard"), dict) else {},
@@ -1339,6 +1362,11 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 ref = str(it.get("mind_transcript_ref") or "").strip()
                 if k and ref:
                     print(f"- {k}: {ref}")
+
+        lu = out.get("learn_update")
+        if isinstance(lu, dict) and lu:
+            print("\nlearn_update:")
+            print(f"- {summarize_evidence_record(lu)}")
 
         ls = out.get("learn_suggested")
         if isinstance(ls, list) and ls:

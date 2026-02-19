@@ -139,6 +139,17 @@ class TestInspectHelpers(unittest.TestCase):
                 ),
                 json.dumps(
                     {
+                        "kind": "learn_update",
+                        "batch_id": "b1.learn_update",
+                        "thread_id": "t",
+                        "state": "ok",
+                        "mind_transcript_ref": "m_learn_update",
+                        "output": {"should_apply": True},
+                        "applied": {"written": ["cl_2"], "written_edges": ["e2"], "retracted": [{"claim_id": "cl_1"}]},
+                    }
+                ),
+                json.dumps(
+                    {
                         "kind": "loop_break",
                         "batch_id": "b1",
                         "thread_id": "t",
@@ -178,6 +189,7 @@ class TestInspectHelpers(unittest.TestCase):
             scr = bundle.get("state_corrupt_recent")
             self.assertIsInstance(scr, dict)
             self.assertTrue(isinstance(scr.get("items"), list) and len(scr.get("items")) > 0)
+            self.assertIsNotNone(bundle.get("learn_update"))
             ls = bundle.get("learn_suggested")
             self.assertIsInstance(ls, list)
             self.assertTrue(any(isinstance(x, dict) and x.get("id") == "ls_123" for x in ls))
@@ -193,6 +205,7 @@ class TestInspectHelpers(unittest.TestCase):
             self.assertIn("m_autoanswer", refs)
             self.assertIn("m_decide", refs)
             self.assertIn("m_why", refs)
+            self.assertIn("m_learn_update", refs)
             self.assertIn("m_loopbreak", refs)
 
     def test_classify_and_summarize(self) -> None:
@@ -202,6 +215,16 @@ class TestInspectHelpers(unittest.TestCase):
         self.assertIn("loop_guard", s)
         s2 = summarize_evidence_record({"kind": "loop_break", "batch_id": "b0", "pattern": "aaa", "state": "ok", "output": {"action": "rewrite_next_input"}})
         self.assertIn("loop_break", s2)
+        s3 = summarize_evidence_record(
+            {
+                "kind": "learn_update",
+                "batch_id": "b0.learn_update",
+                "state": "ok",
+                "output": {"should_apply": True},
+                "applied": {"written": ["cl_1"], "written_edges": ["e1", "e2"], "retracted": [{"claim_id": "cl_x"}]},
+            }
+        )
+        self.assertIn("learn_update", s3)
 
     def test_last_agent_message_from_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -110,6 +110,22 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
         except Exception:
             ft_s = str(ft or "")
         detail = " ".join([x for x in [state, (f"consec={fc_s}" if fc_s else ""), (f"total={ft_s}" if ft_s else "")] if x]).strip()
+    elif kind == "learn_update":
+        state = str(obj.get("state") or "").strip()
+        out = obj.get("output") if isinstance(obj.get("output"), dict) else {}
+        should_apply = bool(out.get("should_apply", False)) if isinstance(out, dict) else False
+        applied = obj.get("applied") if isinstance(obj.get("applied"), dict) else {}
+        written = applied.get("written") if isinstance(applied.get("written"), list) else []
+        edges = applied.get("written_edges") if isinstance(applied.get("written_edges"), list) else []
+        retracted = applied.get("retracted") if isinstance(applied.get("retracted"), list) else []
+        parts = [
+            (f"state={state}" if state else ""),
+            f"should_apply={str(should_apply).lower()}",
+            f"written={len(written)}",
+            f"edges={len(edges)}",
+            f"retracted={len(retracted)}",
+        ]
+        detail = " ".join([x for x in parts if x]).strip()
     elif kind == "learn_suggested":
         sid = str(obj.get("id") or "")
         auto = obj.get("auto_learn")
@@ -217,6 +233,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
         # Optional: WhyTrace record(s) related to the last batch cycle.
         "why_trace": None,
         "why_traces": [],
+        "learn_update": None,
         "learn_suggested": [],
         "learn_applied": [],
         "loop_guard": None,
@@ -287,6 +304,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                         "state_corrupt_recent": None,
                         "why_trace": None,
                         "why_traces": [],
+                        "learn_update": None,
                         "learn_suggested": [],
                         "learn_applied": [],
                         "loop_guard": None,
@@ -325,6 +343,9 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                         bundle["why_traces"] = [obj]
                     bundle["why_trace"] = obj
                     add_mind_transcript_ref(obj=obj, kind="why_trace", bid=bid)
+                elif kind == "learn_update":
+                    bundle["learn_update"] = obj
+                    add_mind_transcript_ref(obj=obj, kind="learn_update", bid=bid)
                 elif kind == "learn_suggested":
                     items = bundle.get("learn_suggested")
                     if isinstance(items, list):

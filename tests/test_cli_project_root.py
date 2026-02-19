@@ -9,7 +9,7 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
-from mi.core.paths import GlobalPaths, project_identity, resolve_cli_project_root, project_index_path
+from mi.core.paths import GlobalPaths, project_id_for_identity_key, project_identity, resolve_cli_project_root
 
 
 def _git(cwd: Path, args: list[str]) -> None:
@@ -97,7 +97,7 @@ class TestCliProjectRootResolution(unittest.TestCase):
             self.assertEqual(root, repo.resolve())
             self.assertEqual(reason, "git_toplevel")
 
-    def test_prefers_known_cwd_root_when_present_in_index(self) -> None:
+    def test_prefers_known_cwd_root_when_present_in_home_dir(self) -> None:
         if shutil.which("git") is None:
             self.skipTest("git not installed")
         with _patched_env({"MI_CD": None, "MI_PROJECT_ROOT": None}), tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
@@ -113,9 +113,8 @@ class TestCliProjectRootResolution(unittest.TestCase):
 
             ident_sub = project_identity(sub)
             key_sub = str(ident_sub.get("key") or "")
-            idx_path = project_index_path(Path(home))
-            idx_path.parent.mkdir(parents=True, exist_ok=True)
-            idx_path.write_text(json.dumps({"version": "v1", "by_identity": {key_sub: "p_sub"}}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            pid_sub = project_id_for_identity_key(key_sub)
+            (Path(home) / "projects" / pid_sub).mkdir(parents=True, exist_ok=True)
 
             root, reason = resolve_cli_project_root(Path(home), "", cwd=sub)
             self.assertEqual(root, sub.resolve())

@@ -113,12 +113,12 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
     elif kind == "learn_suggested":
         sid = str(obj.get("id") or "")
         auto = obj.get("auto_learn")
-        ch = obj.get("learned_changes") if isinstance(obj.get("learned_changes"), list) else []
-        applied = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
+        ch = obj.get("learn_suggested") if isinstance(obj.get("learn_suggested"), list) else []
+        applied = obj.get("applied_claim_ids") if isinstance(obj.get("applied_claim_ids"), list) else []
         detail = f"id={sid} n={len(ch)} auto_learn={bool(auto)} applied={len(applied)}"
     elif kind == "learn_applied":
         sid = str(obj.get("suggestion_id") or "")
-        applied = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
+        applied = obj.get("applied_claim_ids") if isinstance(obj.get("applied_claim_ids"), list) else []
         detail = f"suggestion_id={sid} applied={len(applied)}"
     elif kind == "claim_retract":
         cid = str(obj.get("claim_id") or "").strip()

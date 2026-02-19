@@ -10,7 +10,7 @@ from mi.thoughtdb import ThoughtDbStore
 
 
 class TestThoughtDbClaims(unittest.TestCase):
-    def test_apply_mined_claims_writes_and_indexes_active_claims(self) -> None:
+    def test_apply_mined_output_writes_and_indexes_active_claims(self) -> None:
         with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:
             home = Path(td_home)
             project_root = Path(td_proj)
@@ -18,22 +18,26 @@ class TestThoughtDbClaims(unittest.TestCase):
             pp = ProjectPaths(home_dir=home, project_root=project_root)
             tdb = ThoughtDbStore(home_dir=home, project_paths=pp)
 
-            applied = tdb.apply_mined_claims(
-                mined_claims=[
-                    {
-                        "local_id": "c1",
-                        "claim_type": "fact",
-                        "text": "alpha beta is supported",
-                        "scope": "project",
-                        "visibility": "project",
-                        "valid_from": None,
-                        "valid_to": None,
-                        "confidence": 0.95,
-                        "source_event_ids": ["ev_test_1"],
-                        "tags": ["t1"],
-                        "notes": "n",
-                    }
-                ],
+            applied = tdb.apply_mined_output(
+                output={
+                    "claims": [
+                        {
+                            "local_id": "c1",
+                            "claim_type": "fact",
+                            "text": "alpha beta is supported",
+                            "scope": "project",
+                            "visibility": "project",
+                            "valid_from": None,
+                            "valid_to": None,
+                            "confidence": 0.95,
+                            "source_event_ids": ["ev_test_1"],
+                            "tags": ["t1"],
+                            "notes": "n",
+                        }
+                    ],
+                    "edges": [],
+                    "notes": "",
+                },
                 allowed_event_ids={"ev_test_1"},
                 min_confidence=0.9,
                 max_claims=6,

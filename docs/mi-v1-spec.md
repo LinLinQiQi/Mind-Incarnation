@@ -251,7 +251,7 @@ MI uses the following internal prompts (all should return strict JSON):
 
 4) `risk_judge` (implemented; post-hoc)
    - Input: Hands provider hint + recent transcript snippets + runtime config + `EvidenceLog`
-   - Output: risk judgement with `category`, `severity`, `should_ask_user`, `mitigation`, and optional preference tightening (`learned_changes`, legacy field name)
+   - Output: risk judgement with `category`, `severity`, `should_ask_user`, `mitigation`, and optional preference tightening (`learn_suggested`)
 
 5) `plan_min_checks` (implemented)
    - Input: Hands provider hint + runtime config, `ProjectOverlay`, repo observation, recent `EvidenceLog`
@@ -377,10 +377,10 @@ Minimal shape:
   },
   "violation_response": {
     "auto_learn": true,
-    "prompt_user_on_high_risk": true,
-    "prompt_user_risk_severities": ["high", "critical"],
-    "prompt_user_risk_categories": [],
-    "prompt_user_respect_should_ask_user": true
+    "ask_user_on_high_risk": true,
+    "ask_user_risk_severities": ["high", "critical"],
+    "ask_user_risk_categories": [],
+    "ask_user_respect_should_ask_user": true
   }
 }
 ```
@@ -501,7 +501,7 @@ Minimal shape:
 - `mind_error` (a Mind prompt-pack call failed; includes schema/tag + error + best-effort transcript pointer)
 - `mind_circuit` (Mind circuit breaker state change; V1 emits `state="open"` when it stops attempting further Mind calls)
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
-- `learn_suggested` (a suggested preference tightening produced by Mind (`learned_changes`, legacy field name); may be auto-applied as Thought DB preference Claims depending on `violation_response.auto_learn`)
+- `learn_suggested` (a suggested preference tightening produced by Mind; may be auto-applied as Thought DB preference Claims depending on `violation_response.auto_learn`)
 - `learn_applied` (a manual application of a prior `learn_suggested` record; written by `mi claim apply-suggested ...`)
 - `testless_strategy_set` (internal: recorded a testless strategy set/update so a canonical preference Claim can cite an EvidenceLog `event_id`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
@@ -836,23 +836,24 @@ Implementation note: MI uses a shared internal helper to resolve the testless st
   "category": "network|install|push|publish|delete|privilege|privacy|cost|other",
   "severity": "low|medium|high|critical",
   "should_ask_user": true,
-  "mitigation": ["string"]
+  "mitigation": ["string"],
+  "learn_suggested": []
 }
 ```
 
 If a `risk_event` is detected, MI may immediately prompt the user to continue depending on `config.runtime.violation_response` knobs:
 
-- `prompt_user_on_high_risk` (master switch; legacy name)
-- `prompt_user_risk_severities` (which severities to prompt for)
-- `prompt_user_risk_categories` (optional allow-list; empty means any)
-- `prompt_user_respect_should_ask_user` (when true, prompt only if `risk_judge.should_ask_user=true`)
+- `ask_user_on_high_risk` (master switch)
+- `ask_user_risk_severities` (which severities to prompt for)
+- `ask_user_risk_categories` (optional allow-list; empty means any)
+- `ask_user_respect_should_ask_user` (when true, prompt only if `risk_judge.should_ask_user=true`)
 
-### Preference Tightening ("learned_changes") (append-only, reversible)
+### Preference Tightening (`learn_suggested`) (append-only, reversible)
 
-Mind prompts may output `learned_changes` suggestions (legacy field name) from:
+Mind prompts may output `learn_suggested` suggestions from:
 
-- `risk_judge.learned_changes`
-- `decide_next.learned_changes`
+- `risk_judge.learn_suggested`
+- `decide_next.learn_suggested`
 
 V1 strict Thought DB mode treats these as **preference tightening suggestions** and stores them canonically as Thought DB preference Claims (append-only, reversible).
 
@@ -982,8 +983,6 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `thoughtdb/global/nodes.jsonl` (global Nodes)
   - `thoughtdb/global/view.snapshot.json` (optional; persisted materialized view for faster cold loads; safe to delete)
   - `thoughtdb/global/archive/<ts>/*.jsonl.gz` + `thoughtdb/global/archive/<ts>/manifest.json` (optional; created by `mi gc thoughtdb --global`)
-- Project index (stable identity -> project_id mapping):
-  - `projects/index.json`
 - Per project (keyed by a resolved `project_id`):
   - `projects/<project_id>/overlay.json`
   - `projects/<project_id>/learned.jsonl` (legacy; ignored by current MI versions)
@@ -1008,7 +1007,14 @@ Legacy leftovers (safe to delete; not read by current MI versions):
 - `<home>/mindspec/learned.jsonl`
 - `<home>/projects/<project_id>/learned.jsonl`
 
-Note: `project_id` is legacy-compatible (historically a hash of the root path), but MI also stores an `identity_key` in ProjectOverlay and maintains a `projects/index.json` mapping so the same project can be recognized across path moves/clones (best-effort; especially effective for git repos).
+Note: `project_id` is derived deterministically from `identity_key`:
+
+- `identity_key`: produced by `project_identity()`:
+  - git repos: normalized remote origin (or best-effort fallback) + relpath within the repo
+  - non-git dirs: resolved absolute path
+- `project_id = sha256(identity_key)[:16]`
+
+This is stable across path moves/clones for git repos (and supports monorepo subprojects via relpath). Older MI home layouts that used path-hash ids are not recognized.
 
 Transcript archiving (optional): `mi gc transcripts` can gzip older transcripts into `archive/` and replace the original `.jsonl` with a small JSONL stub record:
 

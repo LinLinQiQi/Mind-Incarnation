@@ -9,7 +9,7 @@
     "confidence",
     "next_hands_input",
     "ask_user_question",
-    "learned_changes",
+    "learn_suggested",
     "update_project_overlay",
     "notes"
   ],
@@ -25,7 +25,7 @@
     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
     "next_hands_input": { "type": "string" },
     "ask_user_question": { "type": "string" },
-    "learned_changes": {
+    "learn_suggested": {
       "type": "array",
       "items": {
         "type": "object",

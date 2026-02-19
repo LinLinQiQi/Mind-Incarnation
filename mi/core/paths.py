@@ -9,57 +9,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .storage import ensure_dir, now_rfc3339, read_json_best_effort, write_json_atomic
+from .storage import now_rfc3339, read_json_best_effort, write_json_atomic
 
 
 def default_home_dir() -> Path:
     return Path(os.environ.get("MI_HOME") or Path.home() / ".mind-incarnation")
 
 
-def project_id_for_root(root: Path) -> str:
-    """Legacy project id: stable only as long as the absolute root path is stable."""
+def project_id_for_identity_key(identity_key: str) -> str:
+    """Deterministic project id derived from a project identity key."""
 
-    root_str = str(root.resolve())
-    digest = hashlib.sha256(root_str.encode("utf-8")).hexdigest()
-    return digest[:12]
+    key = str(identity_key or "").strip()
+    if not key:
+        return ""
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return digest[:16]
 
 
 def _projects_dir(home_dir: Path) -> Path:
     return home_dir / "projects"
-
-
-def project_index_path(home_dir: Path) -> Path:
-    return _projects_dir(home_dir) / "index.json"
-
-
-def _load_project_index(home_dir: Path) -> dict[str, str]:
-    obj = read_json_best_effort(project_index_path(home_dir), default=None, label="project_index")
-    if not isinstance(obj, dict):
-        return {}
-    # Preferred shape: {"version": "...", "by_identity": {...}}
-    by_id = obj.get("by_identity")
-    if isinstance(by_id, dict):
-        out: dict[str, str] = {}
-        for k, v in by_id.items():
-            ks = str(k).strip()
-            vs = str(v).strip()
-            if ks and vs:
-                out[ks] = vs
-        return out
-    # Back-compat: allow a plain mapping object.
-    out2: dict[str, str] = {}
-    for k, v in obj.items():
-        ks = str(k).strip()
-        vs = str(v).strip()
-        if ks and vs:
-            out2[ks] = vs
-    return out2
-
-
-def _write_project_index(home_dir: Path, mapping: dict[str, str]) -> None:
-    path = project_index_path(home_dir)
-    ensure_dir(path.parent)
-    write_json_atomic(path, {"version": "v1", "by_identity": dict(mapping)})
 
 
 def _normalize_git_remote(url: str) -> str:
@@ -176,88 +144,23 @@ def project_identity(project_root: Path) -> dict[str, str]:
     }
 
 
-def _scan_for_existing_project_id(home_dir: Path, *, identity_key: str, root_path: str) -> str:
-    projects = _projects_dir(home_dir)
-    if not projects.is_dir():
-        return ""
-
-    # Pass 1: prefer identity_key matches (survives moves).
-    if identity_key:
-        for d in projects.iterdir():
-            if not d.is_dir():
-                continue
-            overlay_path = d / "overlay.json"
-            if not overlay_path.is_file():
-                continue
-            overlay = read_json_best_effort(overlay_path, default=None, label="overlay")
-            if not isinstance(overlay, dict):
-                continue
-            if str(overlay.get("identity_key") or "").strip() == identity_key:
-                return d.name
-            ident = overlay.get("identity")
-            if isinstance(ident, dict) and str(ident.get("key") or "").strip() == identity_key:
-                return d.name
-
-    # Pass 2: root_path match (legacy behavior for stable paths).
-    if root_path:
-        for d in projects.iterdir():
-            if not d.is_dir():
-                continue
-            overlay_path = d / "overlay.json"
-            if not overlay_path.is_file():
-                continue
-            overlay = read_json_best_effort(overlay_path, default=None, label="overlay")
-            if not isinstance(overlay, dict):
-                continue
-            if str(overlay.get("root_path") or "").strip() == root_path:
-                return d.name
-
-    return ""
-
-
 def resolve_project_id(home_dir: Path, project_root: Path) -> str:
-    """Resolve the project id for a root path, with move/clone stability.
+    """Resolve the project id for a root path.
 
-    Strategy:
-    - Prefer index mapping by computed identity_key.
-    - Otherwise, reuse the legacy id directory if it exists for the current root.
-    - Otherwise, scan existing overlay.json files for a matching identity_key/root_path.
-    - Finally, fall back to the legacy id.
+    V1: project_id is derived deterministically from the project's `identity_key`
+    (see `project_identity()`), so it is stable across path moves/clones for git
+    repos (and for monorepo subprojects via relpath).
     """
 
     root = project_root.resolve()
-    legacy_id = project_id_for_root(root)
-    projects_dir = _projects_dir(home_dir)
-    legacy_dir = projects_dir / legacy_id
-
     ident = project_identity(root)
     identity_key = str(ident.get("key") or "").strip()
-
-    mapping = _load_project_index(home_dir)
-    if identity_key:
-        mapped = str(mapping.get(identity_key) or "").strip()
-        if mapped:
-            if (projects_dir / mapped).is_dir():
-                return mapped
-            # Drop stale mappings.
-            if identity_key in mapping:
-                del mapping[identity_key]
-                _write_project_index(home_dir, mapping)
-
-    # If the old directory exists for this exact root path, keep using it.
-    if legacy_dir.is_dir():
-        pid = legacy_id
-    else:
-        pid = _scan_for_existing_project_id(home_dir, identity_key=identity_key, root_path=str(root))
-        if not pid:
-            pid = legacy_id
-
-    # Persist mapping for future path moves (best-effort).
-    if identity_key and mapping.get(identity_key) != pid:
-        mapping[identity_key] = pid
-        _write_project_index(home_dir, mapping)
-
-    return pid
+    pid = project_id_for_identity_key(identity_key)
+    if pid:
+        return pid
+    # Extremely defensive fallback: should not happen, but keep MI usable.
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+    return digest[:16]
 
 
 def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None, here: bool = False) -> tuple[Path, str]:
@@ -310,11 +213,10 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
     ident_cur = project_identity(cur)
     key_cur = str(ident_cur.get("key") or "").strip()
 
-    mapping = _load_project_index(home_dir)
-
     # If the current directory was previously used as a project root (e.g., a monorepo subproject),
     # keep it stable by default.
-    if key_cur and mapping.get(key_cur):
+    pid_cur = project_id_for_identity_key(key_cur)
+    if pid_cur and (_projects_dir(home_dir) / pid_cur).is_dir():
         return cur, "known:cwd"
 
     git_top = str(ident_cur.get("git_toplevel") or "").strip()
@@ -323,7 +225,8 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
         if top != cur:
             ident_top = project_identity(top)
             key_top = str(ident_top.get("key") or "").strip()
-            if key_top and mapping.get(key_top):
+            pid_top = project_id_for_identity_key(key_top)
+            if pid_top and (_projects_dir(home_dir) / pid_top).is_dir():
                 return top, "known:git_toplevel"
             return top, "git_toplevel"
 

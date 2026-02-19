@@ -296,7 +296,7 @@ mi claim list --cd /path/to/your/project --scope effective
 mi claim retract <claim_id> --cd /path/to/your/project --scope project
 ```
 
-说明：`learned_changes` 建议都会记录到 EvidenceLog（`kind=learn_suggested`）。如果 `violation_response.auto_learn=true`（默认），MI 也会把它们落盘为 Thought DB 的 preference Claim（`applied_claim_ids`）。如果为 false，可用 `mi claim apply-suggested ...` 之后再应用。
+说明：`learn_suggested` 建议都会记录到 EvidenceLog（`kind=learn_suggested`）。如果 `violation_response.auto_learn=true`（默认），MI 也会把它们落盘为 Thought DB 的 preference Claim（`applied_claim_ids`）。如果为 false，可用 `mi claim apply-suggested ...` 之后再应用。
 
 实验性：偏好预测（preference mining）
 

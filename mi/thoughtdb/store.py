@@ -1036,31 +1036,6 @@ class ThoughtDbStore:
             pass
         return eid
 
-    def apply_mined_claims(
-        self,
-        *,
-        mined_claims: list[dict[str, Any]],
-        allowed_event_ids: set[str],
-        min_confidence: float,
-        max_claims: int,
-    ) -> dict[str, Any]:
-        """Back-compat wrapper: apply mined claims only (ignore edges).
-
-        Prefer using `apply_mined_output(...)` when you have the full mine_claims output.
-        """
-
-        res = self.apply_mined_output(
-            output={"claims": mined_claims or [], "edges": [], "notes": ""},
-            allowed_event_ids=allowed_event_ids,
-            min_confidence=min_confidence,
-            max_claims=max_claims,
-        )
-        # Keep the older return surface.
-        return {
-            "written": res.get("written", []) if isinstance(res, dict) else [],
-            "skipped": res.get("skipped", []) if isinstance(res, dict) else [],
-        }
-
     def apply_mined_output(
         self,
         *,
@@ -1114,6 +1089,9 @@ class ThoughtDbStore:
         for idx, raw in enumerate(claims_in or []):
             if not isinstance(raw, dict):
                 continue
+            local_id = str(raw.get("local_id") or "").strip()
+            if not local_id:
+                continue
             text = str(raw.get("text") or "").strip()
             if not text:
                 continue
@@ -1123,10 +1101,6 @@ class ThoughtDbStore:
                 conf = 0.0
             if conf < min_conf:
                 continue
-            # Back-compat: allow missing local_id (synthetic).
-            if not str(raw.get("local_id") or "").strip():
-                raw = dict(raw)
-                raw["local_id"] = f"c{idx+1}"
             sugs.append(raw)
 
         sugs2 = sorted(

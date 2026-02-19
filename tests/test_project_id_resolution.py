@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from mi.core.paths import ProjectPaths, project_index_path
+from mi.core.paths import ProjectPaths
 from mi.project import load_project_overlay
 
 
@@ -16,7 +15,7 @@ def _git(cwd: Path, args: list[str]) -> None:
 
 
 class TestProjectIdResolution(unittest.TestCase):
-    def test_project_id_stable_across_move_for_git_repo_even_without_index(self) -> None:
+    def test_project_id_stable_across_move_for_git_repo(self) -> None:
         if shutil.which("git") is None:
             self.skipTest("git not installed")
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
@@ -40,11 +39,6 @@ class TestProjectIdResolution(unittest.TestCase):
             ident_a = str(overlay_a.get("identity_key") or "")
             self.assertTrue(pid_a)
             self.assertTrue(ident_a.startswith("git:"))
-
-            # Delete index to force the fallback scan path.
-            idx = project_index_path(Path(home))
-            if idx.exists():
-                os.remove(idx)
 
             shutil.copytree(repo_a, repo_b)
 

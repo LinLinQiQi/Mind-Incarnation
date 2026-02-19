@@ -25,7 +25,6 @@ from .runtime.runner import run_autopilot
 from .core.paths import (
     GlobalPaths,
     ProjectPaths,
-    project_index_path,
     resolve_cli_project_root,
     record_last_project_selection,
     set_pinned_project_selection,
@@ -409,8 +408,6 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             sid = str(rec.get("id") or "").strip()
             auto = bool(rec.get("auto_learn", True))
             applied_ids = rec.get("applied_claim_ids") if isinstance(rec.get("applied_claim_ids"), list) else []
-            if not applied_ids:
-                applied_ids = rec.get("applied_entry_ids") if isinstance(rec.get("applied_entry_ids"), list) else []
             if sid and (not auto) and (not applied_ids):
                 pending_suggestions.append(sid)
         pending_suggestions = pending_suggestions[:6]
@@ -1200,7 +1197,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             for rec in learn_suggested_out:
                 if not isinstance(rec, dict):
                     continue
-                chs = rec.get("learned_changes")
+                chs = rec.get("learn_suggested")
                 if not isinstance(chs, list):
                     continue
                 for ch in chs:
@@ -1352,8 +1349,6 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 sid = str(rec.get("id") or "").strip()
                 auto = bool(rec.get("auto_learn", True))
                 applied_ids = rec.get("applied_claim_ids") if isinstance(rec.get("applied_claim_ids"), list) else []
-                if not applied_ids:
-                    applied_ids = rec.get("applied_entry_ids") if isinstance(rec.get("applied_entry_ids"), list) else []
                 summary = summarize_evidence_record(rec)
                 if sid and (not auto) and (not applied_ids):
                     summary = summary + f" (apply: mi claim apply-suggested {sid} --cd {project_root})"
@@ -1663,21 +1658,6 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             overlay = load_project_overlay(home_dir=home_dir, project_root=project_root)
 
             identity_key = str(overlay.get("identity_key") or "").strip()
-            idx_path = project_index_path(home_dir)
-            idx_mapped = ""
-            if identity_key:
-                try:
-                    idx_obj = json.loads(idx_path.read_text(encoding="utf-8"))
-                except FileNotFoundError:
-                    idx_obj = None
-                except Exception:
-                    idx_obj = None
-                if isinstance(idx_obj, dict):
-                    by_id = idx_obj.get("by_identity")
-                    if isinstance(by_id, dict):
-                        idx_mapped = str(by_id.get(identity_key) or "").strip()
-                    else:
-                        idx_mapped = str(idx_obj.get(identity_key) or "").strip()
 
             out = {
                 "project_root": str(project_root),
@@ -1685,8 +1665,6 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 "project_dir": str(pp.project_dir),
                 "overlay_path": str(pp.overlay_path),
                 "identity_key": identity_key,
-                "project_index_path": str(idx_path),
-                "project_index_mapped_id": idx_mapped,
                 "evidence_log": str(pp.evidence_log_path),
                 "transcripts_dir": str(pp.transcripts_dir),
                 "thoughtdb_dir": str(pp.thoughtdb_dir),
@@ -1717,8 +1695,6 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             print(f"overlay_path={out['overlay_path']}")
             if identity_key:
                 print(f"identity_key={identity_key}")
-            if idx_mapped:
-                print(f"index_mapped_project_id={idx_mapped}")
             print(f"evidence_log={out['evidence_log']}")
             print(f"transcripts_dir={out['transcripts_dir']}")
             print(f"thoughtdb_dir={out['thoughtdb_dir']}")
@@ -2068,9 +2044,6 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             applied_ids0 = suggestion.get("applied_claim_ids")
             if isinstance(applied_ids0, list) and any(str(x).strip() for x in applied_ids0):
                 already_applied = True
-            applied_ids1 = suggestion.get("applied_entry_ids")
-            if isinstance(applied_ids1, list) and any(str(x).strip() for x in applied_ids1):
-                already_applied = True
 
             if not already_applied:
                 for obj in iter_jsonl(pp.evidence_log_path):
@@ -2086,7 +2059,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 print(f"Suggestion already applied: {sug_id}")
                 return 0
 
-            changes = suggestion.get("learned_changes") if isinstance(suggestion.get("learned_changes"), list) else []
+            changes = suggestion.get("learn_suggested") if isinstance(suggestion.get("learn_suggested"), list) else []
             normalized: list[dict[str, str]] = []
             for ch in changes:
                 if not isinstance(ch, dict):
@@ -2105,7 +2078,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                 )
 
             if not normalized:
-                print(f"(no applicable learned changes in suggestion {sug_id})")
+                print(f"(no applicable learn_suggested items in suggestion {sug_id})")
                 return 0
 
             if bool(getattr(args, "dry_run", False)):
@@ -2167,7 +2140,6 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
                     "suggestion_id": sug_id,
                     "batch_id": str(suggestion.get("batch_id") or ""),
                     "thread_id": str(suggestion.get("thread_id") or ""),
-                    "applied_entry_ids": [],
                     "applied_claim_ids": applied_claim_ids,
                 }
             )

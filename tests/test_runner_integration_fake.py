@@ -110,7 +110,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }
@@ -177,7 +177,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }
@@ -259,7 +259,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }
@@ -337,7 +337,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }
@@ -437,7 +437,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }
@@ -514,7 +514,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }
@@ -569,7 +569,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             # Avoid interactive prompting in this test.
             cfg = default_config()
-            cfg["runtime"]["violation_response"]["prompt_user_on_high_risk"] = False
+            cfg["runtime"]["violation_response"]["ask_user_on_high_risk"] = False
             write_json(config_path(Path(home)), cfg)
 
             # Seed a snapshot that should match the risk_signal query ("push: git push origin main").
@@ -597,7 +597,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                         {"facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
                     ],
                     "risk_judge.json": [
-                        {"category": "push", "severity": "high", "should_ask_user": False, "mitigation": [], "learned_changes": []},
+                        {"category": "push", "severity": "high", "should_ask_user": False, "mitigation": [], "learn_suggested": []},
                     ],
                     "decide_next.json": [
                         {
@@ -606,7 +606,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }
@@ -731,7 +731,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }
@@ -832,7 +832,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         },
@@ -899,7 +899,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         },
@@ -989,7 +989,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         },
@@ -1104,7 +1104,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         },
@@ -1178,7 +1178,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": {"strategy": strategy, "rationale": "test"}},
                             "notes": "done",
                         },
@@ -1244,7 +1244,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.7,
                             "next_hands_input": "",
                             "ask_user_question": "Need your input:",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "ask user",
                         },
@@ -1254,7 +1254,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": {"strategy": strategy, "rationale": "test"}},
                             "notes": "done",
                         },
@@ -1368,7 +1368,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.8,
                             "next_hands_input": "do next",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "continue",
                         },
@@ -1378,7 +1378,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.8,
                             "next_hands_input": "do next",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "continue",
                         },
@@ -1388,7 +1388,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.8,
                             "next_hands_input": "do next",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "continue",
                         },
@@ -1398,7 +1398,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         },
@@ -1560,7 +1560,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.8,
                             "next_hands_input": "do next",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "continue",
                         },
@@ -1570,7 +1570,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.8,
                             "next_hands_input": "do next",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "continue",
                         },
@@ -1580,7 +1580,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.8,
                             "next_hands_input": "do next",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "continue",
                         },
@@ -1684,7 +1684,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.8,
                             "next_hands_input": "do next",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "continue",
                         },
@@ -1694,7 +1694,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.8,
                             "next_hands_input": "do next",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "continue",
                         },
@@ -1704,7 +1704,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.8,
                             "next_hands_input": "do next",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "continue",
                         },
@@ -1714,7 +1714,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         },
@@ -1789,9 +1789,9 @@ class TestRunnerIntegrationFake(unittest.TestCase):
     def test_risk_prompt_triggers_only_for_configured_severities(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             cfg = default_config()
-            cfg["runtime"]["violation_response"]["prompt_user_on_high_risk"] = True
-            cfg["runtime"]["violation_response"]["prompt_user_risk_severities"] = ["high"]
-            cfg["runtime"]["violation_response"]["prompt_user_respect_should_ask_user"] = True
+            cfg["runtime"]["violation_response"]["ask_user_on_high_risk"] = True
+            cfg["runtime"]["violation_response"]["ask_user_risk_severities"] = ["high"]
+            cfg["runtime"]["violation_response"]["ask_user_respect_should_ask_user"] = True
             write_json(config_path(Path(home)), cfg)
 
             fake_hands = _FakeHands(
@@ -1805,7 +1805,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                         {"facts": ["ran push"], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
                     ],
                     "risk_judge.json": [
-                        {"category": "push", "severity": "high", "should_ask_user": True, "mitigation": [], "learned_changes": []},
+                        {"category": "push", "severity": "high", "should_ask_user": True, "mitigation": [], "learn_suggested": []},
                     ],
                     "checkpoint_decide.json": [
                         {
@@ -1852,9 +1852,9 @@ class TestRunnerIntegrationFake(unittest.TestCase):
     def test_risk_prompt_skips_when_severity_not_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             cfg = default_config()
-            cfg["runtime"]["violation_response"]["prompt_user_on_high_risk"] = True
-            cfg["runtime"]["violation_response"]["prompt_user_risk_severities"] = ["high", "critical"]
-            cfg["runtime"]["violation_response"]["prompt_user_respect_should_ask_user"] = True
+            cfg["runtime"]["violation_response"]["ask_user_on_high_risk"] = True
+            cfg["runtime"]["violation_response"]["ask_user_risk_severities"] = ["high", "critical"]
+            cfg["runtime"]["violation_response"]["ask_user_respect_should_ask_user"] = True
             write_json(config_path(Path(home)), cfg)
 
             fake_hands = _FakeHands(
@@ -1868,7 +1868,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                         {"facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []},
                     ],
                     "risk_judge.json": [
-                        {"category": "push", "severity": "medium", "should_ask_user": True, "mitigation": [], "learned_changes": []},
+                        {"category": "push", "severity": "medium", "should_ask_user": True, "mitigation": [], "learn_suggested": []},
                     ],
                     "decide_next.json": [
                         {
@@ -1877,7 +1877,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         },
@@ -1943,7 +1943,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         },
@@ -2044,7 +2044,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
     def test_mind_error_risk_judge_falls_back_and_logs_risk_event(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             cfg = default_config()
-            cfg["runtime"]["violation_response"]["prompt_user_on_high_risk"] = False
+            cfg["runtime"]["violation_response"]["ask_user_on_high_risk"] = False
             write_json(config_path(Path(home)), cfg)
 
             fake_hands = _FakeHands(
@@ -2072,7 +2072,7 @@ class TestRunnerIntegrationFake(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         },

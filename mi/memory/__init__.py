@@ -11,7 +11,6 @@ The implementation is intentionally layered so we can swap backends later withou
 rewiring runner/CLI code.
 """
 
-from .backends.sqlite_fts import SqliteFtsBackend as MemoryIndex  # back-compat name
 from .ingest import ingest_structured_sources, iter_project_ids
 from .render import render_recall_context
 from .snapshot import build_snapshot_item, snapshot_item_from_event
@@ -29,6 +28,4 @@ __all__ = [
     "snapshot_item_from_event",
     # Rendering
     "render_recall_context",
-    # Back-compat index name (sqlite backend)
-    "MemoryIndex",
 ]

@@ -56,8 +56,8 @@ class CrossProjectRecallConfig:
 
         kinds_raw = cfg.get("include_kinds") if isinstance(cfg.get("include_kinds"), list) else ["snapshot", "workflow", "claim", "node"]
         include_kinds = {str(x).strip() for x in kinds_raw if str(x).strip()}
-        # Back-compat: older configs may mention a "learned" kind. Ignore it.
-        include_kinds.discard("learned")
+        # Validate: ignore unknown kinds rather than failing the run.
+        include_kinds = include_kinds & {"snapshot", "workflow", "claim", "node"}
         if not include_kinds:
             include_kinds = {"snapshot", "workflow", "claim"}
 

@@ -90,7 +90,7 @@ class TestLearnSuggestedApply(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [
+                            "learn_suggested": [
                                 {
                                     "scope": "project",
                                     "severity": "low",
@@ -132,8 +132,6 @@ class TestLearnSuggestedApply(unittest.TestCase):
                     if isinstance(obj, dict) and obj.get("kind") == "learn_suggested":
                         self.assertFalse(bool(obj.get("auto_learn")))
                         suggestion_id = str(obj.get("id") or "")
-                        applied_entries = obj.get("applied_entry_ids") if isinstance(obj.get("applied_entry_ids"), list) else []
-                        self.assertEqual(len(applied_entries), 0)
                         applied_claims = obj.get("applied_claim_ids") if isinstance(obj.get("applied_claim_ids"), list) else []
                         self.assertEqual(len(applied_claims), 0)
             self.assertTrue(suggestion_id.startswith("ls_"))
@@ -189,7 +187,7 @@ class TestLearnSuggestedApply(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [
+                            "learn_suggested": [
                                 {
                                     "scope": "project",
                                     "severity": "low",

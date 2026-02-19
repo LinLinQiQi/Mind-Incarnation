@@ -123,8 +123,8 @@ class TestInspectHelpers(unittest.TestCase):
                         "source": "decide_next",
                         "auto_learn": False,
                         "mind_transcript_ref": "m_decide",
-                        "learned_changes": [{"scope": "project", "text": "x", "rationale": "y"}],
-                        "applied_entry_ids": [],
+                        "learn_suggested": [{"scope": "project", "text": "x", "rationale": "y"}],
+                        "applied_claim_ids": [],
                     }
                 ),
                 json.dumps(
@@ -134,7 +134,7 @@ class TestInspectHelpers(unittest.TestCase):
                         "suggestion_id": "ls_123",
                         "batch_id": "b1",
                         "thread_id": "t",
-                        "applied_entry_ids": ["lc_1"],
+                        "applied_claim_ids": ["cl_1"],
                     }
                 ),
                 json.dumps(

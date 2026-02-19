@@ -161,17 +161,6 @@ def _edges_adjacent(view: ThoughtDbView, node_id: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     out.extend([x for x in (view.edges_by_from.get(nid) or []) if isinstance(x, dict)])
     out.extend([x for x in (view.edges_by_to.get(nid) or []) if isinstance(x, dict)])
-    # Back-compat: if indices are absent, fall back to scanning.
-    if not out:
-        for e in getattr(view, "edges", []) or []:
-            if not isinstance(e, dict):
-                continue
-            if str(e.get("kind") or "").strip() != "edge":
-                continue
-            frm = str(e.get("from_id") or "").strip()
-            to = str(e.get("to_id") or "").strip()
-            if frm == nid or to == nid:
-                out.append(e)
     return out
 
 

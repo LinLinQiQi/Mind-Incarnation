@@ -256,7 +256,7 @@ class TestHandsCliWrapper(unittest.TestCase):
                             "confidence": 0.9,
                             "next_hands_input": "",
                             "ask_user_question": "",
-                            "learned_changes": [],
+                            "learn_suggested": [],
                             "update_project_overlay": {"set_testless_strategy": None},
                             "notes": "done",
                         }

@@ -296,7 +296,7 @@ mi claim list --cd /path/to/your/project --scope effective
 mi claim retract <claim_id> --cd /path/to/your/project --scope project
 ```
 
-Note: `learned_changes` suggestions are always recorded in EvidenceLog (`kind=learn_suggested`). If `violation_response.auto_learn=true` (default), MI also materializes them as Thought DB preference Claims (`applied_claim_ids`). If false, use `mi claim apply-suggested ...` to apply them later.
+Note: `learn_suggested` suggestions are always recorded in EvidenceLog (`kind=learn_suggested`). If `violation_response.auto_learn=true` (default), MI also materializes them as Thought DB preference Claims (`applied_claim_ids`). If false, use `mi claim apply-suggested ...` to apply them later.
 
 Experimental: preference mining
 

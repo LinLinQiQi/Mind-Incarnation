@@ -3,7 +3,7 @@
   "title": "MI RiskJudge",
   "type": "object",
   "additionalProperties": false,
-  "required": ["category", "severity", "should_ask_user", "mitigation", "learned_changes"],
+  "required": ["category", "severity", "should_ask_user", "mitigation", "learn_suggested"],
   "properties": {
     "category": {
       "type": "string",
@@ -12,7 +12,7 @@
     "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
     "should_ask_user": { "type": "boolean" },
     "mitigation": { "type": "array", "items": { "type": "string" } },
-    "learned_changes": {
+    "learn_suggested": {
       "type": "array",
       "items": {
         "type": "object",

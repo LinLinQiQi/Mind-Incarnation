@@ -835,9 +835,9 @@ def run_autopilot(
             }
         )
 
-    def _handle_learned_changes(
+    def _handle_learn_suggested(
         *,
-        learned_changes: Any,
+        learn_suggested: Any,
         batch_id: str,
         source: str,
         mind_transcript_ref: str,
@@ -860,8 +860,8 @@ def run_autopilot(
 
         # Normalize to a stable, minimal shape (keep severity if present for audit).
         norm: list[dict[str, Any]] = []
-        if isinstance(learned_changes, list):
-            for ch in learned_changes:
+        if isinstance(learn_suggested, list):
+            for ch in learn_suggested:
                 if not isinstance(ch, dict):
                     continue
                 scope = str(ch.get("scope") or "").strip()
@@ -947,9 +947,7 @@ def run_autopilot(
                 "source": source,
                 "auto_learn": auto_learn,
                 "mind_transcript_ref": str(mind_transcript_ref or ""),
-                "learned_changes": norm,
-                # Legacy field name (V1): entries were previously learned.jsonl ids.
-                "applied_entry_ids": [],
+                "learn_suggested": norm,
                 # Strict Thought DB mode: canonical preference claims.
                 "applied_claim_ids": applied_claim_ids,
                 "source_event_ids": ev_ids,
@@ -2054,7 +2052,7 @@ def run_autopilot(
             if rationale:
                 entry["rationale"] = rationale
 
-            if bool(entry.get("suggestion_emitted", False)) or bool(entry.get("applied_claim_ids")) or bool(entry.get("learned_entry_ids")):
+            if bool(entry.get("suggestion_emitted", False)) or bool(entry.get("applied_claim_ids")):
                 by_sig[sig] = entry
                 continue
 
@@ -2065,8 +2063,8 @@ def run_autopilot(
                 by_sig[sig] = entry
                 continue
 
-            applied_ids = _handle_learned_changes(
-                learned_changes=[{"scope": scope, "text": text, "rationale": rationale or "preference_mining", "severity": "medium"}],
+            applied_ids = _handle_learn_suggested(
+                learn_suggested=[{"scope": scope, "text": text, "rationale": rationale or "preference_mining", "severity": "medium"}],
                 batch_id=f"{base_batch_id}.preference_solidified",
                 source="mine_preferences",
                 mind_transcript_ref=mind_ref,
@@ -2091,7 +2089,6 @@ def run_autopilot(
                     "confidence": conf_f,
                     "scope": scope,
                     "text": text,
-                    "applied_entry_ids": [],
                     "applied_claim_ids": list(applied_ids),
                 }
             )
@@ -3212,7 +3209,7 @@ def run_autopilot(
                     "mitigation": [
                         ("mind_circuit_open: risk_judge skipped; treat as high risk" if risk_state == "skipped" else "mind_error: risk_judge failed; treat as high risk")
                     ],
-                    "learned_changes": [],
+                    "learn_suggested": [],
                 }
             risk_rec = evw.append(
                 {
@@ -3240,8 +3237,8 @@ def run_autopilot(
             _persist_segment_state()
 
             # Learned tightening suggestions from risk_judge.
-            applied = _handle_learned_changes(
-                learned_changes=risk_obj.get("learned_changes"),
+            applied = _handle_learn_suggested(
+                learn_suggested=risk_obj.get("learn_suggested"),
                 batch_id=f"b{batch_idx}",
                 source="risk_judge",
                 mind_transcript_ref=risk_mind_ref,
@@ -3250,26 +3247,26 @@ def run_autopilot(
 
             # Optional immediate user escalation on high risk.
             vr = runtime_cfg.get("violation_response") if isinstance(runtime_cfg.get("violation_response"), dict) else {}
-            prompt_user = bool(vr.get("prompt_user_on_high_risk", True))
+            ask_user = bool(vr.get("ask_user_on_high_risk", True))
             severity = str(risk_obj.get("severity") or "low")
             should_ask_user = bool(risk_obj.get("should_ask_user", False))
             cat = str(risk_obj.get("category") or "other")
 
-            sev_list = vr.get("prompt_user_risk_severities")
+            sev_list = vr.get("ask_user_risk_severities")
             if isinstance(sev_list, list) and any(str(x).strip() for x in sev_list):
                 sev_allow = {str(x).strip() for x in sev_list if str(x).strip()}
             else:
                 sev_allow = {"high", "critical"}
 
-            cat_list = vr.get("prompt_user_risk_categories")
+            cat_list = vr.get("ask_user_risk_categories")
             if isinstance(cat_list, list) and any(str(x).strip() for x in cat_list):
                 cat_allow = {str(x).strip() for x in cat_list if str(x).strip()}
             else:
                 cat_allow = set()
 
-            respect_should = bool(vr.get("prompt_user_respect_should_ask_user", True))
+            respect_should = bool(vr.get("ask_user_respect_should_ask_user", True))
             should_prompt = (
-                prompt_user
+                ask_user
                 and (severity in sev_allow)
                 and (not cat_allow or cat in cat_allow)
                 and (should_ask_user if respect_should else True)
@@ -3664,9 +3661,9 @@ def run_autopilot(
                 source="decide_next:set_testless_strategy",
             )
 
-        # Write learned changes (append-only; reversible via future tooling).
-        applied = _handle_learned_changes(
-            learned_changes=decision_obj.get("learned_changes"),
+        # Write learn suggestions (append-only; reversible via claim retraction).
+        applied = _handle_learn_suggested(
+            learn_suggested=decision_obj.get("learn_suggested"),
             batch_id=f"b{batch_idx}",
             source="decide_next",
             mind_transcript_ref=decision_mind_ref,
@@ -3972,7 +3969,7 @@ def run_autopilot(
                 _segment_add(decide_rec2)
                 _persist_segment_state()
 
-            # Apply overlay + learned from the post-user decision.
+            # Apply overlay + learn suggestions from the post-user decision.
             overlay_update = decision_obj.get("update_project_overlay") or {}
             if isinstance(overlay_update, dict):
                 _apply_set_testless_strategy_overlay_update(
@@ -3983,8 +3980,8 @@ def run_autopilot(
                     source="decide_next.after_user:set_testless_strategy",
                 )
 
-            applied2 = _handle_learned_changes(
-                learned_changes=decision_obj.get("learned_changes"),
+            applied2 = _handle_learn_suggested(
+                learn_suggested=decision_obj.get("learn_suggested"),
                 batch_id=f"b{batch_idx}.after_user",
                 source="decide_next.after_user",
                 mind_transcript_ref=decision2_mind_ref,

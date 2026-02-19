@@ -132,10 +132,10 @@ def default_config() -> dict[str, Any]:
             },
             "violation_response": {
                 "auto_learn": True,
-                "prompt_user_on_high_risk": True,
-                "prompt_user_risk_severities": ["high", "critical"],
-                "prompt_user_risk_categories": [],
-                "prompt_user_respect_should_ask_user": True,
+                "ask_user_on_high_risk": True,
+                "ask_user_risk_severities": ["high", "critical"],
+                "ask_user_risk_categories": [],
+                "ask_user_respect_should_ask_user": True,
             },
         },
     }

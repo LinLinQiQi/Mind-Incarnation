@@ -1446,7 +1446,7 @@ def run_autopilot(
             checks_obj["notes"] = notes_on_skipped if state == "skipped" else notes_on_error
         return (checks_obj if isinstance(checks_obj, dict) else _empty_check_plan()), str(mind_ref or ""), str(state or "")
 
-    def _plan_checks_and_record(
+    def _plan_checks_and_record2(
         *,
         batch_id: str,
         tag: str,
@@ -1456,8 +1456,13 @@ def run_autopilot(
         notes_on_skip: str,
         notes_on_skipped: str,
         notes_on_error: str,
+        postprocess: Any | None = None,
     ) -> tuple[dict[str, Any], str, str]:
-        """Plan minimal checks and always record a check_plan event (best-effort)."""
+        """Plan minimal checks and always record a check_plan event (best-effort).
+
+        Optionally applies a small postprocess hook to normalize the recorded check plan
+        (e.g., avoid re-prompting for testless strategy when Thought DB already has one).
+        """
 
         if not should_plan:
             checks_obj = _empty_check_plan()
@@ -1474,8 +1479,40 @@ def run_autopilot(
                 notes_on_error=notes_on_error,
             )
 
+        if postprocess and callable(postprocess):
+            try:
+                out = postprocess(checks_obj, state)
+                if isinstance(out, dict):
+                    checks_obj = out
+            except Exception:
+                pass
+
         _append_check_plan_record(batch_id=batch_id, checks_obj=checks_obj, mind_transcript_ref=checks_ref)
         return checks_obj, checks_ref, state
+
+    def _plan_checks_and_record(
+        *,
+        batch_id: str,
+        tag: str,
+        thought_db_context: dict[str, Any],
+        repo_observation: dict[str, Any],
+        should_plan: bool,
+        notes_on_skip: str,
+        notes_on_skipped: str,
+        notes_on_error: str,
+    ) -> tuple[dict[str, Any], str, str]:
+        """Plan minimal checks and always record a check_plan event (best-effort)."""
+        return _plan_checks_and_record2(
+            batch_id=batch_id,
+            tag=tag,
+            thought_db_context=thought_db_context,
+            repo_observation=repo_observation,
+            should_plan=should_plan,
+            notes_on_skip=notes_on_skip,
+            notes_on_skipped=notes_on_skipped,
+            notes_on_error=notes_on_error,
+            postprocess=None,
+        )
 
     def _sync_tls_overlay_from_thoughtdb(*, as_of_ts: str) -> tuple[str, str, bool]:
         """Sync canonical testless strategy claim -> derived overlay pointer (best-effort)."""
@@ -1669,29 +1706,32 @@ def run_autopilot(
                 mem=mem.service,
             )
             tdb_ctx_tls_obj = tdb_ctx_tls.to_prompt_obj()
-            checks_obj3, checks_ref3, state3 = _call_plan_min_checks(
+            notes_on_skipped = f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_tls_claim')})"
+            notes_on_error = f"mind_error: plan_min_checks({_notes_label('after_tls_claim')}) failed; using Thought DB strategy"
+
+            def _postprocess_after_tls_claim(obj: dict[str, Any], state: str) -> dict[str, Any]:
+                if str(state or "") != "ok":
+                    # Ensure we don't ask again; proceed with a conservative "no checks" plan.
+                    checks_obj["needs_testless_strategy"] = False
+                    checks_obj["testless_strategy_question"] = ""
+                    base_note = str(checks_obj.get("notes") or "").strip()
+                    extra = notes_on_skipped if str(state or "") == "skipped" else notes_on_error
+                    checks_obj["notes"] = (base_note + "; " + extra).strip("; ").strip()
+                    return checks_obj
+                return obj if isinstance(obj, dict) else _empty_check_plan()
+
+            checks_obj3, _, _ = _plan_checks_and_record2(
                 batch_id=batch_id_after_tls_claim,
                 tag=tag_after_tls_claim,
                 thought_db_context=tdb_ctx_tls_obj,
                 repo_observation=repo_observation,
-                notes_on_skipped=f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_tls_claim')})",
-                notes_on_error=f"mind_error: plan_min_checks({_notes_label('after_tls_claim')}) failed; using Thought DB strategy",
+                should_plan=True,
+                notes_on_skip="",
+                notes_on_skipped=notes_on_skipped,
+                notes_on_error=notes_on_error,
+                postprocess=_postprocess_after_tls_claim,
             )
-            if state3 != "ok":
-                # Ensure we don't ask again; proceed with a conservative "no checks" plan.
-                checks_obj["needs_testless_strategy"] = False
-                checks_obj["testless_strategy_question"] = ""
-                base_note = str(checks_obj.get("notes") or "").strip()
-                extra = (
-                    f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_tls_claim')})"
-                    if state3 == "skipped"
-                    else f"mind_error: plan_min_checks({_notes_label('after_tls_claim')}) failed; using Thought DB strategy"
-                )
-                checks_obj["notes"] = (base_note + "; " + extra).strip("; ").strip()
-                _append_check_plan_record(batch_id=batch_id_after_tls_claim, checks_obj=checks_obj, mind_transcript_ref=checks_ref3)
-            else:
-                checks_obj = checks_obj3
-                _append_check_plan_record(batch_id=batch_id_after_tls_claim, checks_obj=checks_obj3, mind_transcript_ref=checks_ref3)
+            checks_obj = checks_obj3
 
         return checks_obj, ""
 

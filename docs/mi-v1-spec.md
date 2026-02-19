@@ -658,7 +658,7 @@ Stable identifiers (V1+):
 }
 ```
 
-Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g., `batch_id="b0"` then `batch_id="b0.after_testless"` or `batch_id="b0.after_tls_claim"`) when it re-plans after learning/deriving a one-time testless verification strategy (canonicalized as a Thought DB preference Claim tagged `mi:testless_verification_strategy`).
+Note: MI may emit multiple `check_plan` records within a single batch cycle (e.g., `batch_id="b0"` then `batch_id="b0.after_testless"` or `batch_id="b0.after_tls_claim"`) when it re-plans after learning/deriving a one-time testless verification strategy (canonicalized as a Thought DB preference Claim tagged `mi:testless_verification_strategy`). If Thought DB already has a canonical strategy but `plan_min_checks` still requests it, MI re-plans once (`batch_id=...after_tls_claim`) and will not prompt the user.
 
 Implementation note: MI uses a shared internal helper to resolve the testless strategy consistently across normal check planning and loop-break-triggered checks.
 

@@ -8,7 +8,7 @@ from .core.config import load_config
 from .core.paths import default_home_dir
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mi",
         description="Mind Incarnation (MI) V1: a values-driven mind layer above execution agents (default Hands: Codex CLI).",
@@ -126,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     p_sset.add_argument("--dry-run", action="store_true", help="Show what would be written without writing.")
 
     p_run = sub.add_parser("run", help="Run MI batch autopilot (Hands configured via mi config).")
-    p_run.add_argument("task", help="User task for Hands to execute.")
+    p_run.add_argument("task", nargs="+", help="User task for Hands to execute (multi-word; quotes optional).")
     p_run.add_argument(
         "--cd",
         default="",
@@ -675,6 +675,11 @@ def main(argv: list[str] | None = None) -> int:
     p_gctdb.add_argument("--apply", action="store_true", help="Apply changes (default is dry-run).")
     p_gctdb.add_argument("--json", action="store_true", help="Print result as JSON.")
 
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     home_dir = Path(str(args.home)).expanduser().resolve() if args.home else default_home_dir()
     cfg = load_config(home_dir)

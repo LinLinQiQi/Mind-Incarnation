@@ -152,6 +152,8 @@ mi settings set --scope project --cd /path/to/your/project --ask-when-uncertain 
 在 Hands 之上运行 MI（默认将 transcript + evidence 写入 `~/.mind-incarnation/projects/<id>/`；默认 Hands=Codex）：
 
 ```bash
+# 引号可选；支持多词 task（示例用英文更直观）：
+mi run --cd /path/to/your/project Do X then verify with minimal checks
 mi run --cd /path/to/your/project "完成 X，并用最小检查验证。"
 ```
 
@@ -205,7 +207,7 @@ mi run --cd /path/to/your/project --why "完成 X，并用最小检查验证。"
 - `--cd` 可省略：
   - 在 git repo 内部：MI 默认会使用 git toplevel（仓库根目录），除非当前目录曾经被你作为一个独立的 MI project root 使用过（例如 monorepo 子项目）。
   - 不在 git repo 内：MI 会优先使用 `@pinned`（如果已记录），否则使用 `@last`（如果已记录），否则使用当前目录。
-- 你也可以设置环境变量 `$MI_CD`（推荐）或 `$MI_PROJECT_ROOT`（legacy），从任意目录运行 MI 命令而无需反复写 `--cd`/`-C`。
+- 你也可以设置环境变量 `$MI_CD`（推荐；可以是路径或 `@last/@pinned/@alias`）或 `$MI_PROJECT_ROOT`（legacy 路径），从任意目录运行 MI 命令而无需反复写 `--cd`/`-C`。
 - 也可以用选择 token：
   - `--cd @last` / `--cd @pinned` / `--cd @<alias>`
   - 通过 `mi project use`、`mi project pin/unpin`、`mi project alias add/rm/list` 管理

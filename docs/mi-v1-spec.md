@@ -1120,13 +1120,14 @@ mi --home ~/.mind-incarnation settings set --scope project --cd <project_root> -
 Run batch autopilot:
 
 ```bash
-mi --home ~/.mind-incarnation run --cd <project_root> "<task>"
+# <task> can be multi-word without quotes (quotes still work):
+mi --home ~/.mind-incarnation run --cd <project_root> <task words...>
 
 # Script/CI:
-mi --home ~/.mind-incarnation run --cd <project_root> --quiet "<task>"
+mi --home ~/.mind-incarnation run --cd <project_root> --quiet <task words...>
 
 # Debug:
-mi --home ~/.mind-incarnation run --cd <project_root> --hands-raw "<task>"
+mi --home ~/.mind-incarnation run --cd <project_root> --hands-raw <task words...>
 ```
 
 Everyday status (front-door, read-only):
@@ -1197,7 +1198,7 @@ Notes on `--cd` (project root):
 - `--cd` is optional. If omitted, MI infers a project root from your current working directory:
   - for git repos: defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject)
   - for non-git dirs: uses `@pinned` (if recorded), otherwise `@last` (if recorded), otherwise uses the current directory
-- You can also set `$MI_CD` (preferred) or `$MI_PROJECT_ROOT` (legacy) to run MI commands from anywhere without repeating `--cd`/`-C`.
+- You can also set `$MI_CD` (preferred; a path or `@last/@pinned/@alias`) or `$MI_PROJECT_ROOT` (legacy path) to run MI commands from anywhere without repeating `--cd`/`-C`.
 - `--cd` also supports selection tokens:
   - `--cd @last` (last used project)
   - `--cd @pinned` (pinned project)

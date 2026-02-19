@@ -1107,6 +1107,12 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         no_mi_prompt = bool(getattr(args, "no_mi_prompt", False))
         run_redact = bool(getattr(args, "redact", False))
 
+        task_obj = getattr(args, "task", "")
+        if isinstance(task_obj, list):
+            task = " ".join(str(x) for x in task_obj).strip()
+        else:
+            task = str(task_obj or "").strip()
+
         hands_exec, hands_resume = make_hands_functions(cfg, live=live, hands_raw=hands_raw, redact=run_redact)
         project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
         project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
@@ -1118,7 +1124,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         continue_default = bool(hands_cfg.get("continue_across_runs", False)) if isinstance(hands_cfg, dict) else False
         continue_hands = bool(args.continue_hands or continue_default)
         result = run_autopilot(
-            task=args.task,
+            task=task,
             project_root=str(project_root),
             home_dir=str(home_dir),
             max_batches=args.max_batches,

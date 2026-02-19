@@ -298,9 +298,15 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
 
     env_cd = str(os.environ.get("MI_CD") or "").strip()
     if env_cd:
-        p = Path(env_cd).expanduser().resolve()
-        if p.exists():
-            return p, "env:MI_CD"
+        if env_cd.startswith("@"):
+            token = env_cd
+            p = resolve_project_selection_token(home_dir, token)
+            if p is not None:
+                return p, f"env:MI_CD:{token}"
+        else:
+            p = Path(env_cd).expanduser().resolve()
+            if p.exists():
+                return p, "env:MI_CD"
 
     env_root = str(os.environ.get("MI_PROJECT_ROOT") or "").strip()
     if env_root:

@@ -147,6 +147,39 @@ class TestCliProjectRootResolution(unittest.TestCase):
             self.assertEqual(root, a.resolve())
             self.assertEqual(reason, "env:MI_CD")
 
+    def test_env_mi_cd_token_resolves_from_selection_registry(self) -> None:
+        with _patched_env({"MI_CD": None, "MI_PROJECT_ROOT": None}), tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            a = base / "a"
+            a.mkdir(parents=True, exist_ok=True)
+
+            gp = GlobalPaths(home_dir=Path(home))
+            gp.project_selection_path.parent.mkdir(parents=True, exist_ok=True)
+            gp.project_selection_path.write_text(
+                json.dumps({"version": "v1", "aliases": {"foo": {"root_path": str(a.resolve())}}}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            with _patched_env({"MI_CD": "@foo"}):
+                root, reason = resolve_cli_project_root(Path(home), "", cwd=base)
+
+            self.assertEqual(root, a.resolve())
+            self.assertEqual(reason, "env:MI_CD:@foo")
+
+    def test_env_mi_cd_token_missing_is_ignored(self) -> None:
+        with _patched_env({"MI_CD": None, "MI_PROJECT_ROOT": None}), tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            a = base / "a"
+            b = base / "b"
+            a.mkdir(parents=True, exist_ok=True)
+            b.mkdir(parents=True, exist_ok=True)
+
+            with _patched_env({"MI_CD": "@missing", "MI_PROJECT_ROOT": str(b)}):
+                root, reason = resolve_cli_project_root(Path(home), "", cwd=a)
+
+            self.assertEqual(root, b.resolve())
+            self.assertEqual(reason, "env:MI_PROJECT_ROOT")
+
     def test_cd_token_alias_resolves_from_selection_registry(self) -> None:
         with _patched_env({"MI_CD": None, "MI_PROJECT_ROOT": None}), tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
             base = Path(td)

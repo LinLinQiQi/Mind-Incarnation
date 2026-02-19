@@ -150,6 +150,317 @@ def _resolve_project_root_from_args(home_dir: Path, cd_arg: str, *, cfg: dict[st
     return root
 
 
+def _latest_transcript_path(pp: ProjectPaths, *, mind: bool) -> Path:
+    subdir = "mind" if mind else "hands"
+    tdir = pp.transcripts_dir / subdir
+    files = sorted([p for p in tdir.glob("*.jsonl") if p.is_file()])
+    return files[-1] if files else Path("")
+
+
+def _render_transcript(tp: Path, *, lines: int, jsonl: bool, redact: bool) -> int:
+    if not tp or not str(tp):
+        print("No transcript found.", file=sys.stderr)
+        return 2
+    if not tp.exists():
+        print(f"Transcript not found: {tp}", file=sys.stderr)
+        return 2
+
+    real_tp = resolve_transcript_path(tp)
+    rows = tail_transcript_lines(tp, lines)
+    print(str(tp))
+    if real_tp != tp:
+        print(f"(archived -> {real_tp})")
+    if jsonl:
+        for line in rows:
+            print(redact_text(line) if redact else line)
+        return 0
+
+    for line in rows:
+        try:
+            rec = json.loads(line)
+        except Exception:
+            print(redact_text(line) if redact else line)
+            continue
+        if not isinstance(rec, dict):
+            print(redact_text(line) if redact else line)
+            continue
+        ts = str(rec.get("ts") or "")
+        stream = str(rec.get("stream") or "")
+        payload = rec.get("line")
+        payload_s = str(payload) if payload is not None else ""
+        if redact:
+            payload_s = redact_text(payload_s)
+        print(f"{ts} {stream} {payload_s}".strip())
+    return 0
+
+
+def _render_last_bundle(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -> int:
+    project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
+    pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+
+    bundle = load_last_batch_bundle(pp.evidence_log_path)
+    hands_input = bundle.get("hands_input") if isinstance(bundle.get("hands_input"), dict) else None
+    evidence_item = bundle.get("evidence_item") if isinstance(bundle.get("evidence_item"), dict) else None
+    decide_next = bundle.get("decide_next") if isinstance(bundle.get("decide_next"), dict) else None
+
+    transcript_path = ""
+    if hands_input and isinstance(hands_input.get("transcript_path"), str):
+        transcript_path = hands_input["transcript_path"]
+    elif evidence_item and isinstance(evidence_item.get("hands_transcript_ref"), str):
+        transcript_path = evidence_item["hands_transcript_ref"]
+
+    last_msg = ""
+    if transcript_path:
+        last_msg = last_agent_message_from_transcript(Path(transcript_path))
+
+    mi_input_text = (hands_input.get("input") if hands_input else "") or ""
+    hands_last_text = last_msg or ""
+
+    evidence_item_out = evidence_item or {}
+    decide_next_out = decide_next or {}
+    state_corrupt_recent_raw = bundle.get("state_corrupt_recent") if isinstance(bundle.get("state_corrupt_recent"), dict) else None
+    state_corrupt_recent_out = dict(state_corrupt_recent_raw) if isinstance(state_corrupt_recent_raw, dict) else {}
+    why_trace_raw = bundle.get("why_trace") if isinstance(bundle.get("why_trace"), dict) else None
+    why_traces_raw = bundle.get("why_traces") if isinstance(bundle.get("why_traces"), list) else []
+    why_trace_out = dict(why_trace_raw) if isinstance(why_trace_raw, dict) else {}
+    why_traces_out = [dict(x) for x in why_traces_raw if isinstance(x, dict)]
+    learn_update_raw = bundle.get("learn_update") if isinstance(bundle.get("learn_update"), dict) else None
+    learn_update_out = dict(learn_update_raw) if isinstance(learn_update_raw, dict) else {}
+    learn_suggested_out = (bundle.get("learn_suggested") or []) if isinstance(bundle.get("learn_suggested"), list) else []
+    learn_applied_out = (bundle.get("learn_applied") or []) if isinstance(bundle.get("learn_applied"), list) else []
+    if bool(getattr(args, "redact", False)):
+        mi_input_text = redact_text(mi_input_text)
+        hands_last_text = redact_text(hands_last_text)
+        if isinstance(evidence_item_out, dict):
+            for k in ("facts", "results", "unknowns", "risk_signals"):
+                v = evidence_item_out.get(k)
+                if isinstance(v, list):
+                    evidence_item_out[k] = [redact_text(str(x)) for x in v]
+        if isinstance(decide_next_out, dict):
+            for k in ("notes", "ask_user_question", "next_hands_input"):
+                v = decide_next_out.get(k)
+                if isinstance(v, str) and v:
+                    decide_next_out[k] = redact_text(v)
+            inner = decide_next_out.get("decision")
+            if isinstance(inner, dict):
+                for k in ("notes", "ask_user_question", "next_hands_input"):
+                    v = inner.get(k)
+                    if isinstance(v, str) and v:
+                        inner[k] = redact_text(v)
+        if isinstance(learn_update_out, dict) and learn_update_out:
+            out0 = learn_update_out.get("output")
+            if isinstance(out0, dict):
+                patch0 = out0.get("patch")
+                if isinstance(patch0, dict):
+                    claims = patch0.get("claims") if isinstance(patch0.get("claims"), list) else []
+                    for c in claims:
+                        if isinstance(c, dict) and isinstance(c.get("text"), str) and c.get("text"):
+                            c["text"] = redact_text(str(c.get("text") or ""))
+                        if isinstance(c, dict) and isinstance(c.get("notes"), str) and c.get("notes"):
+                            c["notes"] = redact_text(str(c.get("notes") or ""))
+                    edges = patch0.get("edges") if isinstance(patch0.get("edges"), list) else []
+                    for e in edges:
+                        if isinstance(e, dict) and isinstance(e.get("notes"), str) and e.get("notes"):
+                            e["notes"] = redact_text(str(e.get("notes") or ""))
+                retracts = out0.get("retract") if isinstance(out0.get("retract"), list) else []
+                for r in retracts:
+                    if isinstance(r, dict) and isinstance(r.get("rationale"), str) and r.get("rationale"):
+                        r["rationale"] = redact_text(str(r.get("rationale") or ""))
+        for rec in learn_suggested_out:
+            if not isinstance(rec, dict):
+                continue
+            chs = rec.get("learn_suggested")
+            if not isinstance(chs, list):
+                continue
+            for ch in chs:
+                if not isinstance(ch, dict):
+                    continue
+                t = ch.get("text")
+                if isinstance(t, str) and t:
+                    ch["text"] = redact_text(t)
+                r = ch.get("rationale")
+                if isinstance(r, str) and r:
+                    ch["rationale"] = redact_text(r)
+        for rec in [why_trace_out, *why_traces_out]:
+            if not isinstance(rec, dict) or not rec:
+                continue
+            q = rec.get("query")
+            if isinstance(q, str) and q:
+                rec["query"] = redact_text(q)
+            out2 = rec.get("output")
+            if isinstance(out2, dict):
+                for k in ("explanation", "notes"):
+                    v = out2.get(k)
+                    if isinstance(v, str) and v:
+                        out2[k] = redact_text(v)
+        items = state_corrupt_recent_out.get("items") if isinstance(state_corrupt_recent_out.get("items"), list) else []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            for k in ("path", "quarantined_to", "error", "quarantine_error"):
+                v = it.get(k)
+                if isinstance(v, str) and v:
+                    it[k] = redact_text(v)
+
+    out = {
+        "project_root": str(project_root),
+        "project_dir": str(pp.project_dir),
+        "evidence_log": str(pp.evidence_log_path),
+        "batch_id": bundle.get("batch_id") or "",
+        "thread_id": bundle.get("thread_id") or "",
+        "hands_transcript": transcript_path,
+        "mi_input": mi_input_text,
+        "hands_last_message": hands_last_text,
+        "evidence_item": evidence_item_out,
+        "check_plan": (bundle.get("check_plan") or {}) if isinstance(bundle.get("check_plan"), dict) else {},
+        "auto_answer": (bundle.get("auto_answer") or {}) if isinstance(bundle.get("auto_answer"), dict) else {},
+        "risk_event": (bundle.get("risk_event") or {}) if isinstance(bundle.get("risk_event"), dict) else {},
+        "state_corrupt_recent": state_corrupt_recent_out,
+        "why_trace": why_trace_out,
+        "why_traces": why_traces_out,
+        "learn_update": learn_update_out,
+        "learn_suggested": learn_suggested_out,
+        "learn_applied": learn_applied_out,
+        "loop_guard": (bundle.get("loop_guard") or {}) if isinstance(bundle.get("loop_guard"), dict) else {},
+        "loop_break": (bundle.get("loop_break") or {}) if isinstance(bundle.get("loop_break"), dict) else {},
+        "decide_next": decide_next_out,
+        "mind_transcripts": (bundle.get("mind_transcripts") or []) if isinstance(bundle.get("mind_transcripts"), list) else [],
+    }
+
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 0
+
+    print(f"thread_id={out['thread_id']} batch_id={out['batch_id']}")
+    print(f"project_dir={out['project_dir']}")
+    print(f"evidence_log={out['evidence_log']}")
+    items2 = state_corrupt_recent_out.get("items") if isinstance(state_corrupt_recent_out.get("items"), list) else []
+    if items2:
+        labels: list[str] = []
+        for it in items2:
+            if isinstance(it, dict):
+                lab = str(it.get("label") or "").strip()
+                if lab:
+                    labels.append(lab)
+        label_s = ",".join(sorted(set(labels))[:6])
+        msg = f"state_corrupt_recent: n={len(items2)}" + (f" labels={label_s}" if label_s else "")
+        print(msg)
+    if transcript_path:
+        print(f"hands_transcript={transcript_path}")
+    if out["mi_input"].strip():
+        print("\nmi_input:\n" + out["mi_input"].strip())
+    if out["hands_last_message"].strip():
+        print("\nhands_last_message:\n" + out["hands_last_message"].strip())
+    if isinstance(decide_next_out, dict) and decide_next_out:
+        st = str(decide_next_out.get("status") or "")
+        na = str(decide_next_out.get("next_action") or "")
+        cf = decide_next_out.get("confidence")
+        try:
+            cf_s = f"{float(cf):.2f}" if cf is not None else ""
+        except Exception:
+            cf_s = str(cf or "")
+        hdr = " ".join([x for x in [f"status={st}" if st else "", f"next_action={na}" if na else "", f"confidence={cf_s}" if cf_s else ""] if x])
+        if hdr:
+            print("\ndecide_next:\n" + hdr)
+        notes_s = str(decide_next_out.get("notes") or "").strip()
+        if notes_s:
+            print("\nnotes:\n" + notes_s)
+        if na == "send_to_hands":
+            nxt = str(decide_next_out.get("next_hands_input") or "").strip()
+            if nxt:
+                print("\nnext_hands_input (planned):\n" + nxt)
+        if na == "ask_user":
+            q = str(decide_next_out.get("ask_user_question") or "").strip()
+            if q:
+                print("\nask_user_question:\n" + q)
+    if isinstance(why_trace_out, dict) and why_trace_out:
+        out2 = why_trace_out.get("output") if isinstance(why_trace_out.get("output"), dict) else {}
+        st2 = str(why_trace_out.get("state") or "").strip()
+        status2 = str(out2.get("status") or "").strip()
+        cf2 = out2.get("confidence")
+        chosen2 = out2.get("chosen_claim_ids") if isinstance(out2.get("chosen_claim_ids"), list) else []
+        edges2 = why_trace_out.get("written_edge_ids") if isinstance(why_trace_out.get("written_edge_ids"), list) else []
+        try:
+            cf2_s = f"{float(cf2):.2f}" if cf2 is not None else ""
+        except Exception:
+            cf2_s = str(cf2 or "")
+        parts2 = []
+        if st2:
+            parts2.append(f"state={st2}")
+        if status2:
+            parts2.append(f"status={status2}")
+        if cf2_s:
+            parts2.append(f"confidence={cf2_s}")
+        parts2.append(f"chosen={len(chosen2)}")
+        parts2.append(f"edges_written={len(edges2)}")
+        print("\nwhy_trace:\n" + " ".join([x for x in parts2 if x]))
+        if chosen2:
+            print("chosen_claim_ids:")
+            for cid in chosen2[:5]:
+                if isinstance(cid, str) and cid.strip():
+                    print(f"- {cid.strip()}")
+    mts = out.get("mind_transcripts")
+    if isinstance(mts, list) and mts:
+        print("\nmind_transcripts:")
+        for it in mts[:12]:
+            if not isinstance(it, dict):
+                continue
+            k = str(it.get("kind") or "").strip()
+            ref = str(it.get("mind_transcript_ref") or "").strip()
+            if k and ref:
+                print(f"- {k}: {ref}")
+
+    lu = out.get("learn_update")
+    if isinstance(lu, dict) and lu:
+        print("\nlearn_update:")
+        print(f"- {summarize_evidence_record(lu)}")
+
+    ls = out.get("learn_suggested")
+    if isinstance(ls, list) and ls:
+        print("\nlearn_suggested:")
+        for rec in ls[:12]:
+            if not isinstance(rec, dict):
+                continue
+            sid = str(rec.get("id") or "").strip()
+            auto = bool(rec.get("auto_learn", True))
+            applied_ids = rec.get("applied_claim_ids") if isinstance(rec.get("applied_claim_ids"), list) else []
+            summary = summarize_evidence_record(rec)
+            if sid and (not auto) and (not applied_ids):
+                summary = summary + f" (apply: mi claim apply-suggested {sid} --cd {project_root})"
+            print(f"- {summary}")
+
+    la = out.get("learn_applied")
+    if isinstance(la, list) and la:
+        print("\nlearn_applied:")
+        for rec in la[:8]:
+            if not isinstance(rec, dict):
+                continue
+            print(f"- {summarize_evidence_record(rec)}")
+    if isinstance(evidence_item_out, dict) and evidence_item_out:
+        facts = evidence_item_out.get("facts") if isinstance(evidence_item_out.get("facts"), list) else []
+        results = evidence_item_out.get("results") if isinstance(evidence_item_out.get("results"), list) else []
+        unknowns = evidence_item_out.get("unknowns") if isinstance(evidence_item_out.get("unknowns"), list) else []
+        if facts:
+            print("\nfacts:")
+            for x in facts[:8]:
+                xs = str(x).strip()
+                if xs:
+                    print(f"- {xs}")
+        if results:
+            print("\nresults:")
+            for x in results[:8]:
+                xs = str(x).strip()
+                if xs:
+                    print(f"- {xs}")
+        if unknowns:
+            print("\nunknowns:")
+            for x in unknowns[:8]:
+                xs = str(x).strip()
+                if xs:
+                    print(f"- {xs}")
+    return 0
+
+
 
 
 def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -> int:
@@ -437,7 +748,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         st = str(decide_next.get("status") or "") if isinstance(decide_next, dict) else ""
         na = str(decide_next.get("next_action") or "") if isinstance(decide_next, dict) else ""
         if st in ("blocked", "not_done") or na in ("ask_user", "continue", "run_checks"):
-            next_steps.append("mi last --redact")
+            next_steps.append("mi show last --redact")
         if bindings and (not host_sync_ok):
             next_steps.append("mi host sync --json")
         if not next_steps:
@@ -523,60 +834,33 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             print("missing ref", file=sys.stderr)
             return 2
 
-        # Pseudo-refs for reducing CLI surface area. These delegate to existing commands
-        # to keep behavior consistent and avoid branch drift.
+        # Pseudo-refs for reducing CLI surface area.
         token = ref.strip().lower()
         if token in ("last", "@last"):
-            args2 = argparse.Namespace(**vars(args))
-            args2.cmd = "last"
-            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+            return _render_last_bundle(args=args, home_dir=home_dir, cfg=cfg)
         if token in ("project", "overlay"):
             args2 = argparse.Namespace(**vars(args))
             args2.cmd = "project"
             args2.project_cmd = "show"
             return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
         if token in ("hands", "mind"):
-            args2 = argparse.Namespace(**vars(args))
-            args2.cmd = "transcript"
-            args2.tr_cmd = "show"
-            args2.mind = token == "mind"
-            args2.path = ""
-            # `mi show ... --json` is a natural ask; for transcripts the closest is raw JSONL.
-            if bool(getattr(args2, "json", False)) and not bool(getattr(args2, "jsonl", False)):
-                args2.jsonl = True
-            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+            project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
+            pp2 = ProjectPaths(home_dir=home_dir, project_root=project_root)
+            tp = _latest_transcript_path(pp2, mind=token == "mind")
+            want_jsonl = bool(getattr(args, "jsonl", False)) or bool(getattr(args, "json", False))
+            n = int(getattr(args, "lines", 200) or 200)
+            return _render_transcript(tp, lines=n, jsonl=want_jsonl, redact=bool(getattr(args, "redact", False)))
 
         # Transcript path shortcut (no project root required).
         if ref.endswith(".jsonl") or ref.endswith(".jsonl.gz"):
             tp = Path(ref).expanduser()
-            if not tp.exists():
-                print(f"Transcript not found: {tp}", file=sys.stderr)
-                return 2
-            real_tp = resolve_transcript_path(tp)
-            lines = tail_transcript_lines(tp, int(getattr(args, "lines", 200) or 200))
-            print(str(tp))
-            if real_tp != tp:
-                print(f"(archived -> {real_tp})")
-            if bool(getattr(args, "jsonl", False)):
-                for line in lines:
-                    print(redact_text(line) if bool(getattr(args, "redact", False)) else line)
-                return 0
-            for line in lines:
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    print(redact_text(line) if bool(getattr(args, "redact", False)) else line)
-                    continue
-                if not isinstance(rec, dict):
-                    print(redact_text(line) if bool(getattr(args, "redact", False)) else line)
-                    continue
-                ts = str(rec.get("ts") or "")
-                stream = str(rec.get("stream") or "")
-                payload = rec.get("line")
-                s = str(payload) if payload is not None else ""
-                out = f"{ts} {stream}: {s}".strip()
-                print(redact_text(out) if bool(getattr(args, "redact", False)) else out)
-            return 0
+            n = int(getattr(args, "lines", 200) or 200)
+            return _render_transcript(
+                tp,
+                lines=n,
+                jsonl=bool(getattr(args, "jsonl", False)),
+                redact=bool(getattr(args, "redact", False)),
+            )
 
         # Everything else is project-scoped by default.
         project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
@@ -693,6 +977,47 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             f"unknown ref: {ref} (expected ev_/cl_/nd_/wf_/ed_, a transcript .jsonl path, or one of: last/project/hands/mind)",
             file=sys.stderr,
         )
+        return 2
+
+    if args.cmd == "tail":
+        target = str(getattr(args, "target", "evidence") or "evidence").strip().lower() or "evidence"
+        redact = bool(getattr(args, "redact", False))
+        n_arg = getattr(args, "lines", None)
+
+        if target == "evidence":
+            n = int(n_arg) if n_arg is not None else 20
+            use_global = bool(getattr(args, "tail_global", False))
+            if use_global:
+                path = GlobalPaths(home_dir=home_dir).global_evidence_log_path
+            else:
+                project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
+                pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+                path = pp.evidence_log_path
+
+            if bool(getattr(args, "raw", False)):
+                for line in tail_raw_lines(path, n):
+                    print(redact_text(line) if redact else line)
+                return 0
+
+            objs = tail_json_objects(path, n)
+            if bool(getattr(args, "json", False)):
+                s = json.dumps(objs, indent=2, sort_keys=True)
+                print(redact_text(s) if redact else s)
+                return 0
+            for obj in objs:
+                s = summarize_evidence_record(obj)
+                print(redact_text(s) if redact else s)
+            return 0
+
+        if target in ("hands", "mind"):
+            n = int(n_arg) if n_arg is not None else 200
+            project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
+            pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+            tp = _latest_transcript_path(pp, mind=target == "mind")
+            want_jsonl = bool(getattr(args, "jsonl", False)) or bool(getattr(args, "raw", False))
+            return _render_transcript(tp, lines=n, jsonl=want_jsonl, redact=redact)
+
+        print(f"unknown tail target: {target!r} (expected evidence/hands/mind)", file=sys.stderr)
         return 2
 
     if args.cmd == "edit":
@@ -1141,357 +1466,6 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         if not quiet:
             print(result.render_text())
         return 0 if result.status == "done" else 1
-
-    if args.cmd == "last":
-        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
-        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
-
-        bundle = load_last_batch_bundle(pp.evidence_log_path)
-        hands_input = bundle.get("hands_input") if isinstance(bundle.get("hands_input"), dict) else None
-        evidence_item = bundle.get("evidence_item") if isinstance(bundle.get("evidence_item"), dict) else None
-        decide_next = bundle.get("decide_next") if isinstance(bundle.get("decide_next"), dict) else None
-
-        transcript_path = ""
-        if hands_input and isinstance(hands_input.get("transcript_path"), str):
-            transcript_path = hands_input["transcript_path"]
-        elif evidence_item and isinstance(evidence_item.get("hands_transcript_ref"), str):
-            transcript_path = evidence_item["hands_transcript_ref"]
-
-        last_msg = ""
-        if transcript_path:
-            last_msg = last_agent_message_from_transcript(Path(transcript_path))
-
-        mi_input_text = (hands_input.get("input") if hands_input else "") or ""
-        hands_last_text = last_msg or ""
-
-        evidence_item_out = evidence_item or {}
-        decide_next_out = decide_next or {}
-        state_corrupt_recent_raw = bundle.get("state_corrupt_recent") if isinstance(bundle.get("state_corrupt_recent"), dict) else None
-        state_corrupt_recent_out = dict(state_corrupt_recent_raw) if isinstance(state_corrupt_recent_raw, dict) else {}
-        why_trace_raw = bundle.get("why_trace") if isinstance(bundle.get("why_trace"), dict) else None
-        why_traces_raw = bundle.get("why_traces") if isinstance(bundle.get("why_traces"), list) else []
-        why_trace_out = dict(why_trace_raw) if isinstance(why_trace_raw, dict) else {}
-        why_traces_out = [dict(x) for x in why_traces_raw if isinstance(x, dict)]
-        learn_update_raw = bundle.get("learn_update") if isinstance(bundle.get("learn_update"), dict) else None
-        learn_update_out = dict(learn_update_raw) if isinstance(learn_update_raw, dict) else {}
-        learn_suggested_out = (bundle.get("learn_suggested") or []) if isinstance(bundle.get("learn_suggested"), list) else []
-        learn_applied_out = (bundle.get("learn_applied") or []) if isinstance(bundle.get("learn_applied"), list) else []
-        if args.redact:
-            mi_input_text = redact_text(mi_input_text)
-            hands_last_text = redact_text(hands_last_text)
-            if isinstance(evidence_item_out, dict):
-                for k in ("facts", "results", "unknowns", "risk_signals"):
-                    v = evidence_item_out.get(k)
-                    if isinstance(v, list):
-                        evidence_item_out[k] = [redact_text(str(x)) for x in v]
-            if isinstance(decide_next_out, dict):
-                for k in ("notes", "ask_user_question", "next_hands_input"):
-                    v = decide_next_out.get(k)
-                    if isinstance(v, str) and v:
-                        decide_next_out[k] = redact_text(v)
-                inner = decide_next_out.get("decision")
-                if isinstance(inner, dict):
-                    for k in ("notes", "ask_user_question", "next_hands_input"):
-                        v = inner.get(k)
-                        if isinstance(v, str) and v:
-                            inner[k] = redact_text(v)
-            # Redact learn_update patch claim texts/rationales.
-            if isinstance(learn_update_out, dict) and learn_update_out:
-                out0 = learn_update_out.get("output")
-                if isinstance(out0, dict):
-                    patch0 = out0.get("patch")
-                    if isinstance(patch0, dict):
-                        claims = patch0.get("claims") if isinstance(patch0.get("claims"), list) else []
-                        for c in claims:
-                            if isinstance(c, dict) and isinstance(c.get("text"), str) and c.get("text"):
-                                c["text"] = redact_text(str(c.get("text") or ""))
-                            if isinstance(c, dict) and isinstance(c.get("notes"), str) and c.get("notes"):
-                                c["notes"] = redact_text(str(c.get("notes") or ""))
-                        edges = patch0.get("edges") if isinstance(patch0.get("edges"), list) else []
-                        for e in edges:
-                            if isinstance(e, dict) and isinstance(e.get("notes"), str) and e.get("notes"):
-                                e["notes"] = redact_text(str(e.get("notes") or ""))
-                    retracts = out0.get("retract") if isinstance(out0.get("retract"), list) else []
-                    for r in retracts:
-                        if isinstance(r, dict) and isinstance(r.get("rationale"), str) and r.get("rationale"):
-                            r["rationale"] = redact_text(str(r.get("rationale") or ""))
-            # Redact learned suggestion texts/rationales (they may contain tokens/URLs).
-            for rec in learn_suggested_out:
-                if not isinstance(rec, dict):
-                    continue
-                chs = rec.get("learn_suggested")
-                if not isinstance(chs, list):
-                    continue
-                for ch in chs:
-                    if not isinstance(ch, dict):
-                        continue
-                    t = ch.get("text")
-                    if isinstance(t, str) and t:
-                        ch["text"] = redact_text(t)
-                    r = ch.get("rationale")
-                    if isinstance(r, str) and r:
-                        ch["rationale"] = redact_text(r)
-            # Redact WhyTrace query/explanation (they may contain paths/URLs/tokens).
-            for rec in [why_trace_out, *why_traces_out]:
-                if not isinstance(rec, dict) or not rec:
-                    continue
-                q = rec.get("query")
-                if isinstance(q, str) and q:
-                    rec["query"] = redact_text(q)
-                out2 = rec.get("output")
-                if isinstance(out2, dict):
-                    for k in ("explanation", "notes"):
-                        v = out2.get(k)
-                        if isinstance(v, str) and v:
-                            out2[k] = redact_text(v)
-            # Redact state recovery paths/errors (they may reveal local filesystem layout).
-            items = state_corrupt_recent_out.get("items") if isinstance(state_corrupt_recent_out.get("items"), list) else []
-            for it in items:
-                if not isinstance(it, dict):
-                    continue
-                for k in ("path", "quarantined_to", "error", "quarantine_error"):
-                    v = it.get(k)
-                    if isinstance(v, str) and v:
-                        it[k] = redact_text(v)
-
-        out = {
-            "project_root": str(project_root),
-            "project_dir": str(pp.project_dir),
-            "evidence_log": str(pp.evidence_log_path),
-            "batch_id": bundle.get("batch_id") or "",
-            "thread_id": bundle.get("thread_id") or "",
-            "hands_transcript": transcript_path,
-            "mi_input": mi_input_text,
-            "hands_last_message": hands_last_text,
-            "evidence_item": evidence_item_out,
-            "check_plan": (bundle.get("check_plan") or {}) if isinstance(bundle.get("check_plan"), dict) else {},
-            "auto_answer": (bundle.get("auto_answer") or {}) if isinstance(bundle.get("auto_answer"), dict) else {},
-            "risk_event": (bundle.get("risk_event") or {}) if isinstance(bundle.get("risk_event"), dict) else {},
-            "state_corrupt_recent": state_corrupt_recent_out,
-            "why_trace": why_trace_out,
-            "why_traces": why_traces_out,
-            "learn_update": learn_update_out,
-            "learn_suggested": learn_suggested_out,
-            "learn_applied": learn_applied_out,
-            "loop_guard": (bundle.get("loop_guard") or {}) if isinstance(bundle.get("loop_guard"), dict) else {},
-            "loop_break": (bundle.get("loop_break") or {}) if isinstance(bundle.get("loop_break"), dict) else {},
-            "decide_next": decide_next_out,
-            "mind_transcripts": (bundle.get("mind_transcripts") or []) if isinstance(bundle.get("mind_transcripts"), list) else [],
-        }
-
-        if args.json:
-            print(json.dumps(out, indent=2, sort_keys=True))
-            return 0
-
-        print(f"thread_id={out['thread_id']} batch_id={out['batch_id']}")
-        print(f"project_dir={out['project_dir']}")
-        print(f"evidence_log={out['evidence_log']}")
-        items2 = state_corrupt_recent_out.get("items") if isinstance(state_corrupt_recent_out.get("items"), list) else []
-        if items2:
-            labels: list[str] = []
-            for it in items2:
-                if isinstance(it, dict):
-                    lab = str(it.get("label") or "").strip()
-                    if lab:
-                        labels.append(lab)
-            label_s = ",".join(sorted(set(labels))[:6])
-            msg = f"state_corrupt_recent: n={len(items2)}" + (f" labels={label_s}" if label_s else "")
-            print(msg)
-        if transcript_path:
-            print(f"hands_transcript={transcript_path}")
-        if out["mi_input"].strip():
-            print("\nmi_input:\n" + out["mi_input"].strip())
-        if out["hands_last_message"].strip():
-            print("\nhands_last_message:\n" + out["hands_last_message"].strip())
-        if isinstance(decide_next_out, dict) and decide_next_out:
-            st = str(decide_next_out.get("status") or "")
-            na = str(decide_next_out.get("next_action") or "")
-            cf = decide_next_out.get("confidence")
-            try:
-                cf_s = f"{float(cf):.2f}" if cf is not None else ""
-            except Exception:
-                cf_s = str(cf or "")
-            hdr = " ".join([x for x in [f"status={st}" if st else "", f"next_action={na}" if na else "", f"confidence={cf_s}" if cf_s else ""] if x])
-            if hdr:
-                print("\ndecide_next:\n" + hdr)
-            notes_s = str(decide_next_out.get("notes") or "").strip()
-            if notes_s:
-                print("\nnotes:\n" + notes_s)
-            if na == "send_to_hands":
-                nxt = str(decide_next_out.get("next_hands_input") or "").strip()
-                if nxt:
-                    print("\nnext_hands_input (planned):\n" + nxt)
-            if na == "ask_user":
-                q = str(decide_next_out.get("ask_user_question") or "").strip()
-                if q:
-                    print("\nask_user_question:\n" + q)
-        if isinstance(why_trace_out, dict) and why_trace_out:
-            out2 = why_trace_out.get("output") if isinstance(why_trace_out.get("output"), dict) else {}
-            st2 = str(why_trace_out.get("state") or "").strip()
-            status2 = str(out2.get("status") or "").strip()
-            cf2 = out2.get("confidence")
-            chosen2 = out2.get("chosen_claim_ids") if isinstance(out2.get("chosen_claim_ids"), list) else []
-            edges2 = why_trace_out.get("written_edge_ids") if isinstance(why_trace_out.get("written_edge_ids"), list) else []
-            try:
-                cf2_s = f"{float(cf2):.2f}" if cf2 is not None else ""
-            except Exception:
-                cf2_s = str(cf2 or "")
-            parts2 = []
-            if st2:
-                parts2.append(f"state={st2}")
-            if status2:
-                parts2.append(f"status={status2}")
-            if cf2_s:
-                parts2.append(f"confidence={cf2_s}")
-            parts2.append(f"chosen={len(chosen2)}")
-            parts2.append(f"edges_written={len(edges2)}")
-            print("\nwhy_trace:\n" + " ".join([x for x in parts2 if x]))
-            if chosen2:
-                print("chosen_claim_ids:")
-                for cid in chosen2[:5]:
-                    if isinstance(cid, str) and cid.strip():
-                        print(f"- {cid.strip()}")
-        mts = out.get("mind_transcripts")
-        if isinstance(mts, list) and mts:
-            # Keep this short; `mi last --json` is the main interface for pointers.
-            print("\nmind_transcripts:")
-            for it in mts[:12]:
-                if not isinstance(it, dict):
-                    continue
-                k = str(it.get("kind") or "").strip()
-                ref = str(it.get("mind_transcript_ref") or "").strip()
-                if k and ref:
-                    print(f"- {k}: {ref}")
-
-        lu = out.get("learn_update")
-        if isinstance(lu, dict) and lu:
-            print("\nlearn_update:")
-            print(f"- {summarize_evidence_record(lu)}")
-
-        ls = out.get("learn_suggested")
-        if isinstance(ls, list) and ls:
-            print("\nlearn_suggested:")
-            for rec in ls[:12]:
-                if not isinstance(rec, dict):
-                    continue
-                sid = str(rec.get("id") or "").strip()
-                auto = bool(rec.get("auto_learn", True))
-                applied_ids = rec.get("applied_claim_ids") if isinstance(rec.get("applied_claim_ids"), list) else []
-                summary = summarize_evidence_record(rec)
-                if sid and (not auto) and (not applied_ids):
-                    summary = summary + f" (apply: mi claim apply-suggested {sid} --cd {project_root})"
-                print(f"- {summary}")
-
-        la = out.get("learn_applied")
-        if isinstance(la, list) and la:
-            print("\nlearn_applied:")
-            for rec in la[:8]:
-                if not isinstance(rec, dict):
-                    continue
-                print(f"- {summarize_evidence_record(rec)}")
-        if isinstance(evidence_item_out, dict) and evidence_item_out:
-            facts = evidence_item_out.get("facts") if isinstance(evidence_item_out.get("facts"), list) else []
-            results = evidence_item_out.get("results") if isinstance(evidence_item_out.get("results"), list) else []
-            unknowns = evidence_item_out.get("unknowns") if isinstance(evidence_item_out.get("unknowns"), list) else []
-            if facts:
-                print("\nfacts:")
-                for x in facts[:8]:
-                    xs = str(x).strip()
-                    if xs:
-                        print(f"- {xs}")
-            if results:
-                print("\nresults:")
-                for x in results[:8]:
-                    xs = str(x).strip()
-                    if xs:
-                        print(f"- {xs}")
-            if unknowns:
-                print("\nunknowns:")
-                for x in unknowns[:8]:
-                    xs = str(x).strip()
-                    if xs:
-                        print(f"- {xs}")
-        return 0
-
-    if args.cmd == "evidence":
-        if args.evidence_cmd == "show":
-            eid = str(getattr(args, "event_id", "") or "").strip()
-            use_global = bool(getattr(args, "ev_global", False))
-            if use_global:
-                path = GlobalPaths(home_dir=home_dir).global_evidence_log_path
-                obj = find_evidence_event(evidence_log_path=path, event_id=eid)
-            else:
-                project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
-                pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
-                path = pp.evidence_log_path
-                obj = find_evidence_event(evidence_log_path=path, event_id=eid)
-
-            if obj is None:
-                where = "global" if use_global else "project"
-                print(f"evidence event not found: {eid} (scope={where})", file=sys.stderr)
-                return 2
-
-            s = json.dumps(obj, indent=2, sort_keys=True)
-            print(redact_text(s) if bool(getattr(args, "redact", False)) else s)
-            return 0
-
-        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
-        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
-        if args.evidence_cmd == "tail":
-            if args.raw:
-                for line in tail_raw_lines(pp.evidence_log_path, args.lines):
-                    print(redact_text(line) if args.redact else line)
-                return 0
-            for obj in tail_json_objects(pp.evidence_log_path, args.lines):
-                s = summarize_evidence_record(obj)
-                print(redact_text(s) if args.redact else s)
-            return 0
-
-    if args.cmd == "transcript":
-        project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
-        pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
-        if args.tr_cmd == "show":
-            if args.path:
-                tp = Path(args.path).expanduser()
-            else:
-                subdir = "mind" if args.mind else "hands"
-                tdir = pp.transcripts_dir / subdir
-                files = sorted([p for p in tdir.glob("*.jsonl") if p.is_file()])
-                tp = files[-1] if files else Path("")
-            if not tp or not str(tp):
-                print("No transcript found.", file=sys.stderr)
-                return 2
-            if not tp.exists():
-                print(f"Transcript not found: {tp}", file=sys.stderr)
-                return 2
-
-            real_tp = resolve_transcript_path(tp)
-            lines = tail_transcript_lines(tp, args.lines)
-            print(str(tp))
-            if real_tp != tp:
-                print(f"(archived -> {real_tp})")
-            if args.jsonl:
-                for line in lines:
-                    print(redact_text(line) if args.redact else line)
-                return 0
-
-            for line in lines:
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    print(line)
-                    continue
-                if not isinstance(rec, dict):
-                    print(line)
-                    continue
-                ts = str(rec.get("ts") or "")
-                stream = str(rec.get("stream") or "")
-                payload = rec.get("line")
-                payload_s = str(payload) if payload is not None else ""
-                if args.redact:
-                    payload_s = redact_text(payload_s)
-                print(f"{ts} {stream} {payload_s}")
-            return 0
 
     if args.cmd == "memory":
         if args.mem_cmd == "index":

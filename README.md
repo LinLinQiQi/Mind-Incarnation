@@ -180,11 +180,18 @@ mi show cl_<id> --cd /path/to/your/project --json
 mi show wf_<id> --cd /path/to/your/project --json
 mi show /path/to/transcript.jsonl -n 200
 
-# Convenience pseudo-refs (delegate to existing commands):
+# Convenience pseudo-refs:
 mi show last --cd /path/to/your/project --json
 mi show project --cd /path/to/your/project --json
 mi show hands --cd /path/to/your/project -n 200
 mi show mind --cd /path/to/your/project -n 200
+
+# Tail recent activity (evidence by default):
+mi tail --cd /path/to/your/project -n 20
+mi tail evidence --cd /path/to/your/project -n 20 --raw
+mi tail evidence --global -n 20 --json
+mi tail hands --cd /path/to/your/project -n 200
+mi tail mind --cd /path/to/your/project -n 200 --jsonl
 
 # List resources (aliases for claim/node/edge/workflow list):
 mi ls claims --cd /path/to/your/project
@@ -229,7 +236,7 @@ mi show last --cd /path/to/your/project
 mi show last --cd /path/to/your/project --redact
 ```
 
-Note: `mi show last --json` (alias of `mi last --json`) includes `why_trace` / `why_traces` when present (e.g., from `mi run --why`), includes `state_corrupt_recent` when MI had to quarantine a corrupt state file, and includes `loop_guard` and `loop_break` when MI detects and tries to break a stuck repetition loop. You can control low-level state warning stderr printing via `MI_STATE_WARNINGS_STDERR=1` (force) / `0` (silence).
+Note: `mi show last --json` includes `why_trace` / `why_traces` when present (e.g., from `mi run --why`), includes `state_corrupt_recent` when MI had to quarantine a corrupt state file, and includes `loop_guard` and `loop_break` when MI detects and tries to break a stuck repetition loop. You can control low-level state warning stderr printing via `MI_STATE_WARNINGS_STDERR=1` (force) / `0` (silence).
 
 Show per-project overlay + resolved storage paths:
 
@@ -259,15 +266,17 @@ mi project alias list
 mi run --cd @repo1 "Do X, then verify with minimal checks."
 ```
 
-Tail EvidenceLog / show raw transcript:
+Tail EvidenceLog / transcript:
 
 ```bash
-mi evidence tail --cd /path/to/your/project -n 20
+mi tail --cd /path/to/your/project -n 20
+mi tail evidence --cd /path/to/your/project -n 20 --raw
+mi tail evidence --global -n 20 --json
 mi show <event_id> --cd /path/to/your/project
 mi show <event_id> --cd /path/to/your/project --redact
-mi show hands --cd /path/to/your/project -n 200
-mi show hands --cd /path/to/your/project -n 200 --redact
-mi show mind --cd /path/to/your/project -n 200
+mi tail hands --cd /path/to/your/project -n 200
+mi tail hands --cd /path/to/your/project -n 200 --jsonl --redact
+mi tail mind --cd /path/to/your/project -n 200
 ```
 
 Optional: archive older transcripts (gzip + stubs; default is dry-run):

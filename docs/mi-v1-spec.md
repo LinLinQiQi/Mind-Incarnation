@@ -1187,11 +1187,18 @@ mi --home ~/.mind-incarnation show ev_<id> --global
 # Transcript path tail:
 mi --home ~/.mind-incarnation show /path/to/transcript.jsonl -n 200
 
-# Convenience pseudo-refs (delegate to existing commands):
-mi --home ~/.mind-incarnation show last --cd <project_root>      # == mi last
-mi --home ~/.mind-incarnation show hands --cd <project_root> -n 200  # == mi transcript show
-mi --home ~/.mind-incarnation show mind --cd <project_root> -n 200   # == mi transcript show --mind
-mi --home ~/.mind-incarnation show project --cd <project_root>   # == mi project show
+# Convenience pseudo-refs:
+mi --home ~/.mind-incarnation show last --cd <project_root>
+mi --home ~/.mind-incarnation show hands --cd <project_root> -n 200
+mi --home ~/.mind-incarnation show mind --cd <project_root> -n 200
+mi --home ~/.mind-incarnation show project --cd <project_root>
+
+# Tail recent activity:
+mi --home ~/.mind-incarnation tail --cd <project_root> -n 20
+mi --home ~/.mind-incarnation tail evidence --cd <project_root> -n 20 --raw
+mi --home ~/.mind-incarnation tail evidence --global -n 20 --json
+mi --home ~/.mind-incarnation tail hands --cd <project_root> -n 200
+mi --home ~/.mind-incarnation tail mind --cd <project_root> -n 200 --jsonl
 ```
 
 Notes:
@@ -1200,7 +1207,14 @@ Notes:
 - `mi show ev_... --global` searches the global EvidenceLog only.
 - `mi show cl_/nd_/ed_/wf_...` uses effective resolution (project first, then global).
 - `mi show <path>.jsonl` prints a transcript tail (best-effort; supports archive stubs and `.gz`).
-- `mi show last/project/hands/mind` are pseudo-refs that delegate to existing `mi last` / `mi project show` / `mi transcript show` handlers.
+- `mi show last/project/hands/mind` are pseudo-refs routed by the front-door show handler.
+- `mi tail [evidence|hands|mind]` is the canonical tail entry:
+  - default target is `evidence`
+  - evidence default lines is `20`; transcript default lines is `200`
+  - `mi tail evidence --raw` prints raw JSONL lines
+  - `mi tail evidence --json` prints parsed JSON records
+  - `mi tail evidence --global` tails global EvidenceLog only
+  - `mi tail hands|mind --jsonl` prints raw transcript JSONL lines
 
 List resources (front-door aliases):
 
@@ -1248,12 +1262,12 @@ Common run flags:
 Inspect latest batch bundle (MI input + last agent message + evidence pointers + mind transcript pointers):
 
 ```bash
-mi --home ~/.mind-incarnation last --cd <project_root>
-mi --home ~/.mind-incarnation last --cd <project_root> --json
-mi --home ~/.mind-incarnation last --cd <project_root> --redact
+mi --home ~/.mind-incarnation show last --cd <project_root>
+mi --home ~/.mind-incarnation show last --cd <project_root> --json
+mi --home ~/.mind-incarnation show last --cd <project_root> --redact
 ```
 
-Note: `mi last` also includes any `learn_update` / `learn_suggested` / `learn_applied` records related to the latest batch cycle, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`. When MI records WhyTrace for the latest batch cycle (e.g., via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true`), `mi last --json` also includes `why_trace` and `why_traces`. `mi last --json` also includes `state_corrupt_recent` (a pointer to the most recent `kind=state_corrupt` record) for on-demand diagnosis. When MI detects a stuck repetition loop, `mi last --json` also includes `loop_guard` and `loop_break`.
+Note: `mi show last` includes any `learn_update` / `learn_suggested` / `learn_applied` records related to the latest batch cycle, so you can quickly apply pending suggestions via `mi claim apply-suggested ...`. When MI records WhyTrace for the latest batch cycle (e.g., via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true`), `mi show last --json` also includes `why_trace` and `why_traces`. `mi show last --json` also includes `state_corrupt_recent` (a pointer to the most recent `kind=state_corrupt` record) for on-demand diagnosis. When MI detects a stuck repetition loop, `mi show last --json` also includes `loop_guard` and `loop_break`.
 
 Inspect per-project state (overlay + resolved paths):
 

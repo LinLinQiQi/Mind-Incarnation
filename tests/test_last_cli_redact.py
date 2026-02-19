@@ -86,7 +86,7 @@ class TestLastCliRedact(unittest.TestCase):
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
             try:
-                code = mi_main(["--home", str(home), "last", "--cd", str(proj), "--json", "--redact"])
+                code = mi_main(["--home", str(home), "show", "last", "--cd", str(proj), "--json", "--redact"])
                 out = sys.stdout.getvalue()
             finally:
                 sys.stdout = old_stdout
@@ -126,4 +126,3 @@ class TestLastCliRedact(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -427,7 +427,7 @@ class TestInspectCliExtensions(unittest.TestCase):
             )
 
             code, out = _run_cli(
-                ["--home", str(home), "evidence", "show", "ev_test_show_project", "--cd", str(project_root), "--redact"]
+                ["--home", str(home), "show", "ev_test_show_project", "--cd", str(project_root), "--redact"]
             )
             self.assertEqual(code, 0)
             self.assertIn("ev_test_show_project", out)
@@ -435,11 +435,10 @@ class TestInspectCliExtensions(unittest.TestCase):
 
             gp = GlobalPaths(home_dir=home)
             append_jsonl(gp.global_evidence_log_path, {"event_id": "ev_test_show_global", "kind": "values_set", "text": "hi"})
-            code, out = _run_cli(["--home", str(home), "evidence", "show", "ev_test_show_global", "--global"])
+            code, out = _run_cli(["--home", str(home), "show", "ev_test_show_global", "--global"])
             self.assertEqual(code, 0)
             self.assertIn("ev_test_show_global", out)
 
 
 if __name__ == "__main__":
     unittest.main()
-

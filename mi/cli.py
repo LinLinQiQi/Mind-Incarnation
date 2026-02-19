@@ -196,6 +196,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_show.add_argument("--json", action="store_true", help="Print as JSON when possible.")
     p_show.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
 
+    p_tail = sub.add_parser("tail", help="Tail recent MI activity (EvidenceLog or transcripts).")
+    p_tail.add_argument(
+        "target",
+        nargs="?",
+        default="evidence",
+        choices=["evidence", "hands", "mind"],
+        help="What to tail (default: evidence).",
+    )
+    p_tail.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_tail.add_argument(
+        "--global",
+        dest="tail_global",
+        action="store_true",
+        help="For evidence: tail the global EvidenceLog instead of the project one.",
+    )
+    p_tail.add_argument(
+        "-n",
+        "--lines",
+        type=int,
+        default=None,
+        help="Number of records/lines to show (evidence defaults to 20; transcripts default to 200).",
+    )
+    p_tail.add_argument("--raw", action="store_true", help="For evidence: print raw JSONL lines.")
+    p_tail.add_argument("--json", action="store_true", help="For evidence: print parsed JSON records as a JSON array.")
+    p_tail.add_argument("--jsonl", action="store_true", help="For transcripts: print stored JSONL lines (no pretty formatting).")
+    p_tail.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
+
     p_ls = sub.add_parser("ls", help="List MI resources (front-door aliases).")
     ls_sub = p_ls.add_subparsers(dest="ls_kind", required=True)
 
@@ -580,37 +607,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_hs = host_sub.add_parser("sync", help="Sync enabled workflows into all bound host workspaces (derived artifacts).")
     p_hs.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
     p_hs.add_argument("--json", action="store_true", help="Print sync result as JSON.")
-
-    p_last = sub.add_parser("last", help="Show the latest MI batch bundle (input/output/evidence pointers).")
-    p_last.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
-    p_last.add_argument("--json", action="store_true", help="Print as JSON.")
-    p_last.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
-
-    p_evidence = sub.add_parser("evidence", help="Inspect EvidenceLog (JSONL).")
-    ev_sub = p_evidence.add_subparsers(dest="evidence_cmd", required=True)
-
-    p_ev_show = ev_sub.add_parser("show", help="Show an EvidenceLog record by event_id.")
-    p_ev_show.add_argument("event_id", help="EvidenceLog event_id (ev_...).")
-    p_ev_show.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
-    p_ev_show.add_argument("--global", dest="ev_global", action="store_true", help="Search the global EvidenceLog instead of the project one.")
-    p_ev_show.add_argument("--json", action="store_true", help="Print as JSON.")
-    p_ev_show.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
-
-    p_ev_tail = ev_sub.add_parser("tail", help="Tail EvidenceLog records.")
-    p_ev_tail.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
-    p_ev_tail.add_argument("-n", "--lines", type=int, default=20, help="Number of records to show.")
-    p_ev_tail.add_argument("--raw", action="store_true", help="Print raw JSONL lines.")
-    p_ev_tail.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
-
-    p_tr = sub.add_parser("transcript", help="Inspect raw transcripts (Hands or Mind).")
-    tr_sub = p_tr.add_subparsers(dest="tr_cmd", required=True)
-    p_tr_show = tr_sub.add_parser("show", help="Show a transcript (defaults to the latest Hands transcript).")
-    p_tr_show.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
-    p_tr_show.add_argument("--mind", action="store_true", help="Show Mind transcript instead of Hands.")
-    p_tr_show.add_argument("--path", default="", help="Explicit transcript path to show (overrides --mind/--cd selection).")
-    p_tr_show.add_argument("-n", "--lines", type=int, default=200, help="Number of transcript lines to show (tail).")
-    p_tr_show.add_argument("--jsonl", action="store_true", help="Print stored JSONL lines (no pretty formatting).")
-    p_tr_show.add_argument("--redact", action="store_true", help="Redact common secret/token patterns for display.")
 
     p_mem = sub.add_parser("memory", help="Manage MI memory index (materialized view).")
     mem_sub = p_mem.add_subparsers(dest="mem_cmd", required=True)

@@ -526,6 +526,29 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             print("missing ref", file=sys.stderr)
             return 2
 
+        # Pseudo-refs for reducing CLI surface area. These delegate to existing commands
+        # to keep behavior consistent and avoid branch drift.
+        token = ref.strip().lower()
+        if token in ("last", "@last"):
+            args2 = argparse.Namespace(**vars(args))
+            args2.cmd = "last"
+            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+        if token in ("project", "overlay"):
+            args2 = argparse.Namespace(**vars(args))
+            args2.cmd = "project"
+            args2.project_cmd = "show"
+            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+        if token in ("hands", "mind"):
+            args2 = argparse.Namespace(**vars(args))
+            args2.cmd = "transcript"
+            args2.tr_cmd = "show"
+            args2.mind = token == "mind"
+            args2.path = ""
+            # `mi show ... --json` is a natural ask; for transcripts the closest is raw JSONL.
+            if bool(getattr(args2, "json", False)) and not bool(getattr(args2, "jsonl", False)):
+                args2.jsonl = True
+            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
+
         # Transcript path shortcut (no project root required).
         if ref.endswith(".jsonl") or ref.endswith(".jsonl.gz"):
             tp = Path(ref).expanduser()
@@ -568,11 +591,16 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
 
         if ref.startswith("ev_"):
             eid = ref
-            obj = find_evidence_event(evidence_log_path=pp.evidence_log_path, event_id=eid)
-            scope = "project"
-            if obj is None:
+            global_only = bool(getattr(args, "show_global", False))
+            if global_only:
                 obj = find_evidence_event(evidence_log_path=GlobalPaths(home_dir=home_dir).global_evidence_log_path, event_id=eid)
                 scope = "global" if obj is not None else ""
+            else:
+                obj = find_evidence_event(evidence_log_path=pp.evidence_log_path, event_id=eid)
+                scope = "project"
+                if obj is None:
+                    obj = find_evidence_event(evidence_log_path=GlobalPaths(home_dir=home_dir).global_evidence_log_path, event_id=eid)
+                    scope = "global" if obj is not None else ""
             if obj is None:
                 print(f"evidence event not found: {eid}", file=sys.stderr)
                 return 2
@@ -664,7 +692,10 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             args2.markdown = not bool(getattr(args, "json", False))
             return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
 
-        print(f"unknown ref: {ref} (expected ev_/cl_/nd_/wf_/ed_ or a transcript .jsonl path)", file=sys.stderr)
+        print(
+            f"unknown ref: {ref} (expected ev_/cl_/nd_/wf_/ed_, a transcript .jsonl path, or one of: last/project/hands/mind)",
+            file=sys.stderr,
+        )
         return 2
 
     if args.cmd == "edit":

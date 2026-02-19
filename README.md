@@ -163,9 +163,16 @@ mi status --cd /path/to/your/project --json
 
 # Show an MI resource by id (ev_/cl_/nd_/wf_/ed_) or a transcript path:
 mi show ev_<id> --cd /path/to/your/project --json
+mi show ev_<id> --global --json
 mi show cl_<id> --cd /path/to/your/project --json
 mi show wf_<id> --cd /path/to/your/project --json
 mi show /path/to/transcript.jsonl -n 200
+
+# Convenience pseudo-refs (delegate to existing commands):
+mi show last --cd /path/to/your/project --json
+mi show project --cd /path/to/your/project --json
+mi show hands --cd /path/to/your/project -n 200
+mi show mind --cd /path/to/your/project -n 200
 
 # List resources (aliases for claim/node/edge/workflow list):
 mi ls claims --cd /path/to/your/project
@@ -206,18 +213,18 @@ mi run --cd /path/to/your/project --reset-hands "Start a fresh session."
 Inspect the latest batch (what MI sent, last agent message, evidence pointers, MI's decide_next decision, mind transcript pointers, and any `learn_suggested` ids):
 
 ```bash
-mi last --cd /path/to/your/project
-mi last --cd /path/to/your/project --redact
+mi show last --cd /path/to/your/project
+mi show last --cd /path/to/your/project --redact
 ```
 
-Note: `mi last --json` includes `why_trace` / `why_traces` when present (e.g., from `mi run --why`), includes `state_corrupt_recent` when MI had to quarantine a corrupt state file, and includes `loop_guard` and `loop_break` when MI detects and tries to break a stuck repetition loop. You can control low-level state warning stderr printing via `MI_STATE_WARNINGS_STDERR=1` (force) / `0` (silence).
+Note: `mi show last --json` (alias of `mi last --json`) includes `why_trace` / `why_traces` when present (e.g., from `mi run --why`), includes `state_corrupt_recent` when MI had to quarantine a corrupt state file, and includes `loop_guard` and `loop_break` when MI detects and tries to break a stuck repetition loop. You can control low-level state warning stderr printing via `MI_STATE_WARNINGS_STDERR=1` (force) / `0` (silence).
 
 Show per-project overlay + resolved storage paths:
 
 ```bash
-mi project show --cd /path/to/your/project
-mi project show --cd /path/to/your/project --json
-mi project show --cd /path/to/your/project --redact
+mi show project --cd /path/to/your/project
+mi show project --cd /path/to/your/project --json
+mi show project --cd /path/to/your/project --redact
 ```
 
 Show how MI resolves the project root (read-only; does not update `@last`):
@@ -248,8 +255,9 @@ Tail EvidenceLog / show raw transcript:
 mi evidence tail --cd /path/to/your/project -n 20
 mi show <event_id> --cd /path/to/your/project
 mi show <event_id> --cd /path/to/your/project --redact
-mi transcript show --cd /path/to/your/project -n 200
-mi transcript show --cd /path/to/your/project -n 200 --redact
+mi show hands --cd /path/to/your/project -n 200
+mi show hands --cd /path/to/your/project -n 200 --redact
+mi show mind --cd /path/to/your/project -n 200
 ```
 
 Optional: archive older transcripts (gzip + stubs; default is dry-run):

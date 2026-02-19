@@ -163,9 +163,16 @@ mi status --cd /path/to/your/project --json
 
 # 通过 id（ev_/cl_/nd_/wf_/ed_）或 transcript 路径查看：
 mi show ev_<id> --cd /path/to/your/project --json
+mi show ev_<id> --global --json
 mi show cl_<id> --cd /path/to/your/project --json
 mi show wf_<id> --cd /path/to/your/project --json
 mi show /path/to/transcript.jsonl -n 200
+
+# 便捷 pseudo-ref（委托给已有命令，保持行为一致）：
+mi show last --cd /path/to/your/project --json
+mi show project --cd /path/to/your/project --json
+mi show hands --cd /path/to/your/project -n 200
+mi show mind --cd /path/to/your/project -n 200
 
 # 列表入口（分别是 claim/node/edge/workflow list 的 alias）：
 mi ls claims --cd /path/to/your/project
@@ -206,18 +213,18 @@ mi run --cd /path/to/your/project --reset-hands "重新开始一个新会话。"
 查看最近一次 batch（MI 发给 Hands 的输入、最后输出、证据与路径指针；以及 MI 的 decide_next 决策、mind transcript 指针，和相关的 `learn_suggested` 建议 id）：
 
 ```bash
-mi last --cd /path/to/your/project
-mi last --cd /path/to/your/project --redact
+mi show last --cd /path/to/your/project
+mi show last --cd /path/to/your/project --redact
 ```
 
-注：`mi last --json` 在存在 WhyTrace（例如通过 `mi run --why`）时，会包含 `why_trace` / `why_traces`；当 MI 需要 quarantine 损坏的 state 文件时，会包含 `state_corrupt_recent`；在 MI 检测到并尝试打破“重复卡住”的循环时，会包含 `loop_guard` 和 `loop_break` 字段。你也可以通过 `MI_STATE_WARNINGS_STDERR=1`（强制打印）/ `0`（静默）控制底层 state 告警的 stderr 输出。
+注：`mi show last --json`（即 `mi last --json` 的 alias）在存在 WhyTrace（例如通过 `mi run --why`）时，会包含 `why_trace` / `why_traces`；当 MI 需要 quarantine 损坏的 state 文件时，会包含 `state_corrupt_recent`；在 MI 检测到并尝试打破“重复卡住”的循环时，会包含 `loop_guard` 和 `loop_break` 字段。你也可以通过 `MI_STATE_WARNINGS_STDERR=1`（强制打印）/ `0`（静默）控制底层 state 告警的 stderr 输出。
 
 查看项目级状态（overlay + 存储路径解析）：
 
 ```bash
-mi project show --cd /path/to/your/project
-mi project show --cd /path/to/your/project --json
-mi project show --cd /path/to/your/project --redact
+mi show project --cd /path/to/your/project
+mi show project --cd /path/to/your/project --json
+mi show project --cd /path/to/your/project --redact
 ```
 
 查看 MI 将如何解析 project root（只读；不会更新 `@last`）：
@@ -248,8 +255,9 @@ mi run --cd @repo1 --show "完成 X，并用最小检查验证。"
 mi evidence tail --cd /path/to/your/project -n 20
 mi show <event_id> --cd /path/to/your/project
 mi show <event_id> --cd /path/to/your/project --redact
-mi transcript show --cd /path/to/your/project -n 200
-mi transcript show --cd /path/to/your/project -n 200 --redact
+mi show hands --cd /path/to/your/project -n 200
+mi show hands --cd /path/to/your/project -n 200 --redact
+mi show mind --cd /path/to/your/project -n 200
 ```
 
 可选：归档旧 transcript（gzip + stub；默认 dry-run）：

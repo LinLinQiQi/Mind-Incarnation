@@ -1,7 +1,7 @@
 # Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-18
+Last updated: 2026-02-19
 
 ## Goal
 
@@ -1128,19 +1128,33 @@ Notes:
 Show an MI resource (front-door):
 
 ```bash
+# Show by id:
 mi --home ~/.mind-incarnation show ev_<id> --cd <project_root>
 mi --home ~/.mind-incarnation show cl_<id> --cd <project_root>
 mi --home ~/.mind-incarnation show nd_<id> --cd <project_root>
 mi --home ~/.mind-incarnation show wf_<id> --cd <project_root>
 mi --home ~/.mind-incarnation show ed_<id> --cd <project_root>
+
+# EvidenceLog: search global only (skip project fallback):
+mi --home ~/.mind-incarnation show ev_<id> --global
+
+# Transcript path tail:
 mi --home ~/.mind-incarnation show /path/to/transcript.jsonl -n 200
+
+# Convenience pseudo-refs (delegate to existing commands):
+mi --home ~/.mind-incarnation show last --cd <project_root>      # == mi last
+mi --home ~/.mind-incarnation show hands --cd <project_root> -n 200  # == mi transcript show
+mi --home ~/.mind-incarnation show mind --cd <project_root> -n 200   # == mi transcript show --mind
+mi --home ~/.mind-incarnation show project --cd <project_root>   # == mi project show
 ```
 
 Notes:
 
 - `mi show ev_...` searches the project EvidenceLog first, then falls back to the global EvidenceLog.
+- `mi show ev_... --global` searches the global EvidenceLog only.
 - `mi show cl_/nd_/ed_/wf_...` uses effective resolution (project first, then global).
 - `mi show <path>.jsonl` prints a transcript tail (best-effort; supports archive stubs and `.gz`).
+- `mi show last/project/hands/mind` are pseudo-refs that delegate to existing `mi last` / `mi project show` / `mi transcript show` handlers.
 
 List resources (front-door aliases):
 

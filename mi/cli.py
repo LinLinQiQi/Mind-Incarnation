@@ -170,6 +170,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_show.add_argument("ref", help="Resource id (ev_/cl_/nd_/wf_/ed_) or transcript path.")
     p_show.add_argument("--cd", default="", help="Project root used to locate MI artifacts.")
+    p_show.add_argument(
+        "--global",
+        dest="show_global",
+        action="store_true",
+        help="For ev_... refs: search global EvidenceLog only (skip project fallback).",
+    )
     p_show.add_argument("-n", "--lines", type=int, default=200, help="Number of transcript lines to show when ref is a .jsonl path.")
     p_show.add_argument("--jsonl", action="store_true", help="When showing a transcript path: print raw JSONL lines.")
     p_show.add_argument("--json", action="store_true", help="Print as JSON when possible.")

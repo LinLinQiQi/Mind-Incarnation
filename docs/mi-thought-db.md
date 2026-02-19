@@ -1,7 +1,7 @@
 # MI Thought DB (Design Notes)
 
 Status: implemented (partial, V1)
-Last updated: 2026-02-18
+Last updated: 2026-02-19
 
 This document captures the "Thought DB" direction for Mind Incarnation (MI):
 
@@ -32,6 +32,10 @@ Implemented in V1 (incremental; safe foundation):
 - On-demand mining + basic management via CLI (`mi claim ...`)
 - CLI bounded subgraph inspection (JSON-only) via `mi claim show --graph` / `mi node show --graph` (best-effort; supports edge-type filters).
 - Root-cause tracing via `mi why ...` (WhyTrace): selects a minimal support set of claim ids for an EvidenceLog `event_id` and may materialize `depends_on(event_id -> claim_id)` edges. Candidate selection prefers deterministic ids recorded in `decide_next.thought_db` when available (fallback: memory FTS).
+- Root-cause tracing via `mi why ...` (WhyTrace): selects a minimal support set of claim ids for an EvidenceLog `event_id` and may materialize `depends_on(event_id -> claim_id)` edges. Candidate selection prefers deterministic ids recorded in `decide_next.thought_db` when available (fallback: memory FTS). Query text is derived from the target EvidenceLog event (bounded, best-effort); for example:
+  - `kind=hands_input`: uses `input`
+  - `kind=decide_next`: uses `status/next_action/notes/next_hands_input`
+  - evidence items (`kind=evidence` or V1 EvidenceItem): uses compacted `facts/results/unknowns`
 - Optional (opt-in): run one WhyTrace at `mi run` end via `mi run --why` or `config.runtime.thought_db.why_trace.auto_on_run_end=true` (best-effort; one call per run).
 - Manual node/edge management via CLI (`mi node ...`, `mi edge ...`)
 - Memory index ingestion of **active canonical** claims (`kind=claim`) and nodes (`kind=node`) for optional text recall/search

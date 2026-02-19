@@ -111,7 +111,7 @@ def extract_evidence_prompt(
     hands_provider: str,
     light_injection: str,
     batch_input: str,
-    codex_batch_summary: dict[str, Any],
+    hands_batch_summary: dict[str, Any],
     repo_observation: dict[str, Any],
 ) -> str:
     return "\n".join(
@@ -136,7 +136,7 @@ def extract_evidence_prompt(
             task.strip(),
             "",
             "Hands batch summary (machine extracted):",
-            _to_json(codex_batch_summary),
+            _to_json(hands_batch_summary),
             "",
             "Repo observation (read-only heuristic):",
             _to_json(repo_observation),
@@ -155,7 +155,7 @@ def decide_next_prompt(
     active_workflow: dict[str, Any] | None = None,
     workflow_run: dict[str, Any] | None = None,
     recent_evidence: list[dict[str, Any]],
-    codex_last_message: str,
+    hands_last_message: str,
     repo_observation: dict[str, Any],
     check_plan: dict[str, Any],
     auto_answer: dict[str, Any],
@@ -175,11 +175,11 @@ def decide_next_prompt(
             "- If the project has no tests and verification is needed, ask the user ONCE per project for a testless verification strategy, then remember it (ProjectOverlay).",
             "- Prefer sending a next instruction to Hands over asking the user, when values/evidence allow.",
             "- Canonical values/preferences are provided via Thought DB context (especially values_claims); treat it as canonical when deciding.",
-            "- If a minimal check plan is provided and should_run_checks=true, prefer sending codex_check_input to Hands before further work, unless user input is required first.",
+            "- If a minimal check plan is provided and should_run_checks=true, prefer sending hands_check_input to Hands before further work, unless user input is required first.",
             "- If needs_testless_strategy=true: first look for a canonical preference Claim in Thought DB context tagged 'mi:testless_verification_strategy'. If none exists, ask the user using testless_strategy_question.",
-            "- If an auto-answer suggestion is provided and should_answer=true, prefer sending codex_answer_input to Hands (possibly combined with codex_check_input) instead of asking the user.",
-            "- If auto_answer.needs_user_input=true, prefer asking the user using auto_answer.ask_user_question, unless you can safely answer from values/evidence already available (then send_to_codex).",
-            "- If check_plan.should_run_checks=false but verification seems necessary, you may still propose a small set of checks via next_codex_input.",
+            "- If an auto-answer suggestion is provided and should_answer=true, prefer sending hands_answer_input to Hands (possibly combined with hands_check_input) instead of asking the user.",
+            "- If auto_answer.needs_user_input=true, prefer asking the user using auto_answer.ask_user_question, unless you can safely answer from values/evidence already available (then send_to_hands).",
+            "- If check_plan.should_run_checks=false but verification seems necessary, you may still propose a small set of checks via next_hands_input.",
             "",
             "Output:",
             "- Output MUST be a single JSON object matching the provided JSON Schema.",
@@ -211,14 +211,14 @@ def decide_next_prompt(
             "Minimal check plan (from plan_min_checks):",
             _to_json(check_plan),
             "",
-            "Auto-answer suggestion (from auto_answer_to_codex):",
+            "Auto-answer suggestion (from auto_answer_to_hands):",
             _to_json(auto_answer),
             "",
             "Recent evidence (most recent last):",
             _to_json(recent_evidence),
             "",
             "Hands last message (raw):",
-            codex_last_message.strip(),
+            hands_last_message.strip(),
             "",
             "Now decide the next action.",
         ]
@@ -236,7 +236,7 @@ def loop_break_prompt(
     repo_observation: dict[str, Any],
     loop_pattern: str,
     loop_reason: str,
-    codex_last_message: str,
+    hands_last_message: str,
     planned_next_input: str,
 ) -> str:
     return "\n".join(
@@ -286,7 +286,7 @@ def loop_break_prompt(
             f"Loop reason: {str(loop_reason or '').strip()}",
             "",
             "Hands last message (raw):",
-            (codex_last_message or "").strip(),
+            (hands_last_message or "").strip(),
             "",
             "Planned next input to Hands (verbatim):",
             (planned_next_input or "").strip(),
@@ -304,7 +304,7 @@ def risk_judge_prompt(
     project_overlay: dict[str, Any],
     thought_db_context: dict[str, Any] | None,
     risk_signals: list[str],
-    codex_last_message: str,
+    hands_last_message: str,
 ) -> str:
     return "\n".join(
         [
@@ -334,7 +334,7 @@ def risk_judge_prompt(
             _to_json(risk_signals),
             "",
             "Hands last message (raw):",
-            codex_last_message.strip(),
+            hands_last_message.strip(),
             "",
             "Now output the risk judgement.",
         ]
@@ -366,7 +366,7 @@ def plan_min_checks_prompt(
             "Output rules:",
             "- Output MUST be a single JSON object matching the provided JSON Schema.",
             "- No markdown, no extra keys, no extra commentary.",
-            "- If no checks are needed, set should_run_checks=false and codex_check_input=\"\".",
+            "- If no checks are needed, set should_run_checks=false and hands_check_input=\"\".",
             "",
             "User task:",
             task.strip(),
@@ -404,7 +404,7 @@ def workflow_progress_prompt(
     workflow_run: dict[str, Any],
     latest_evidence: dict[str, Any],
     last_batch_input: str,
-    codex_last_message: str,
+    hands_last_message: str,
 ) -> str:
     return "\n".join(
         [
@@ -454,7 +454,7 @@ def workflow_progress_prompt(
             (last_batch_input or "").strip(),
             "",
             "Hands last message (raw):",
-            (codex_last_message or "").strip(),
+            (hands_last_message or "").strip(),
             "",
             "Now output the workflow progress JSON.",
         ]
@@ -801,7 +801,7 @@ def edit_workflow_prompt(
     ).strip() + "\n"
 
 
-def auto_answer_to_codex_prompt(
+def auto_answer_to_hands_prompt(
     *,
     task: str,
     hands_provider: str,
@@ -811,7 +811,7 @@ def auto_answer_to_codex_prompt(
     repo_observation: dict[str, Any],
     check_plan: dict[str, Any],
     recent_evidence: list[dict[str, Any]],
-    codex_last_message: str,
+    hands_last_message: str,
 ) -> str:
     return "\n".join(
         [
@@ -827,12 +827,12 @@ def auto_answer_to_codex_prompt(
             "- If Hands asks for permission to do external actions (network/install/push/publish), decide using values/preferences; if not clearly covered, set needs_user_input=true.",
             "- If values/preferences clearly imply the answer (e.g., default-deny for network/install unless necessary), answer Hands directly without asking the user, unless evidence shows it is necessary and allowed.",
             "- If Hands asks what it should do next (e.g., 'what would you like me to do'), answer by restating the user task and any relevant constraints; do NOT ask the user.",
-            "- If the last Hands message does not contain a question or request for user input, set should_answer=false and codex_answer_input=\"\".",
+            "- If the last Hands message does not contain a question or request for user input, set should_answer=false and hands_answer_input=\"\".",
             "",
             "Output rules:",
             "- Output MUST be a single JSON object matching the provided JSON Schema.",
             "- No markdown, no extra keys, no extra commentary.",
-            "- Keep codex_answer_input concise and directly actionable; only include what Hands needs to proceed.",
+            "- Keep hands_answer_input concise and directly actionable; only include what Hands needs to proceed.",
             "",
             "User task:",
             task.strip(),
@@ -858,73 +858,8 @@ def auto_answer_to_codex_prompt(
             _to_json(recent_evidence),
             "",
             "Hands last message (raw):",
-            codex_last_message.strip(),
+            hands_last_message.strip(),
             "",
             "Now decide whether MI can answer Hands, and output the JSON.",
-        ]
-    ).strip() + "\n"
-
-
-def closure_eval_prompt(
-    *,
-    task: str,
-    hands_provider: str,
-    mindspec_base: dict[str, Any],
-    project_overlay: dict[str, Any],
-    thought_db_context: dict[str, Any] | None,
-    repo_observation: dict[str, Any],
-    check_plan: dict[str, Any],
-    auto_answer: dict[str, Any],
-    recent_evidence: list[dict[str, Any]],
-    codex_last_message: str,
-) -> str:
-    return "\n".join(
-        [
-            "You are MI (Mind Incarnation), operating above Hands.",
-            "Evaluate whether the task is complete (closed loop), using values/preferences and evidence.",
-            "",
-            "Constraints:",
-            "- Do NOT ask the user to confirm completion by default; MI self-evaluates done/blocked.",
-            "- If the task is done, set status=done and explain briefly via done_reasons/notes.",
-            "- If more work is needed, set status=not_done and list blocking_issues.",
-            "- Set status=blocked ONLY if MI cannot proceed without user input; then set ask_user_question (otherwise leave it empty).",
-            "- Consider the minimal check plan: if verification is required and checks were not run, status should usually be not_done (not done).",
-            "- MI is authorized to answer on behalf of the user (including when the task says 'ask the user') using values/preferences and evidence; do NOT treat this as blocked if the answer is clear.",
-            "- If Hands asked a permission question and MI already provided (or can provide) an answer via auto_answer_to_codex, treat that as the user answer for closure purposes.",
-            "",
-            "Output rules:",
-            "- Output MUST be a single JSON object matching the provided JSON Schema.",
-            "- No markdown, no extra keys, no extra commentary.",
-            "",
-            "User task:",
-            task.strip(),
-            "",
-            f"Hands provider: {hands_provider.strip() or '(unknown)'}",
-            "",
-            "Runtime config (structured):",
-            _to_json(mindspec_base),
-            "",
-            "ProjectOverlay:",
-            _to_json(project_overlay),
-            "",
-            "Thought DB context (canonical values/preferences; may be empty):",
-            _to_json(thought_db_context if isinstance(thought_db_context, dict) else {}),
-            "",
-            "Repo observation (read-only heuristic):",
-            _to_json(repo_observation),
-            "",
-            "Minimal check plan (from plan_min_checks):",
-            _to_json(check_plan),
-            "",
-            "Auto-answer suggestion (from auto_answer_to_codex):",
-            _to_json(auto_answer),
-            "",
-            "Recent evidence (most recent last):",
-            _to_json(recent_evidence),
-            "",
-            "Hands last message (raw):",
-            codex_last_message.strip(),
-            "",
-            "Now output the closure evaluation JSON.",
         ]
     ).strip() + "\n"

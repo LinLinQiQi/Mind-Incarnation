@@ -45,13 +45,13 @@ class TestInspectHelpers(unittest.TestCase):
                         "items": [{"label": "overlay", "path": "/tmp/overlay.json", "error": "JSONDecodeError"}],
                     }
                 ),
-                json.dumps({"kind": "codex_input", "batch_id": "b0", "thread_id": "t", "input": "hi", "transcript_path": "t0"}),
+                json.dumps({"kind": "hands_input", "batch_id": "b0", "thread_id": "t", "input": "hi", "transcript_path": "t0"}),
                 json.dumps(
                     {
                         "batch_id": "b0",
                         "ts": "x",
                         "thread_id": "t",
-                        "codex_transcript_ref": "t0",
+                        "hands_transcript_ref": "t0",
                         "facts": ["f0"],
                         "actions": [],
                         "results": [],
@@ -59,7 +59,7 @@ class TestInspectHelpers(unittest.TestCase):
                         "risk_signals": [],
                     }
                 ),
-                json.dumps({"kind": "codex_input", "batch_id": "b1", "thread_id": "t", "input": "next", "transcript_path": "t1"}),
+                json.dumps({"kind": "hands_input", "batch_id": "b1", "thread_id": "t", "input": "next", "transcript_path": "t1"}),
                 json.dumps(
                     {
                         "kind": "check_plan",
@@ -98,7 +98,7 @@ class TestInspectHelpers(unittest.TestCase):
                         "confidence": 0.9,
                         "notes": "done",
                         "ask_user_question": "",
-                        "next_codex_input": "",
+                        "next_hands_input": "",
                         "mind_transcript_ref": "m_decide",
                         "decision": {"next_action": "stop", "status": "done", "confidence": 0.9, "notes": "done"},
                     }
@@ -153,7 +153,7 @@ class TestInspectHelpers(unittest.TestCase):
                         "batch_id": "b1",
                         "ts": "x",
                         "thread_id": "t",
-                        "codex_transcript_ref": "t1",
+                        "hands_transcript_ref": "t1",
                         "mind_transcript_ref": "m_extract",
                         "facts": ["f1"],
                         "actions": [],
@@ -167,7 +167,7 @@ class TestInspectHelpers(unittest.TestCase):
 
             bundle = load_last_batch_bundle(p)
             self.assertEqual(bundle["batch_id"], "b1")
-            self.assertIsNotNone(bundle["codex_input"])
+            self.assertIsNotNone(bundle["hands_input"])
             self.assertIsNotNone(bundle["evidence_item"])
             self.assertIsNotNone(bundle["check_plan"])
             self.assertIsNotNone(bundle["decide_next"])

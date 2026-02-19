@@ -131,7 +131,7 @@ Set global values/preferences (canonical: Thought DB):
 
 ```bash
 mi values set --text "My values: minimize questions; prefer behavior-preserving refactors; stop when no tests exist; avoid network/install/push unless necessary."
-mi init --values "..."  # legacy alias
+mi init --values "..."  # shortcut
 mi values show
 ```
 
@@ -207,7 +207,7 @@ Notes on `--cd`:
 - `--cd` is optional:
   - Inside a git repo: MI defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject).
   - Outside git: MI uses `@pinned` (if recorded), otherwise `@last` (if recorded), otherwise uses the current directory.
-- You can set `$MI_CD` (preferred; a path or `@last/@pinned/@alias`) or `$MI_PROJECT_ROOT` (legacy path) to run MI commands from anywhere without repeating `--cd`/`-C`.
+- You can set `$MI_CD` (a path or `@last/@pinned/@alias`) to run MI commands from anywhere without repeating `--cd`/`-C`.
 - You can also use selection tokens:
   - `--cd @last` / `--cd @pinned` / `--cd @<alias>`
   - Manage them via `mi project use`, `mi project pin/unpin`, `mi project alias add/rm/list`
@@ -256,8 +256,6 @@ mi project alias list
 
 mi run --cd @repo1 "Do X, then verify with minimal checks."
 ```
-
-Note: JSON outputs keep some legacy key names (e.g., `codex_last_message`, `next_codex_input`) for backward compatibility; they refer to Hands.
 
 Tail EvidenceLog / show raw transcript:
 

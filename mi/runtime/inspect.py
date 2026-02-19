@@ -53,7 +53,7 @@ def summarize_evidence_record(obj: dict[str, Any], *, limit: int = 160) -> str:
     bid = str(obj.get("batch_id") or "")
 
     detail = ""
-    if kind in ("codex_input", "hands_input"):
+    if kind == "hands_input":
         detail = _truncate(str(obj.get("input") or "").strip().replace("\n", "\\n"), limit)
     elif kind == "state_corrupt":
         items = obj.get("items") if isinstance(obj.get("items"), list) else []
@@ -207,7 +207,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
     bundle: dict[str, Any] = {
         "batch_id": "",
         "thread_id": "",
-        "codex_input": None,
+        "hands_input": None,
         "evidence_item": None,
         "check_plan": None,
         "auto_answer": None,
@@ -274,12 +274,12 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                     last_state_corrupt = obj
                     continue
 
-                if kind in ("codex_input", "hands_input") and bid:
+                if kind == "hands_input" and bid:
                     last_bid = bid
                     bundle = {
                         "batch_id": bid,
                         "thread_id": str(tid or ""),
-                        "codex_input": obj,
+                        "hands_input": obj,
                         "evidence_item": None,
                         "check_plan": None,
                         "auto_answer": None,
@@ -312,7 +312,7 @@ def load_last_batch_bundle(evidence_log_path: Path) -> dict[str, Any]:
                 elif kind == "auto_answer":
                     if bid == last_bid:
                         bundle["auto_answer"] = obj
-                    add_mind_transcript_ref(obj=obj, kind="auto_answer_to_codex", bid=bid)
+                    add_mind_transcript_ref(obj=obj, kind="auto_answer_to_hands", bid=bid)
                 elif kind == "risk_event":
                     if bid == last_bid:
                         bundle["risk_event"] = obj

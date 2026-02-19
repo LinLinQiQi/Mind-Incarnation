@@ -61,7 +61,7 @@ flowchart TD
   R --> WF[MI: workflow_progress (if workflow active)]
   WF --> P
   R --> P[MI: plan_min_checks]
-  P --> AA[MI: auto_answer_to_codex (if needed)]
+  P --> AA[MI: auto_answer_to_hands (if needed)]
   AA --> ARB[MI: pre-action arbitration]
   ARB -->|answer/checks available| I
   ARB -->|need user input| Q[Ask user (minimal)]
@@ -74,12 +74,12 @@ flowchart TD
 
 Pre-action arbitration (deterministic, V1):
 
-- If `auto_answer_to_codex.needs_user_input=true`: ask the user with `ask_user_question`, then send the user's answer to Hands (optionally combined with minimal checks).
+- If `auto_answer_to_hands.needs_user_input=true`: ask the user with `ask_user_question`, then send the user's answer to Hands (optionally combined with minimal checks).
 - Else if `plan_min_checks.needs_testless_strategy=true` and there is no canonical testless strategy preference Claim (tagged `mi:testless_verification_strategy`): ask the user once per project, store it as a project-scoped Thought DB preference Claim (canonical) and mirror it into ProjectOverlay (derived), then re-plan checks.
-- Else if `auto_answer_to_codex.should_answer=true` and/or `plan_min_checks.should_run_checks=true`: send `codex_answer_input` and/or `codex_check_input` to Hands (combined into one batch input when both exist).
+- Else if `auto_answer_to_hands.should_answer=true` and/or `plan_min_checks.should_run_checks=true`: send `hands_answer_input` and/or `hands_check_input` to Hands (combined into one batch input when both exist).
 - Otherwise: fall back to `decide_next`.
 
-Additionally, when `decide_next` outputs `next_action=ask_user`, MI may attempt `auto_answer_to_codex` on the `ask_user_question` before prompting the user (to further reduce user burden).
+Additionally, when `decide_next` outputs `next_action=ask_user`, MI may attempt `auto_answer_to_hands` on the `ask_user_question` before prompting the user (to further reduce user burden).
 
 Workflow cursor (best-effort, V1):
 
@@ -111,7 +111,7 @@ Thought DB context (always-on, deterministic, V1):
 
 Loop/stuck guard (deterministic, V1):
 
-- Whenever MI is about to send a next input to Hands, it computes a bounded signature of `(codex_last_message, next_input)` (field name is legacy, but it is "Hands last message").
+- Whenever MI is about to send a next input to Hands, it computes a bounded signature of `(hands_last_message, next_input)`.
 - If a loop-like repetition pattern is detected (AAA or ABAB), MI records `kind="loop_guard"` and then attempts a best-effort **loop break**:
   - MI calls `loop_break` (Mind prompt-pack; output schema `loop_break.json`) and records the result as `kind="loop_break"`.
   - Preferred actions: rewrite the next instruction or force a minimal check run (without imposing step-by-step reporting).
@@ -137,7 +137,7 @@ Mind failure handling (deterministic, V1):
 - If Mind fails repeatedly (default: 2 consecutive failures), MI opens a simple circuit breaker:
   - records `kind="mind_circuit"` (`state="open"`) once, and
   - skips further Mind calls for the remainder of the current `mi run` invocation (to reduce repeated `mind_error` noise).
-- MI continues when possible (e.g., skip optional steps like `risk_judge` / `plan_min_checks` / `auto_answer_to_codex`), but if it cannot safely determine the next action (notably `decide_next`), MI will either:
+- MI continues when possible (e.g., skip optional steps like `risk_judge` / `plan_min_checks` / `auto_answer_to_hands`), but if it cannot safely determine the next action (notably `decide_next`), MI will either:
   - ask the user for an override instruction (when the effective `ask_when_uncertain=true`, canonically stored as a Thought DB preference Claim tagged `mi:setting:ask_when_uncertain`), or
   - stop with `status=blocked` (when the effective `ask_when_uncertain=false`).
 
@@ -255,15 +255,15 @@ MI uses the following internal prompts (all should return strict JSON):
 
 5) `plan_min_checks` (implemented)
    - Input: Hands provider hint + runtime config, `ProjectOverlay`, repo observation, recent `EvidenceLog`
-   - Output: a minimal check plan and (when needed) a single Hands instruction (`codex_check_input`, legacy name) to execute the checks
+   - Output: a minimal check plan and (when needed) a single Hands instruction (`hands_check_input`) to execute the checks
 
-6) `auto_answer_to_codex` (implemented)
-   - Input: Hands provider hint + runtime config, `ProjectOverlay`, recent `EvidenceLog`, optional minimal check plan, and the raw Hands last message (legacy prompt/schema naming uses "codex")
-   - Output: an optional Hands reply (`codex_answer_input`, legacy name) that answers Hands' question(s) using values + evidence; only asks the user when MI cannot answer
+6) `auto_answer_to_hands` (implemented)
+   - Input: Hands provider hint + runtime config, `ProjectOverlay`, recent `EvidenceLog`, optional minimal check plan, and the raw Hands last message
+   - Output: an optional Hands reply (`hands_answer_input`) that answers Hands' question(s) using values + evidence; only asks the user when MI cannot answer
 
 7) `decide_next` (implemented)
    - Input: Hands provider hint + runtime config, `ProjectOverlay`, recent `EvidenceLog`, and a deterministic Thought DB context subgraph (`nodes` + `values_claims` + `pref_goal_claims` + `query_claims` + `edges`)
-   - Output: `NextMove` (`send_to_codex | ask_user | stop`) plus `status` (`done|not_done|blocked`). `send_to_codex` is legacy naming and means "send the next batch input to Hands". This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
+   - Output: `NextMove` (`send_to_hands | ask_user | stop`) plus `status` (`done|not_done|blocked`). This prompt also serves as MI's closure evaluation in the default loop. Note: pre-action arbitration may already have sent an auto-answer and/or minimal checks to Hands for that batch; in that case `decide_next` may be skipped for the iteration.
 
 8) `loop_break` (implemented; internal)
    - Input: runtime config, `ProjectOverlay`, a Thought DB context, recent evidence, a loop pattern id + loop reason, Hands last message, and the planned next Hands instruction
@@ -299,7 +299,6 @@ MI uses the following internal prompts (all should return strict JSON):
 
 Planned (not required for V1 loop to function; can be added incrementally):
 
-- `closure_eval` (legacy/optional; not used in the default loop because `decide_next` includes closure)
 - `learn_update` (beyond the simple claim-based preference tightening)
 
 ## Data Models (Minimal Schemas)
@@ -388,7 +387,7 @@ Minimal shape:
 
 ### ProjectOverlay
 
-Note: `testless_verification_strategy` is a derived mirror/cache for backward compatibility. Canonical storage is a project-scoped Thought DB preference Claim tagged `mi:testless_verification_strategy`. The overlay stores only a `claim_id` pointer (not the full strategy text).
+Note: `testless_verification_strategy` is a derived mirror/cache pointer to the canonical project-scoped Thought DB preference Claim tagged `mi:testless_verification_strategy`. The overlay stores only a `claim_id` pointer (not the full strategy text).
 
 ```json
 {
@@ -495,7 +494,7 @@ Minimal shape:
 
 `evidence.jsonl` is append-only and may contain multiple record kinds:
 
-- `hands_input` (exact MI input + light injection sent to Hands for the batch; older logs may use `codex_input`)
+- `hands_input` (exact MI input + light injection sent to Hands for the batch)
 - `state_corrupt` (internal: an MI-owned JSON state file was unreadable/corrupt; MI quarantined it as `*.corrupt.<ts>` and continued with defaults; best-effort)
 - `defaults_claim_sync` (internal: ensured operational defaults exist as canonical global Thought DB preference Claims tagged `mi:setting:*`; records the seed/sync outcome for audit)
 - `EvidenceItem` (extracted summary per batch; includes a Mind transcript pointer for `extract_evidence`)
@@ -504,10 +503,9 @@ Minimal shape:
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
 - `learn_suggested` (a suggested preference tightening produced by Mind (`learned_changes`, legacy field name); may be auto-applied as Thought DB preference Claims depending on `violation_response.auto_learn`)
 - `learn_applied` (a manual application of a prior `learn_suggested` record; written by `mi claim apply-suggested ...`)
-- `testless_strategy_migrate` (internal: migrated a legacy ProjectOverlay testless strategy into a canonical Thought DB preference Claim tagged `mi:testless_verification_strategy`)
 - `testless_strategy_set` (internal: recorded a testless strategy set/update so a canonical preference Claim can cite an EvidenceLog `event_id`)
 - `check_plan` (minimal checks proposed post-batch; includes a Mind transcript pointer for `plan_min_checks` when planned)
-- `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_codex`; prompt/schema names are Codex-legacy)
+- `auto_answer` (MI-generated reply to Hands questions, when possible; includes a Mind transcript pointer for `auto_answer_to_hands`)
 - `decide_next` (the per-batch decision output: done/not_done/blocked + next_action + notes; includes the raw `decide_next.json` object, a Mind transcript pointer, and a compact `thought_db` summary of claim/node ids used)
 - `workflow_progress` (best-effort workflow cursor update from `workflow_progress`; helps MI infer completed/next steps without forcing step-by-step reporting)
 - `checkpoint` (segment boundary judgement from `checkpoint_decide`; may trigger workflow/preference mining and segment reset)
@@ -551,7 +549,6 @@ Stable identifiers (V1+):
   "ts": "RFC3339 timestamp",
   "thread_id": "string",
   "hands_transcript_ref": "path",
-  "codex_transcript_ref": "path",
   "mind_transcript_ref": "path",
   "mi_input": "string",
   "transcript_observation": {
@@ -646,7 +643,7 @@ Stable identifiers (V1+):
     "testless_strategy_question": "string",
     "check_goals": ["string"],
     "commands_hints": ["string"],
-    "codex_check_input": "string",
+    "hands_check_input": "string",
     "notes": "string"
   }
 }
@@ -669,7 +666,7 @@ Implementation note: MI uses a shared internal helper to resolve the testless st
 }
 ```
 
-`auto_answer` record shape (MI reply suggestion to Hands; field names are Codex-legacy):
+`auto_answer` record shape (MI reply suggestion to Hands):
 
 ```json
 {
@@ -681,7 +678,7 @@ Implementation note: MI uses a shared internal helper to resolve the testless st
   "auto_answer": {
     "should_answer": true,
     "confidence": 0.0,
-    "codex_answer_input": "string",
+    "hands_answer_input": "string",
     "needs_user_input": false,
     "ask_user_question": "string",
     "unanswered_questions": ["string"],
@@ -699,12 +696,12 @@ Implementation note: MI uses a shared internal helper to resolve the testless st
   "ts": "RFC3339 timestamp",
   "thread_id": "string",
   "phase": "initial|after_user",
-  "next_action": "send_to_codex|ask_user|stop",
+  "next_action": "send_to_hands|ask_user|stop",
   "status": "done|not_done|blocked",
   "confidence": 0.0,
   "notes": "string",
   "ask_user_question": "string",
-  "next_codex_input": "string",
+  "next_hands_input": "string",
   "mind_transcript_ref": "path",
   "thought_db": {
     "as_of_ts": "RFC3339 timestamp",
@@ -803,7 +800,7 @@ Implementation note: MI uses a shared internal helper to resolve the testless st
   "ts": "RFC3339 timestamp",
   "thread_id": "string",
   "pattern": "aaa|abab",
-  "codex_last_message": "string",
+  "hands_last_message": "string",
   "next_input": "string",
   "reason": "string"
 }
@@ -1092,7 +1089,7 @@ Set values (canonical: Thought DB):
 
 ```bash
 mi --home ~/.mind-incarnation values set --text "..."
-mi --home ~/.mind-incarnation init --values "..."  # legacy alias
+mi --home ~/.mind-incarnation init --values "..."  # shortcut
 mi --home ~/.mind-incarnation values show
 ```
 
@@ -1198,7 +1195,7 @@ Notes on `--cd` (project root):
 - `--cd` is optional. If omitted, MI infers a project root from your current working directory:
   - for git repos: defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject)
   - for non-git dirs: uses `@pinned` (if recorded), otherwise `@last` (if recorded), otherwise uses the current directory
-- You can also set `$MI_CD` (preferred; a path or `@last/@pinned/@alias`) or `$MI_PROJECT_ROOT` (legacy path) to run MI commands from anywhere without repeating `--cd`/`-C`.
+- You can also set `$MI_CD` (a path or `@last/@pinned/@alias`) to run MI commands from anywhere without repeating `--cd`/`-C`.
 - `--cd` also supports selection tokens:
   - `--cd @last` (last used project)
   - `--cd @pinned` (pinned project)
@@ -1216,7 +1213,6 @@ Common run flags:
 - `--no-mi-prompt`: do not print the full MI->Hands prompt (still persisted to EvidenceLog)
 - `--redact`: best-effort redact common secret/token patterns in live display output (stored logs unchanged)
 - `--why`: opt-in: run one WhyTrace at run end (writes `kind=why_trace`; may materialize `depends_on(event_id -> claim_id)` edges)
-- `--show`: legacy flag kept for compatibility (default output already includes live + end summary)
 
 Inspect latest batch bundle (MI input + last agent message + evidence pointers + mind transcript pointers):
 
@@ -1256,8 +1252,6 @@ mi --home ~/.mind-incarnation project alias list
 mi --home ~/.mind-incarnation run --cd @repo1 "<task>"
 mi --home ~/.mind-incarnation run --cd @pinned "<task>"
 ```
-
-Note: some output keys keep legacy `codex_*` / `*_to_codex` naming for backward compatibility; they refer to Hands.
 
 Tail EvidenceLog:
 

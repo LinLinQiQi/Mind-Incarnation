@@ -7,7 +7,7 @@
     "next_action",
     "status",
     "confidence",
-    "next_codex_input",
+    "next_hands_input",
     "ask_user_question",
     "learned_changes",
     "update_project_overlay",
@@ -16,14 +16,14 @@
   "properties": {
     "next_action": {
       "type": "string",
-      "enum": ["send_to_codex", "ask_user", "stop"]
+      "enum": ["send_to_hands", "ask_user", "stop"]
     },
     "status": {
       "type": "string",
       "enum": ["done", "not_done", "blocked"]
     },
     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-    "next_codex_input": { "type": "string" },
+    "next_hands_input": { "type": "string" },
     "ask_user_question": { "type": "string" },
     "learned_changes": {
       "type": "array",

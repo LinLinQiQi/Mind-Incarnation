@@ -124,10 +124,6 @@ def load_project_overlay(*, home_dir: Path, project_root: Path, warnings: list[d
             if k not in tls:
                 tls[k] = default_v
                 changed = True
-        # Back-compat: older overlays stored the strategy text. Keep it if present but do not forward-fill it.
-        if "strategy" in tls and not isinstance(tls.get("strategy"), str):
-            tls["strategy"] = str(tls.get("strategy") or "")
-            changed = True
 
     wr = overlay.get("workflow_run")
     if not isinstance(wr, dict):

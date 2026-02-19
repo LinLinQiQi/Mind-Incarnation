@@ -273,11 +273,10 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
     1) Explicit `--cd` (if provided; supports `@last/@pinned/@alias`)
     2) `--here` (if set): force cwd as the project root (overrides git toplevel inference)
     3) $MI_CD (if set)
-    4) $MI_PROJECT_ROOT (if set)
-    5) If inside git and the current dir is not a known project root, use git toplevel
-    6) If not inside git and a pinned project exists, use it
-    7) If not inside git and a last-used project exists, use it
-    8) Fall back to cwd
+    4) If inside git and the current dir is not a known project root, use git toplevel
+    5) If not inside git and a pinned project exists, use it
+    6) If not inside git and a last-used project exists, use it
+    7) Fall back to cwd
 
     Returns: (project_root_path, reason)
     """
@@ -307,12 +306,6 @@ def resolve_cli_project_root(home_dir: Path, cd: str, *, cwd: Path | None = None
             p = Path(env_cd).expanduser().resolve()
             if p.exists():
                 return p, "env:MI_CD"
-
-    env_root = str(os.environ.get("MI_PROJECT_ROOT") or "").strip()
-    if env_root:
-        p = Path(env_root).expanduser().resolve()
-        if p.exists():
-            return p, "env:MI_PROJECT_ROOT"
 
     ident_cur = project_identity(cur)
     key_cur = str(ident_cur.get("key") or "").strip()

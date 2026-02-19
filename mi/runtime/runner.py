@@ -25,7 +25,7 @@ from .prompts import (
     workflow_progress_prompt,
     why_trace_prompt,
 )
-from .prompts import auto_answer_to_codex_prompt
+from .prompts import auto_answer_to_hands_prompt
 from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
@@ -182,7 +182,7 @@ def _empty_auto_answer() -> dict[str, Any]:
     return {
         "should_answer": False,
         "confidence": 0.0,
-        "codex_answer_input": "",
+        "hands_answer_input": "",
         "needs_user_input": False,
         "ask_user_question": "",
         "unanswered_questions": [],
@@ -209,7 +209,7 @@ def _empty_check_plan() -> dict[str, Any]:
         "testless_strategy_question": "",
         "check_goals": [],
         "commands_hints": [],
-        "codex_check_input": "",
+        "hands_check_input": "",
         "notes": "",
     }
 
@@ -218,7 +218,7 @@ def _should_plan_checks(
     *,
     summary: dict[str, Any],
     evidence_obj: dict[str, Any],
-    codex_last_message: str,
+    hands_last_message: str,
     repo_observation: dict[str, Any],
 ) -> bool:
     # Heuristic gate to reduce mind calls; err on the side of planning checks
@@ -237,7 +237,7 @@ def _should_plan_checks(
     if isinstance(rs, list) and any(str(x).strip() for x in rs):
         return True
 
-    if _looks_like_user_question(codex_last_message):
+    if _looks_like_user_question(hands_last_message):
         return True
 
     if isinstance(repo_observation, dict):
@@ -255,8 +255,8 @@ def _normalize_for_sig(text: str, limit: int) -> str:
     return t[:limit]
 
 
-def _loop_sig(*, codex_last_message: str, next_input: str) -> str:
-    data = _normalize_for_sig(codex_last_message, 2000) + "\n---\n" + _normalize_for_sig(next_input, 2000)
+def _loop_sig(*, hands_last_message: str, next_input: str) -> str:
+    data = _normalize_for_sig(hands_last_message, 2000) + "\n---\n" + _normalize_for_sig(next_input, 2000)
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
@@ -828,7 +828,7 @@ def run_autopilot(
                 "confidence": decision_obj.get("confidence"),
                 "notes": str(decision_obj.get("notes") or ""),
                 "ask_user_question": str(decision_obj.get("ask_user_question") or ""),
-                "next_codex_input": str(decision_obj.get("next_codex_input") or ""),
+                "next_hands_input": str(decision_obj.get("next_hands_input") or ""),
                 "mind_transcript_ref": str(mind_transcript_ref or ""),
                 "thought_db": thought_db_context_summary if isinstance(thought_db_context_summary, dict) else {},
                 "decision": decision_obj,
@@ -1328,7 +1328,6 @@ def run_autopilot(
         """Unify testless verification strategy storage via Thought DB.
 
         - If a tagged preference Claim exists, derive ProjectOverlay from it (best-effort).
-        - Else, if ProjectOverlay has a chosen legacy strategy text, migrate it into a tagged preference Claim.
         """
         nonlocal overlay
 
@@ -1341,9 +1340,6 @@ def run_autopilot(
         tls = overlay.get("testless_verification_strategy") if isinstance(overlay, dict) else None
         overlay_chosen = bool(tls.get("chosen_once", False)) if isinstance(tls, dict) else False
         overlay_claim_id = str(tls.get("claim_id") or "").strip() if isinstance(tls, dict) else ""
-        # Back-compat: older overlays stored the strategy text directly.
-        overlay_strategy = str(tls.get("strategy") or "").strip() if isinstance(tls, dict) else ""
-        overlay_rationale = str(tls.get("rationale") or "").strip() if isinstance(tls, dict) else ""
 
         if claim_id and claim_strategy:
             # Derive overlay from canonical claim when missing or divergent.
@@ -1357,37 +1353,6 @@ def run_autopilot(
                 write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
                 _refresh_overlay_refs()
             return
-
-        if not overlay_chosen or not overlay_strategy:
-            return
-
-        # Migrate overlay strategy into a canonical preference claim (append-only).
-        mig = evw.append(
-            {
-                "kind": "testless_strategy_migrate",
-                "batch_id": "b0.migrate_testless",
-                "ts": now_rfc3339(),
-                "thread_id": "",
-                "strategy": overlay_strategy,
-                "rationale": overlay_rationale or "migrate from ProjectOverlay.testless_verification_strategy",
-            }
-        )
-        eid = str(mig.get("event_id") or "").strip()
-        cid = _upsert_testless_strategy_claim(
-            strategy_text=overlay_strategy,
-            source_event_id=eid,
-            source="overlay_migrate",
-            rationale=overlay_rationale or "migrate from overlay",
-        )
-        if cid:
-            overlay.setdefault("testless_verification_strategy", {})
-            overlay["testless_verification_strategy"] = {
-                "chosen_once": True,
-                "claim_id": cid,
-                "rationale": f"migrated legacy overlay strategy into Thought DB {cid}",
-            }
-            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-            _refresh_overlay_refs()
 
     # Canonical operational defaults (ask_when_uncertain/refactor_intent) live as global Thought DB preference claims.
     # Runtime config defaults are non-canonical; we only seed missing claims.
@@ -1440,13 +1405,13 @@ def run_autopilot(
         return rec
 
     def _get_check_input(checks_obj: dict[str, Any] | None) -> str:
-        """Return codex_check_input when should_run_checks=true (best-effort)."""
+        """Return hands_check_input when should_run_checks=true (best-effort)."""
 
         if not isinstance(checks_obj, dict):
             return ""
         if not bool(checks_obj.get("should_run_checks", False)):
             return ""
-        return str(checks_obj.get("codex_check_input") or "").strip()
+        return str(checks_obj.get("hands_check_input") or "").strip()
 
     def _call_plan_min_checks(
         *,
@@ -1594,7 +1559,7 @@ def run_autopilot(
     def _resolve_tls_for_checks(
         *,
         checks_obj: dict[str, Any],
-        codex_last_message: str,
+        hands_last_message: str,
         repo_observation: dict[str, Any],
         user_input_batch_id: str,
         batch_id_after_testless: str,
@@ -1670,7 +1635,7 @@ def run_autopilot(
                 tdb=tdb,
                 as_of_ts=now_rfc3339(),
                 task=task,
-                hands_last_message=codex_last_message,
+                hands_last_message=hands_last_message,
                 recent_evidence=evidence_window,
                 mem=mem.service,
             )
@@ -1697,7 +1662,7 @@ def run_autopilot(
                 tdb=tdb,
                 as_of_ts=now_rfc3339(),
                 task=task,
-                hands_last_message=codex_last_message,
+                hands_last_message=hands_last_message,
                 recent_evidence=evidence_window,
                 mem=mem.service,
             )
@@ -2674,7 +2639,7 @@ def run_autopilot(
     def _loop_break_get_checks_input(
         *,
         base_batch_id: str,
-        codex_last_message: str,
+        hands_last_message: str,
         thought_db_context: dict[str, Any] | None,
         repo_observation: dict[str, Any] | None,
         existing_check_plan: dict[str, Any] | None,
@@ -2701,7 +2666,7 @@ def run_autopilot(
 
         checks_obj2, block_reason = _resolve_tls_for_checks(
             checks_obj=checks_obj2 if isinstance(checks_obj2, dict) else _empty_check_plan(),
-            codex_last_message=codex_last_message,
+            hands_last_message=hands_last_message,
             repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
             user_input_batch_id=f"{base_batch_id}.loop_break",
             batch_id_after_testless=f"{base_batch_id}.loop_break_after_testless",
@@ -2720,7 +2685,7 @@ def run_autopilot(
     def _queue_next_input(
         *,
         nxt: str,
-        codex_last_message: str,
+        hands_last_message: str,
         batch_id: str,
         reason: str,
         repo_observation: dict[str, Any] | None = None,
@@ -2736,7 +2701,7 @@ def run_autopilot(
             notes = f"{reason}: empty next input"
             return False
 
-        sig = _loop_sig(codex_last_message=codex_last_message, next_input=candidate)
+        sig = _loop_sig(hands_last_message=hands_last_message, next_input=candidate)
         sent_sigs.append(sig)
         sent_sigs = sent_sigs[-6:]
 
@@ -2749,7 +2714,7 @@ def run_autopilot(
                     "ts": now_rfc3339(),
                     "thread_id": thread_id,
                     "pattern": pattern,
-                    "codex_last_message": _truncate(codex_last_message, 800),
+                    "hands_last_message": _truncate(hands_last_message, 800),
                     "next_input": _truncate(candidate, 800),
                     "reason": reason,
                 }
@@ -2771,7 +2736,7 @@ def run_autopilot(
                 repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
                 loop_pattern=pattern,
                 loop_reason=reason,
-                codex_last_message=codex_last_message,
+                hands_last_message=hands_last_message,
                 planned_next_input=candidate,
             )
             lb_obj, lb_ref, lb_state = _mind_call(
@@ -2859,7 +2824,7 @@ def run_autopilot(
             if action == "run_checks_then_continue":
                 chk_text, block_reason = _loop_break_get_checks_input(
                     base_batch_id=batch_id,
-                    codex_last_message=codex_last_message,
+                    hands_last_message=hands_last_message,
                     thought_db_context=thought_db_context,
                     repo_observation=repo_observation,
                     existing_check_plan=check_plan,
@@ -2945,9 +2910,9 @@ def run_autopilot(
 
         light = build_light_injection(tdb=tdb, as_of_ts=now_rfc3339())
         batch_input = next_input.strip()
-        codex_prompt = light + "\n" + batch_input + "\n"
+        hands_prompt = light + "\n" + batch_input + "\n"
         sent_ts = now_rfc3339()
-        prompt_sha256 = hashlib.sha256(codex_prompt.encode("utf-8")).hexdigest()
+        prompt_sha256 = hashlib.sha256(hands_prompt.encode("utf-8")).hexdigest()
 
         use_resume = thread_id is not None and hands_resume is not None and thread_id != "unknown"
         attempted_overlay_resume = bool(use_resume and resumed_from_overlay and batch_idx == 0)
@@ -2964,7 +2929,7 @@ def run_autopilot(
 
         if not use_resume:
             result = hands_exec(
-                prompt=codex_prompt,
+                prompt=hands_prompt,
                 project_root=project_path,
                 transcript_path=hands_transcript,
                 full_auto=True,
@@ -2975,7 +2940,7 @@ def run_autopilot(
         else:
             result = hands_resume(
                 thread_id=thread_id,
-                prompt=codex_prompt,
+                prompt=hands_prompt,
                 project_root=project_path,
                 transcript_path=hands_transcript,
                 full_auto=True,
@@ -3000,7 +2965,7 @@ def run_autopilot(
                 )
                 hands_transcript = project_paths.transcripts_dir / "hands" / f"{batch_ts}_b{batch_idx}_exec_after_resume_fail.jsonl"
                 result = hands_exec(
-                    prompt=codex_prompt,
+                    prompt=hands_prompt,
                     project_root=project_path,
                     transcript_path=hands_transcript,
                     full_auto=True,
@@ -3055,7 +3020,7 @@ def run_autopilot(
             hands_provider=cur_provider,
             light_injection=light,
             batch_input=batch_input,
-            codex_batch_summary=summary,
+            hands_batch_summary=summary,
             repo_observation=repo_obs,
         )
         evidence_obj, evidence_mind_ref, evidence_state = _mind_call(
@@ -3087,7 +3052,6 @@ def run_autopilot(
             "ts": now_rfc3339(),
             "thread_id": thread_id,
             "hands_transcript_ref": str(hands_transcript),
-            "codex_transcript_ref": str(hands_transcript),  # legacy key (V1 early logs)
             "mind_transcript_ref": evidence_mind_ref,
             "mi_input": batch_input,
             "transcript_observation": summary.get("transcript_observation") or {},
@@ -3103,12 +3067,12 @@ def run_autopilot(
 
         # Canonical values/preferences context: Thought DB subgraph (deterministic, small budget).
         # Used for Mind prompt-pack calls in this batch; Hands light injection is handled separately.
-        codex_last = result.last_agent_message()
+        hands_last = result.last_agent_message()
         tdb_ctx_batch = build_decide_next_thoughtdb_context(
             tdb=tdb,
             as_of_ts=now_rfc3339(),
             task=task,
-            hands_last_message=codex_last,
+            hands_last_message=hands_last,
             recent_evidence=evidence_window,
             mem=mem.service,
         )
@@ -3137,7 +3101,7 @@ def run_autopilot(
                 workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
                 latest_evidence=latest_evidence,
                 last_batch_input=batch_input,
-                codex_last_message=codex_last,
+                hands_last_message=hands_last,
             )
             wf_prog_obj, wf_prog_ref, wf_prog_state = _mind_call(
                 schema_filename="workflow_progress.json",
@@ -3222,7 +3186,7 @@ def run_autopilot(
                 project_overlay=overlay,
                 thought_db_context=tdb_ctx_batch_obj,
                 risk_signals=risk_signals,
-                codex_last_message=codex_last,
+                hands_last_message=hands_last,
             )
             risk_obj, risk_mind_ref, risk_state = _mind_call(
                 schema_filename="risk_judge.json",
@@ -3327,7 +3291,7 @@ def run_autopilot(
         should_plan_checks = _should_plan_checks(
             summary=summary,
             evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
-            codex_last_message=codex_last,
+            hands_last_message=hands_last,
             repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
         )
         checks_obj, checks_mind_ref, _ = _plan_checks_and_record(
@@ -3350,8 +3314,8 @@ def run_autopilot(
 
         # Auto-answer Hands when it is asking the user questions; only ask the user if MI cannot answer.
         auto_answer_obj = _empty_auto_answer()
-        if _looks_like_user_question(codex_last):
-            aa_prompt = auto_answer_to_codex_prompt(
+        if _looks_like_user_question(hands_last):
+            aa_prompt = auto_answer_to_hands_prompt(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=_mindspec_base_runtime(),
@@ -3360,11 +3324,11 @@ def run_autopilot(
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 recent_evidence=evidence_window,
-                codex_last_message=codex_last,
+                hands_last_message=hands_last,
             )
             auto_answer_mind_ref = ""
             aa_obj, auto_answer_mind_ref, aa_state = _mind_call(
-                schema_filename="auto_answer_to_codex.json",
+                schema_filename="auto_answer_to_hands.json",
                 prompt=aa_prompt,
                 tag=f"autoanswer_b{batch_idx}",
                 batch_id=batch_id,
@@ -3372,9 +3336,9 @@ def run_autopilot(
             if aa_obj is None:
                 auto_answer_obj = _empty_auto_answer()
                 if aa_state == "skipped":
-                    auto_answer_obj["notes"] = "skipped: mind_circuit_open (auto_answer_to_codex)"
+                    auto_answer_obj["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands)"
                 else:
-                    auto_answer_obj["notes"] = "mind_error: auto_answer_to_codex failed; see EvidenceLog kind=mind_error"
+                    auto_answer_obj["notes"] = "mind_error: auto_answer_to_hands failed; see EvidenceLog kind=mind_error"
             else:
                 auto_answer_obj = aa_obj
             if isinstance(auto_answer_obj, dict):
@@ -3418,7 +3382,7 @@ def run_autopilot(
         # 2) If minimal checks require a testless verification strategy and it hasn't been chosen -> ask once and persist.
         # 3) If MI can answer Hands and/or run minimal checks -> send to Hands (skip decide_next for this iteration).
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("needs_user_input", False)):
-            q = str(auto_answer_obj.get("ask_user_question") or "").strip() or codex_last.strip() or "Need more information:"
+            q = str(auto_answer_obj.get("ask_user_question") or "").strip() or hands_last.strip() or "Need more information:"
             # Before asking the user, do a conservative cross-project recall and retry auto_answer once.
             _maybe_cross_project_recall(
                 batch_id=f"b{batch_idx}.before_user_recall",
@@ -3426,7 +3390,7 @@ def run_autopilot(
                 query=(q + "\n" + task).strip(),
             )
             aa_retry = _empty_auto_answer()
-            aa_prompt_retry = auto_answer_to_codex_prompt(
+            aa_prompt_retry = auto_answer_to_hands_prompt(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base=_mindspec_base_runtime(),
@@ -3435,10 +3399,10 @@ def run_autopilot(
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 recent_evidence=evidence_window,
-                codex_last_message=q,
+                hands_last_message=q,
             )
             aa_obj_r, aa_r_ref, aa_r_state = _mind_call(
-                schema_filename="auto_answer_to_codex.json",
+                schema_filename="auto_answer_to_hands.json",
                 prompt=aa_prompt_retry,
                 tag=f"autoanswer_retry_after_recall_b{batch_idx}",
                 batch_id=f"b{batch_idx}.after_recall",
@@ -3446,9 +3410,9 @@ def run_autopilot(
             if aa_obj_r is None:
                 aa_retry = _empty_auto_answer()
                 if aa_r_state == "skipped":
-                    aa_retry["notes"] = "skipped: mind_circuit_open (auto_answer_to_codex retry after recall)"
+                    aa_retry["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands retry after recall)"
                 else:
-                    aa_retry["notes"] = "mind_error: auto_answer_to_codex retry failed; see EvidenceLog kind=mind_error"
+                    aa_retry["notes"] = "mind_error: auto_answer_to_hands retry failed; see EvidenceLog kind=mind_error"
             else:
                 aa_retry = aa_obj_r
             aa2_rec = evw.append(
@@ -3475,14 +3439,14 @@ def run_autopilot(
 
             aa_text2 = ""
             if isinstance(aa_retry, dict) and bool(aa_retry.get("should_answer", False)):
-                aa_text2 = str(aa_retry.get("codex_answer_input") or "").strip()
+                aa_text2 = str(aa_retry.get("hands_answer_input") or "").strip()
             if aa_text2:
                 check_text2 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
                 combined2 = "\n\n".join([x for x in [aa_text2, check_text2] if x])
                 if combined2:
                     if not _queue_next_input(
                         nxt=combined2,
-                        codex_last_message=codex_last,
+                        hands_last_message=hands_last,
                         batch_id=f"b{batch_idx}.after_recall",
                         reason="auto-answered after cross-project recall",
                         repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -3521,7 +3485,7 @@ def run_autopilot(
             combined_user = "\n\n".join([x for x in [answer.strip(), check_text] if x])
             if not _queue_next_input(
                 nxt=combined_user,
-                codex_last_message=codex_last,
+                hands_last_message=hands_last,
                 batch_id=f"b{batch_idx}",
                 reason="answered after user input",
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -3533,7 +3497,7 @@ def run_autopilot(
 
         checks_obj, block_reason = _resolve_tls_for_checks(
             checks_obj=checks_obj if isinstance(checks_obj, dict) else _empty_check_plan(),
-            codex_last_message=codex_last,
+            hands_last_message=hands_last,
             repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             user_input_batch_id=f"b{batch_idx}",
             batch_id_after_testless=f"b{batch_idx}.after_testless",
@@ -3551,13 +3515,13 @@ def run_autopilot(
 
         answer_text = ""
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("should_answer", False)):
-            answer_text = str(auto_answer_obj.get("codex_answer_input") or "").strip()
+            answer_text = str(auto_answer_obj.get("hands_answer_input") or "").strip()
         check_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
         combined = "\n\n".join([x for x in [answer_text, check_text] if x])
         if combined:
             if not _queue_next_input(
                 nxt=combined,
-                codex_last_message=codex_last,
+                hands_last_message=hands_last,
                 batch_id=f"b{batch_idx}",
                 reason="sent auto-answer/checks to Hands",
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -3572,7 +3536,7 @@ def run_autopilot(
             tdb=tdb,
             as_of_ts=now_rfc3339(),
             task=task,
-            hands_last_message=codex_last,
+            hands_last_message=hands_last,
             recent_evidence=evidence_window,
             mem=mem.service,
         )
@@ -3597,7 +3561,7 @@ def run_autopilot(
             active_workflow=_active_workflow(),
             workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
             recent_evidence=evidence_window,
-            codex_last_message=codex_last,
+            hands_last_message=hands_last,
             repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             auto_answer=auto_answer_obj,
@@ -3614,8 +3578,8 @@ def run_autopilot(
             )
             if ask_when_uncertain:
                 if decision_state == "skipped":
-                    if _looks_like_user_question(codex_last):
-                        q = codex_last.strip()
+                    if _looks_like_user_question(hands_last):
+                        q = hands_last.strip()
                     else:
                         q = (
                             "MI Mind circuit is OPEN (repeated failures). "
@@ -3648,7 +3612,7 @@ def run_autopilot(
                     break
                 if not _queue_next_input(
                     nxt=ov,
-                    codex_last_message=codex_last,
+                    hands_last_message=hands_last,
                     batch_id=f"b{batch_idx}",
                     reason="mind_circuit_open(decide_next): user override" if decision_state == "skipped" else "mind_error(decide_next): user override",
                     repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -3742,7 +3706,7 @@ def run_autopilot(
                     mem=mem.service,
                 )
                 tdb_ctx_aa_obj = tdb_ctx_aa.to_prompt_obj()
-                aa_prompt2 = auto_answer_to_codex_prompt(
+                aa_prompt2 = auto_answer_to_hands_prompt(
                     task=task,
                     hands_provider=cur_provider,
                     mindspec_base=_mindspec_base_runtime(),
@@ -3751,10 +3715,10 @@ def run_autopilot(
                     repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                     check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                     recent_evidence=evidence_window,
-                    codex_last_message=q,
+                    hands_last_message=q,
                 )
                 aa_obj2, aa2_mind_ref, aa2_state = _mind_call(
-                    schema_filename="auto_answer_to_codex.json",
+                    schema_filename="auto_answer_to_hands.json",
                     prompt=aa_prompt2,
                     tag=f"autoanswer_from_decide_b{batch_idx}",
                     batch_id=f"b{batch_idx}.from_decide",
@@ -3762,9 +3726,9 @@ def run_autopilot(
                 if aa_obj2 is None:
                     aa_from_decide = _empty_auto_answer()
                     if aa2_state == "skipped":
-                        aa_from_decide["notes"] = "skipped: mind_circuit_open (auto_answer_to_codex from decide_next)"
+                        aa_from_decide["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands from decide_next)"
                     else:
-                        aa_from_decide["notes"] = "mind_error: auto_answer_to_codex(from decide_next) failed; see EvidenceLog kind=mind_error"
+                        aa_from_decide["notes"] = "mind_error: auto_answer_to_hands(from decide_next) failed; see EvidenceLog kind=mind_error"
                 else:
                     aa_from_decide = aa_obj2
 
@@ -3794,13 +3758,13 @@ def run_autopilot(
 
                 aa_text = ""
                 if isinstance(aa_from_decide, dict) and bool(aa_from_decide.get("should_answer", False)):
-                    aa_text = str(aa_from_decide.get("codex_answer_input") or "").strip()
+                    aa_text = str(aa_from_decide.get("hands_answer_input") or "").strip()
                 chk_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
                 combined2 = "\n\n".join([x for x in [aa_text, chk_text] if x])
                 if combined2:
                     if not _queue_next_input(
                         nxt=combined2,
-                        codex_last_message=codex_last,
+                        hands_last_message=hands_last,
                         batch_id=f"b{batch_idx}.from_decide",
                         reason="auto-answered instead of prompting user",
                         repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -3832,7 +3796,7 @@ def run_autopilot(
                     mem=mem.service,
                 )
                 tdb_ctx_aa2_obj = tdb_ctx_aa2.to_prompt_obj()
-                aa_prompt3 = auto_answer_to_codex_prompt(
+                aa_prompt3 = auto_answer_to_hands_prompt(
                     task=task,
                     hands_provider=cur_provider,
                     mindspec_base=_mindspec_base_runtime(),
@@ -3841,10 +3805,10 @@ def run_autopilot(
                     repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                     check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                     recent_evidence=evidence_window,
-                    codex_last_message=q,
+                    hands_last_message=q,
                 )
                 aa_obj3, aa3_ref, aa3_state = _mind_call(
-                    schema_filename="auto_answer_to_codex.json",
+                    schema_filename="auto_answer_to_hands.json",
                     prompt=aa_prompt3,
                     tag=f"autoanswer_from_decide_after_recall_b{batch_idx}",
                     batch_id=f"b{batch_idx}.from_decide.after_recall",
@@ -3852,9 +3816,9 @@ def run_autopilot(
                 if aa_obj3 is None:
                     aa_retry2 = _empty_auto_answer()
                     if aa3_state == "skipped":
-                        aa_retry2["notes"] = "skipped: mind_circuit_open (auto_answer_to_codex from decide_next after recall)"
+                        aa_retry2["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands from decide_next after recall)"
                     else:
-                        aa_retry2["notes"] = "mind_error: auto_answer_to_codex(from decide_next after recall) failed; see EvidenceLog kind=mind_error"
+                        aa_retry2["notes"] = "mind_error: auto_answer_to_hands(from decide_next after recall) failed; see EvidenceLog kind=mind_error"
                 else:
                     aa_retry2 = aa_obj3
 
@@ -3889,13 +3853,13 @@ def run_autopilot(
 
                 aa_text3 = ""
                 if isinstance(aa_retry2, dict) and bool(aa_retry2.get("should_answer", False)):
-                    aa_text3 = str(aa_retry2.get("codex_answer_input") or "").strip()
+                    aa_text3 = str(aa_retry2.get("hands_answer_input") or "").strip()
                 chk_text3 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
                 combined3 = "\n\n".join([x for x in [aa_text3, chk_text3] if x])
                 if combined3:
                     if not _queue_next_input(
                         nxt=combined3,
-                        codex_last_message=codex_last,
+                        hands_last_message=hands_last,
                         batch_id=f"b{batch_idx}.from_decide.after_recall",
                         reason="auto-answered (after recall) instead of prompting user",
                         repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
@@ -3935,7 +3899,7 @@ def run_autopilot(
                 tdb=tdb,
                 as_of_ts=now_rfc3339(),
                 task=task,
-                hands_last_message=codex_last,
+                hands_last_message=hands_last,
                 recent_evidence=evidence_window,
                 mem=mem.service,
             )
@@ -3962,7 +3926,7 @@ def run_autopilot(
                 active_workflow=_active_workflow(),
                 workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
                 recent_evidence=evidence_window,
-                codex_last_message=codex_last,
+                hands_last_message=hands_last,
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
                 auto_answer=_empty_auto_answer(),
@@ -3980,7 +3944,7 @@ def run_autopilot(
                 combined_user2 = "\n\n".join([x for x in [answer.strip(), chk_text2] if x])
                 if not _queue_next_input(
                     nxt=combined_user2,
-                    codex_last_message=codex_last,
+                    hands_last_message=hands_last,
                     batch_id=f"b{batch_idx}.after_user",
                     reason=(
                         "mind_circuit_open(decide_next after user): send user answer"
@@ -4033,17 +3997,17 @@ def run_autopilot(
 
             if next_action == "stop":
                 break
-            if next_action == "send_to_codex":
-                nxt = str(decision_obj.get("next_codex_input") or "").strip()
+            if next_action == "send_to_hands":
+                nxt = str(decision_obj.get("next_hands_input") or "").strip()
                 if not nxt:
                     status = "blocked"
-                    notes = "decide_next returned send_to_codex without next_codex_input (after user input)"
+                    notes = "decide_next returned send_to_hands without next_hands_input (after user input)"
                     break
                 if not _queue_next_input(
                     nxt=nxt,
-                    codex_last_message=codex_last,
+                    hands_last_message=hands_last,
                     batch_id=f"b{batch_idx}.after_user",
-                    reason="send_to_codex after user input",
+                    reason="send_to_hands after user input",
                     repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                     thought_db_context=tdb_ctx2_obj,
                     check_plan=checks_obj if isinstance(checks_obj, dict) else {},
@@ -4055,17 +4019,17 @@ def run_autopilot(
             notes = f"unexpected next_action={next_action} after user input"
             break
 
-        if next_action == "send_to_codex":
-            nxt = str(decision_obj.get("next_codex_input") or "").strip()
+        if next_action == "send_to_hands":
+            nxt = str(decision_obj.get("next_hands_input") or "").strip()
             if not nxt:
                 status = "blocked"
-                notes = "decide_next returned send_to_codex without next_codex_input"
+                notes = "decide_next returned send_to_hands without next_hands_input"
                 break
             if not _queue_next_input(
                 nxt=nxt,
-                codex_last_message=codex_last,
+                hands_last_message=hands_last,
                 batch_id=f"b{batch_idx}",
-                reason="send_to_codex",
+                reason="send_to_hands",
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
                 thought_db_context=tdb_ctx_obj,
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},

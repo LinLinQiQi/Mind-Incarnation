@@ -45,10 +45,10 @@ def query_from_evidence_event(obj: dict[str, Any]) -> str:
             str(obj.get("status") or "").strip(),
             str(obj.get("next_action") or "").strip(),
             str(obj.get("notes") or "").strip(),
-            str(obj.get("next_codex_input") or "").strip(),
+            str(obj.get("next_hands_input") or "").strip(),
         ]
         return " ".join([x for x in parts if x]).strip()
-    if kind in ("hands_input", "codex_input"):
+    if kind == "hands_input":
         return str(obj.get("input") or "").strip()
     if kind == "workflow_trigger":
         return " ".join([str(obj.get("workflow_name") or ""), str(obj.get("trigger_pattern") or "")]).strip()

@@ -9,7 +9,7 @@
     "testless_strategy_question",
     "check_goals",
     "commands_hints",
-    "codex_check_input",
+    "hands_check_input",
     "notes"
   ],
   "properties": {
@@ -18,8 +18,7 @@
     "testless_strategy_question": { "type": "string" },
     "check_goals": { "type": "array", "items": { "type": "string" } },
     "commands_hints": { "type": "array", "items": { "type": "string" } },
-    "codex_check_input": { "type": "string" },
+    "hands_check_input": { "type": "string" },
     "notes": { "type": "string" }
   }
 }
-

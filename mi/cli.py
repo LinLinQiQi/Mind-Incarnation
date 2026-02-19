@@ -149,11 +149,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Clear the stored Hands thread/session id for this project before running (forces a fresh Hands session).",
     )
     p_run.add_argument(
-        "--show",
-        action="store_true",
-        help="Legacy flag (kept for compatibility). `mi run` now prints live output + end summary by default; use --quiet to suppress.",
-    )
-    p_run.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress live output and the end summary (useful for scripts/CI).",

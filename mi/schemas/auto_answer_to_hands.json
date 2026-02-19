@@ -1,23 +1,24 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "MI ClosureEval",
+  "title": "MI AutoAnswerToHands",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "status",
+    "should_answer",
     "confidence",
-    "done_reasons",
-    "blocking_issues",
+    "hands_answer_input",
+    "needs_user_input",
     "ask_user_question",
+    "unanswered_questions",
     "notes"
   ],
   "properties": {
-    "status": { "type": "string", "enum": ["done", "not_done", "blocked"] },
+    "should_answer": { "type": "boolean" },
     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-    "done_reasons": { "type": "array", "items": { "type": "string" } },
-    "blocking_issues": { "type": "array", "items": { "type": "string" } },
+    "hands_answer_input": { "type": "string" },
+    "needs_user_input": { "type": "boolean" },
     "ask_user_question": { "type": "string" },
+    "unanswered_questions": { "type": "array", "items": { "type": "string" } },
     "notes": { "type": "string" }
   }
 }
-

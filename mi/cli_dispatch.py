@@ -390,15 +390,15 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         bindings = parse_host_bindings(overlay)
 
         bundle = load_last_batch_bundle(pp.evidence_log_path)
-        codex_input = bundle.get("codex_input") if isinstance(bundle.get("codex_input"), dict) else None
+        hands_input = bundle.get("hands_input") if isinstance(bundle.get("hands_input"), dict) else None
         evidence_item = bundle.get("evidence_item") if isinstance(bundle.get("evidence_item"), dict) else None
         decide_next = bundle.get("decide_next") if isinstance(bundle.get("decide_next"), dict) else None
 
         transcript_path = ""
-        if codex_input and isinstance(codex_input.get("transcript_path"), str):
-            transcript_path = codex_input["transcript_path"]
-        elif evidence_item and isinstance(evidence_item.get("codex_transcript_ref"), str):
-            transcript_path = evidence_item["codex_transcript_ref"]
+        if hands_input and isinstance(hands_input.get("transcript_path"), str):
+            transcript_path = hands_input["transcript_path"]
+        elif evidence_item and isinstance(evidence_item.get("hands_transcript_ref"), str):
+            transcript_path = evidence_item["hands_transcript_ref"]
         last_msg = last_agent_message_from_transcript(Path(transcript_path)) if transcript_path else ""
 
         # Pending learn suggestions (reduce user burden): show only items that require manual apply.
@@ -444,7 +444,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         if bindings and (not host_sync_ok):
             next_steps.append("mi host sync --json")
         if not next_steps:
-            next_steps.append('mi run --show "..."')
+            next_steps.append('mi run "..."')
         next_steps = next_steps[:3]
 
         payload = {
@@ -1140,7 +1140,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             no_mi_prompt=no_mi_prompt,
             redact=run_redact,
         )
-        # Always print an end summary unless suppressed; `--show` is legacy.
+        # Always print an end summary unless suppressed.
         if not quiet:
             print(result.render_text())
         return 0 if result.status == "done" else 1
@@ -1150,22 +1150,22 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
 
         bundle = load_last_batch_bundle(pp.evidence_log_path)
-        codex_input = bundle.get("codex_input") if isinstance(bundle.get("codex_input"), dict) else None
+        hands_input = bundle.get("hands_input") if isinstance(bundle.get("hands_input"), dict) else None
         evidence_item = bundle.get("evidence_item") if isinstance(bundle.get("evidence_item"), dict) else None
         decide_next = bundle.get("decide_next") if isinstance(bundle.get("decide_next"), dict) else None
 
         transcript_path = ""
-        if codex_input and isinstance(codex_input.get("transcript_path"), str):
-            transcript_path = codex_input["transcript_path"]
-        elif evidence_item and isinstance(evidence_item.get("codex_transcript_ref"), str):
-            transcript_path = evidence_item["codex_transcript_ref"]
+        if hands_input and isinstance(hands_input.get("transcript_path"), str):
+            transcript_path = hands_input["transcript_path"]
+        elif evidence_item and isinstance(evidence_item.get("hands_transcript_ref"), str):
+            transcript_path = evidence_item["hands_transcript_ref"]
 
         last_msg = ""
         if transcript_path:
             last_msg = last_agent_message_from_transcript(Path(transcript_path))
 
-        mi_input_text = (codex_input.get("input") if codex_input else "") or ""
-        codex_last_text = last_msg or ""
+        mi_input_text = (hands_input.get("input") if hands_input else "") or ""
+        hands_last_text = last_msg or ""
 
         evidence_item_out = evidence_item or {}
         decide_next_out = decide_next or {}
@@ -1179,20 +1179,20 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
         learn_applied_out = (bundle.get("learn_applied") or []) if isinstance(bundle.get("learn_applied"), list) else []
         if args.redact:
             mi_input_text = redact_text(mi_input_text)
-            codex_last_text = redact_text(codex_last_text)
+            hands_last_text = redact_text(hands_last_text)
             if isinstance(evidence_item_out, dict):
                 for k in ("facts", "results", "unknowns", "risk_signals"):
                     v = evidence_item_out.get(k)
                     if isinstance(v, list):
                         evidence_item_out[k] = [redact_text(str(x)) for x in v]
             if isinstance(decide_next_out, dict):
-                for k in ("notes", "ask_user_question", "next_codex_input"):
+                for k in ("notes", "ask_user_question", "next_hands_input"):
                     v = decide_next_out.get(k)
                     if isinstance(v, str) and v:
                         decide_next_out[k] = redact_text(v)
                 inner = decide_next_out.get("decision")
                 if isinstance(inner, dict):
-                    for k in ("notes", "ask_user_question", "next_codex_input"):
+                    for k in ("notes", "ask_user_question", "next_hands_input"):
                         v = inner.get(k)
                         if isinstance(v, str) and v:
                             inner[k] = redact_text(v)
@@ -1243,7 +1243,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             "thread_id": bundle.get("thread_id") or "",
             "hands_transcript": transcript_path,
             "mi_input": mi_input_text,
-            "codex_last_message": codex_last_text,
+            "hands_last_message": hands_last_text,
             "evidence_item": evidence_item_out,
             "check_plan": (bundle.get("check_plan") or {}) if isinstance(bundle.get("check_plan"), dict) else {},
             "auto_answer": (bundle.get("auto_answer") or {}) if isinstance(bundle.get("auto_answer"), dict) else {},
@@ -1281,9 +1281,8 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             print(f"hands_transcript={transcript_path}")
         if out["mi_input"].strip():
             print("\nmi_input:\n" + out["mi_input"].strip())
-        if out["codex_last_message"].strip():
-            # Legacy key name in JSON output: "codex_last_message" means Hands last message.
-            print("\nhands_last_message:\n" + out["codex_last_message"].strip())
+        if out["hands_last_message"].strip():
+            print("\nhands_last_message:\n" + out["hands_last_message"].strip())
         if isinstance(decide_next_out, dict) and decide_next_out:
             st = str(decide_next_out.get("status") or "")
             na = str(decide_next_out.get("next_action") or "")
@@ -1298,8 +1297,8 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             notes_s = str(decide_next_out.get("notes") or "").strip()
             if notes_s:
                 print("\nnotes:\n" + notes_s)
-            if na == "send_to_codex":
-                nxt = str(decide_next_out.get("next_codex_input") or "").strip()
+            if na == "send_to_hands":
+                nxt = str(decide_next_out.get("next_hands_input") or "").strip()
                 if nxt:
                     print("\nnext_hands_input (planned):\n" + nxt)
             if na == "ask_user":
@@ -2916,7 +2915,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             if args.why_cmd == "last":
                 bundle = load_last_batch_bundle(pp.evidence_log_path)
                 target_obj = None
-                for key in ("decide_next", "evidence_item", "codex_input"):
+                for key in ("decide_next", "evidence_item", "hands_input"):
                     v = bundle.get(key)
                     if isinstance(v, dict) and str(v.get("event_id") or "").strip():
                         target_obj = v

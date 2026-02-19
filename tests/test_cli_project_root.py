@@ -121,18 +121,6 @@ class TestCliProjectRootResolution(unittest.TestCase):
             self.assertEqual(root, sub.resolve())
             self.assertEqual(reason, "known:cwd")
 
-    def test_env_override_mi_project_root(self) -> None:
-        with _patched_env({"MI_CD": None, "MI_PROJECT_ROOT": None}), tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            a = base / "a"
-            a.mkdir(parents=True, exist_ok=True)
-
-            with _patched_env({"MI_PROJECT_ROOT": str(a)}):
-                root, reason = resolve_cli_project_root(Path(home), "", cwd=base)
-
-            self.assertEqual(root, a.resolve())
-            self.assertEqual(reason, "env:MI_PROJECT_ROOT")
-
     def test_env_override_mi_cd_takes_precedence(self) -> None:
         with _patched_env({"MI_CD": None, "MI_PROJECT_ROOT": None}), tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:
             base = Path(td)
@@ -174,11 +162,18 @@ class TestCliProjectRootResolution(unittest.TestCase):
             a.mkdir(parents=True, exist_ok=True)
             b.mkdir(parents=True, exist_ok=True)
 
-            with _patched_env({"MI_CD": "@missing", "MI_PROJECT_ROOT": str(b)}):
+            gp = GlobalPaths(home_dir=Path(home))
+            gp.project_selection_path.parent.mkdir(parents=True, exist_ok=True)
+            gp.project_selection_path.write_text(
+                json.dumps({"version": "v1", "pinned": {"root_path": str(b.resolve())}}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            with _patched_env({"MI_CD": "@missing"}):
                 root, reason = resolve_cli_project_root(Path(home), "", cwd=a)
 
             self.assertEqual(root, b.resolve())
-            self.assertEqual(reason, "env:MI_PROJECT_ROOT")
+            self.assertEqual(reason, "pinned")
 
     def test_cd_token_alias_resolves_from_selection_registry(self) -> None:
         with _patched_env({"MI_CD": None, "MI_PROJECT_ROOT": None}), tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as td:

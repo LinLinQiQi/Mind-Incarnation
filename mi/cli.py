@@ -151,7 +151,27 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument(
         "--show",
         action="store_true",
-        help="Print MI summaries plus pointers to raw transcript and evidence log.",
+        help="Legacy flag (kept for compatibility). `mi run` now prints live output + end summary by default; use --quiet to suppress.",
+    )
+    p_run.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress live output and the end summary (useful for scripts/CI).",
+    )
+    p_run.add_argument(
+        "--hands-raw",
+        action="store_true",
+        help="Print raw Hands stdout/stderr as captured (Codex: JSON event lines) instead of rendered output.",
+    )
+    p_run.add_argument(
+        "--no-mi-prompt",
+        action="store_true",
+        help="Do not print the full MI->Hands prompt (still persisted to EvidenceLog).",
+    )
+    p_run.add_argument(
+        "--redact",
+        action="store_true",
+        help="Best-effort redact common secret/token patterns in live display output (stored logs remain unchanged).",
     )
     p_run.add_argument(
         "--why",

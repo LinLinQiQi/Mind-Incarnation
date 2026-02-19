@@ -152,8 +152,16 @@ mi settings set --scope project --cd /path/to/your/project --ask-when-uncertain 
 Run MI batch autopilot above Hands (stores transcripts + evidence under `~/.mind-incarnation/projects/<id>/`):
 
 ```bash
-mi run --cd /path/to/your/project --show "Do X, then verify with minimal checks."
+mi run --cd /path/to/your/project "Do X, then verify with minimal checks."
 ```
+
+Notes:
+
+- `mi run` prints a live stream by default:
+  - `[mi]` MI stage/decision logs
+  - `[mi->hands]` the exact prompt MI sends to Hands (light injection + batch_input)
+  - `[hands]` rendered Hands output (use `--hands-raw` for raw capture)
+- Use `--quiet` for scripts/CI, `--no-mi-prompt` to hide MI->Hands prompt, and `--redact` for best-effort safe display.
 
 Everyday status + front-door inspect (reduce command surface area):
 
@@ -186,7 +194,7 @@ mi edit wf_<id> --cd /path/to/your/project --request "..."
 Optional: run one WhyTrace at run end (opt-in; writes `kind=why_trace` and may materialize `depends_on` edges):
 
 ```bash
-mi run --cd /path/to/your/project --why --show "Do X, then verify with minimal checks."
+mi run --cd /path/to/your/project --why "Do X, then verify with minimal checks."
 ```
 
 Notes on `--cd`:
@@ -244,7 +252,7 @@ mi project unpin
 mi project alias add repo1 --cd /path/to/your/project
 mi project alias list
 
-mi run --cd @repo1 --show "Do X, then verify with minimal checks."
+mi run --cd @repo1 "Do X, then verify with minimal checks."
 ```
 
 Note: JSON outputs keep some legacy key names (e.g., `codex_last_message`, `next_codex_input`) for backward compatibility; they refer to Hands.

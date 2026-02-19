@@ -30,6 +30,7 @@ from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
 from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from ..core.storage import append_jsonl, ensure_dir, now_rfc3339, read_json_best_effort, write_json_atomic
+from ..core.redact import redact_text
 from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
 from ..workflows import (
     WorkflowStore,
@@ -425,6 +426,10 @@ def run_autopilot(
     continue_hands: bool = False,
     reset_hands: bool = False,
     why_trace_on_run_end: bool = False,
+    live: bool = False,
+    quiet: bool = False,
+    no_mi_prompt: bool = False,
+    redact: bool = False,
 ) -> AutopilotResult:
     project_path = Path(project_root).resolve()
     home = Path(home_dir).expanduser().resolve() if home_dir else default_home_dir()
@@ -494,6 +499,21 @@ def run_autopilot(
         hands_exec = run_codex_exec
     if hands_resume is _DEFAULT:
         hands_resume = run_codex_resume
+
+    live_enabled = bool(live) and (not bool(quiet))
+
+    def _emit_prefixed(prefix: str, text: str) -> None:
+        if not live_enabled:
+            return
+        s = str(text or "")
+        if redact:
+            s = redact_text(s)
+        lines = s.splitlines() if s else [""]
+        for line in lines:
+            if line:
+                print(f"{prefix} {line}", flush=True)
+            else:
+                print(prefix, flush=True)
 
     evidence_window: list[dict[str, Any]] = []
     thread_id: str | None = None
@@ -2932,6 +2952,16 @@ def run_autopilot(
         use_resume = thread_id is not None and hands_resume is not None and thread_id != "unknown"
         attempted_overlay_resume = bool(use_resume and resumed_from_overlay and batch_idx == 0)
 
+        _emit_prefixed(
+            "[mi]",
+            f"batch_start {batch_id} provider={(cur_provider or 'codex')} mode={('resume' if use_resume else 'exec')} thread_id={(thread_id or '')} transcript={hands_transcript}",
+        )
+        if not bool(no_mi_prompt):
+            _emit_prefixed("[mi->hands]", "--- light_injection ---")
+            _emit_prefixed("[mi->hands]", light.rstrip("\n"))
+            _emit_prefixed("[mi->hands]", "--- batch_input ---")
+            _emit_prefixed("[mi->hands]", batch_input.rstrip("\n"))
+
         if not use_resume:
             result = hands_exec(
                 prompt=codex_prompt,
@@ -2987,6 +3017,7 @@ def run_autopilot(
             thread_id = res_tid or "unknown"
 
         executed_batches += 1
+        _emit_prefixed("[mi]", f"hands_done {batch_id} exit_code={getattr(result, 'exit_code', None)} thread_id={thread_id}")
 
         # Persist last seen Hands thread id so future `mi run --continue-hands` can resume.
         if thread_id and thread_id != "unknown":
@@ -3038,6 +3069,19 @@ def run_autopilot(
                 evidence_obj = _empty_evidence_obj(note="mind_circuit_open: extract_evidence skipped")
             else:
                 evidence_obj = _empty_evidence_obj(note="mind_error: extract_evidence failed; see EvidenceLog kind=mind_error")
+
+        if isinstance(evidence_obj, dict):
+            facts_n = len(evidence_obj.get("facts") or []) if isinstance(evidence_obj.get("facts"), list) else 0
+            actions_n = len(evidence_obj.get("actions") or []) if isinstance(evidence_obj.get("actions"), list) else 0
+            results_n = len(evidence_obj.get("results") or []) if isinstance(evidence_obj.get("results"), list) else 0
+            unknowns_n = len(evidence_obj.get("unknowns") or []) if isinstance(evidence_obj.get("unknowns"), list) else 0
+            risk_n = len(evidence_obj.get("risk_signals") or []) if isinstance(evidence_obj.get("risk_signals"), list) else 0
+        else:
+            facts_n = actions_n = results_n = unknowns_n = risk_n = 0
+        _emit_prefixed(
+            "[mi]",
+            f"extract_evidence state={str(evidence_state or '')} facts={facts_n} actions={actions_n} results={results_n} unknowns={unknowns_n} risk_signals={risk_n}",
+        )
         evidence_item = {
             "batch_id": batch_id,
             "ts": now_rfc3339(),
@@ -3296,6 +3340,13 @@ def run_autopilot(
             notes_on_skipped="skipped: mind_circuit_open (plan_min_checks)",
             notes_on_error="mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error",
         )
+        if isinstance(checks_obj, dict):
+            _emit_prefixed(
+                "[mi]",
+                "plan_min_checks "
+                + f"should_run_checks={bool(checks_obj.get('should_run_checks', False))} "
+                + f"needs_testless_strategy={bool(checks_obj.get('needs_testless_strategy', False))}",
+            )
 
         # Auto-answer Hands when it is asking the user questions; only ask the user if MI cannot answer.
         auto_answer_obj = _empty_auto_answer()
@@ -3326,6 +3377,20 @@ def run_autopilot(
                     auto_answer_obj["notes"] = "mind_error: auto_answer_to_codex failed; see EvidenceLog kind=mind_error"
             else:
                 auto_answer_obj = aa_obj
+            if isinstance(auto_answer_obj, dict):
+                cf = auto_answer_obj.get("confidence")
+                try:
+                    cf_s = f"{float(cf):.2f}" if cf is not None else ""
+                except Exception:
+                    cf_s = str(cf or "")
+                _emit_prefixed(
+                    "[mi]",
+                    "auto_answer_to_hands "
+                    + f"state={str(aa_state or '')} "
+                    + f"should_answer={bool(auto_answer_obj.get('should_answer', False))} "
+                    + f"needs_user_input={bool(auto_answer_obj.get('needs_user_input', False))} "
+                    + (f"confidence={cf_s}" if cf_s else ""),
+                )
             aa_rec = evw.append(
                 {
                     "kind": "auto_answer",
@@ -3647,6 +3712,17 @@ def run_autopilot(
         next_action = str(decision_obj.get("next_action") or "stop")
         status = str(decision_obj.get("status") or "not_done")
         notes = str(decision_obj.get("notes") or "")
+        cf = decision_obj.get("confidence")
+        try:
+            cf_s = f"{float(cf):.2f}" if cf is not None else ""
+        except Exception:
+            cf_s = str(cf or "")
+        _emit_prefixed(
+            "[mi]",
+            "decide_next "
+            + f"status={status} next_action={next_action} "
+            + (f"confidence={cf_s}" if cf_s else ""),
+        )
 
         if next_action == "stop":
             break

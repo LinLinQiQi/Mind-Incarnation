@@ -1101,7 +1101,13 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             return 0
 
     if args.cmd == "run":
-        hands_exec, hands_resume = make_hands_functions(cfg)
+        quiet = bool(getattr(args, "quiet", False))
+        live = not quiet
+        hands_raw = bool(getattr(args, "hands_raw", False))
+        no_mi_prompt = bool(getattr(args, "no_mi_prompt", False))
+        run_redact = bool(getattr(args, "redact", False))
+
+        hands_exec, hands_resume = make_hands_functions(cfg, live=live, hands_raw=hands_raw, redact=run_redact)
         project_root = _resolve_project_root_from_args(home_dir, _effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
         project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
         llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=project_paths.transcripts_dir)
@@ -1123,8 +1129,13 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             continue_hands=continue_hands,
             reset_hands=bool(args.reset_hands),
             why_trace_on_run_end=bool(getattr(args, "why", False)),
+            live=live,
+            quiet=quiet,
+            no_mi_prompt=no_mi_prompt,
+            redact=run_redact,
         )
-        if args.show:
+        # Always print an end summary unless suppressed; `--show` is legacy.
+        if not quiet:
             print(result.render_text())
         return 0 if result.status == "done" else 1
 

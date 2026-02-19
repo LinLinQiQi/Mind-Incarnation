@@ -9,9 +9,10 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .codex_runner import _should_interrupt_command, _signal_from_name
+from ..core.redact import redact_text
 from ..core.storage import now_rfc3339
 from ..runtime.transcript_store import append_transcript_line, write_transcript_header
 from ..runtime.transcript import last_agent_message_from_transcript
@@ -66,6 +67,10 @@ def _run_process(
     env: dict[str, str] | None,
     thread_id_regex: str,
     interrupt: Any | None,
+    live: bool,
+    hands_raw: bool,
+    redact: bool,
+    on_live_line: Callable[[str], None] | None,
 ) -> tuple[int, str, str]:
     merged_env = os.environ.copy()
     if env:
@@ -99,6 +104,19 @@ def _run_process(
     interrupt_requested = False
     interrupt_requested_at = 0.0
     next_signal_idx = 0
+    emit_live = bool(live)
+
+    def emit(line: str) -> None:
+        if not emit_live:
+            return
+        s = redact_text(line) if redact else line
+        if on_live_line is not None:
+            try:
+                on_live_line(s)
+                return
+            except Exception:
+                pass
+        print(s, flush=True)
 
     start = time.time()
     try:
@@ -135,6 +153,11 @@ def _run_process(
                     continue
                 line = line.rstrip("\n")
                 append_transcript_line(transcript_path, {"ts": now_rfc3339(), "stream": stream_name, "line": line})
+                if hands_raw:
+                    emit(f"[hands:{stream_name}] {line}")
+                else:
+                    if line.strip():
+                        emit(f"[hands:{stream_name}] {line}")
 
                 if stream_name == "stdout" and line.strip():
                     last_stdout = line
@@ -224,6 +247,10 @@ class CliHandsAdapter:
         sandbox: str | None,
         output_schema_path: Path | None,
         interrupt: Any | None = None,
+        live: bool = False,
+        hands_raw: bool = False,
+        redact: bool = False,
+        on_live_line: Callable[[str], None] | None = None,
     ) -> CliRunResult:
         argv, stdin_text = _format_args(
             self._exec_argv,
@@ -252,6 +279,10 @@ class CliHandsAdapter:
             env=self._env,
             thread_id_regex=self._thread_id_regex,
             interrupt=interrupt,
+            live=bool(live),
+            hands_raw=bool(hands_raw),
+            redact=bool(redact),
+            on_live_line=on_live_line,
         )
 
         # If we extracted a thread id, use it; otherwise just use "unknown".
@@ -276,6 +307,10 @@ class CliHandsAdapter:
         sandbox: str | None,
         output_schema_path: Path | None,
         interrupt: Any | None = None,
+        live: bool = False,
+        hands_raw: bool = False,
+        redact: bool = False,
+        on_live_line: Callable[[str], None] | None = None,
     ) -> CliRunResult:
         if not self.supports_resume:
             # Fallback: run exec again.
@@ -287,6 +322,10 @@ class CliHandsAdapter:
                 sandbox=sandbox,
                 output_schema_path=output_schema_path,
                 interrupt=interrupt,
+                live=bool(live),
+                hands_raw=bool(hands_raw),
+                redact=bool(redact),
+                on_live_line=on_live_line,
             )
 
         argv, stdin_text = _format_args(
@@ -316,6 +355,10 @@ class CliHandsAdapter:
             env=self._env,
             thread_id_regex=self._thread_id_regex,
             interrupt=interrupt,
+            live=bool(live),
+            hands_raw=bool(hands_raw),
+            redact=bool(redact),
+            on_live_line=on_live_line,
         )
 
         new_tid = extracted_tid if extracted_tid else thread_id

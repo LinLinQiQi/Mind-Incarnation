@@ -155,9 +155,11 @@ Hands providers:
 - `hands.provider=codex` (default)
   - Uses `codex exec --json --full-auto` (and `codex exec resume --json --full-auto` for continuation).
   - Captures Codex's JSONL event stream (stdout) and logs (stderr) as the raw transcript.
+  - During `mi run`, MI can live-render this stream to the terminal (prefix `[hands]`). Use `mi run --hands-raw` to display the raw JSON event lines instead.
 - `hands.provider=cli` (experimental)
   - Runs arbitrary command argv configured by the user (wrapper mechanism).
   - Captures raw stdout/stderr lines into MI-owned JSONL transcript records.
+  - During `mi run`, MI can tee captured stdout/stderr lines to the terminal (prefix `[hands:stdout]` / `[hands:stderr]`).
   - Resume is optional; it depends on whether the underlying CLI supports a thread/session id.
   - Evidence/risks are best-effort: when the wrapped CLI prints JSON (e.g., Claude Code `--output-format stream-json|json`), MI will parse JSON events; otherwise it falls back to heuristically scanning captured text (paths/errors/etc.). Post-hoc risk signals are detected by scanning transcript text for risky markers.
   - Interrupt is best-effort: MI can send signals to terminate the process, but it can only trigger based on observed output text (unlike Codex which exposes `command_execution` events).
@@ -191,6 +193,15 @@ The user can choose to view:
 
 - MI summaries only
 - or expand to see raw transcript + evidence entries
+
+Live run display (V1):
+
+- `mi run` prints a live stream by default to reduce user burden and improve auditability:
+  - `[mi]` MI stage/decision logs (high-level)
+  - `[mi->hands]` the exact prompt MI sends to Hands (light injection + batch_input)
+  - `[hands]` rendered Hands output (Codex JSON stream -> readable lines)
+- Stored logs remain unchanged; `--redact` affects display only.
+- Use `mi run --quiet` to suppress live output and the end summary.
 
 ## Soft-Constraint Violations (e.g., external actions without prior clarification)
 
@@ -1109,7 +1120,13 @@ mi --home ~/.mind-incarnation settings set --scope project --cd <project_root> -
 Run batch autopilot:
 
 ```bash
-mi --home ~/.mind-incarnation run --cd <project_root> --show "<task>"
+mi --home ~/.mind-incarnation run --cd <project_root> "<task>"
+
+# Script/CI:
+mi --home ~/.mind-incarnation run --cd <project_root> --quiet "<task>"
+
+# Debug:
+mi --home ~/.mind-incarnation run --cd <project_root> --hands-raw "<task>"
 ```
 
 Everyday status (front-door, read-only):
@@ -1193,7 +1210,12 @@ Common run flags:
 - `--max-batches N`: cap the number of Hands batches
 - `--continue-hands`: try to resume the last stored Hands thread/session id for this project (best-effort)
 - `--reset-hands`: clear the stored Hands thread/session id for this project before running
+- `--quiet`: suppress live output and the end summary (scripts/CI)
+- `--hands-raw`: print raw Hands stdout/stderr capture (Codex: JSON event lines) instead of rendered output
+- `--no-mi-prompt`: do not print the full MI->Hands prompt (still persisted to EvidenceLog)
+- `--redact`: best-effort redact common secret/token patterns in live display output (stored logs unchanged)
 - `--why`: opt-in: run one WhyTrace at run end (writes `kind=why_trace`; may materialize `depends_on(event_id -> claim_id)` edges)
+- `--show`: legacy flag kept for compatibility (default output already includes live + end summary)
 
 Inspect latest batch bundle (MI input + last agent message + evidence pointers + mind transcript pointers):
 
@@ -1230,8 +1252,8 @@ mi --home ~/.mind-incarnation project unpin                           # clear @p
 mi --home ~/.mind-incarnation project alias add repo1 --cd <project_root>
 mi --home ~/.mind-incarnation project alias list
 
-mi --home ~/.mind-incarnation run --cd @repo1 --show "<task>"
-mi --home ~/.mind-incarnation run --cd @pinned --show "<task>"
+mi --home ~/.mind-incarnation run --cd @repo1 "<task>"
+mi --home ~/.mind-incarnation run --cd @pinned "<task>"
 ```
 
 Note: some output keys keep legacy `codex_*` / `*_to_codex` naming for backward compatibility; they refer to Hands.

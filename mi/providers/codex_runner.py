@@ -8,9 +8,11 @@ import time
 import signal
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from ..core.storage import ensure_dir, now_rfc3339
+from ..core.redact import redact_text
+from ..runtime.live import render_codex_event
 from ..runtime.transcript_store import append_transcript_line, write_transcript_header
 from ..runtime.risk import should_interrupt_text
 
@@ -83,6 +85,10 @@ def run_codex_exec(
     sandbox: str | None,
     output_schema_path: Path | None,
     interrupt: InterruptConfig | None = None,
+    live: bool = False,
+    hands_raw: bool = False,
+    redact: bool = False,
+    on_live_line: Callable[[str], None] | None = None,
 ) -> CodexRunResult:
     skip_git_repo_check = not _is_inside_git_repo(project_root)
     args = _build_codex_base_args(project_root, skip_git_repo_check)
@@ -109,7 +115,16 @@ def run_codex_exec(
         },
     )
 
-    return _run_codex_process(args=args, stdin_text=prompt, transcript_path=transcript_path, interrupt=interrupt)
+    return _run_codex_process(
+        args=args,
+        stdin_text=prompt,
+        transcript_path=transcript_path,
+        interrupt=interrupt,
+        live=bool(live),
+        hands_raw=bool(hands_raw),
+        redact=bool(redact),
+        on_live_line=on_live_line,
+    )
 
 
 def run_codex_resume(
@@ -122,6 +137,10 @@ def run_codex_resume(
     sandbox: str | None,
     output_schema_path: Path | None,
     interrupt: InterruptConfig | None = None,
+    live: bool = False,
+    hands_raw: bool = False,
+    redact: bool = False,
+    on_live_line: Callable[[str], None] | None = None,
 ) -> CodexRunResult:
     skip_git_repo_check = not _is_inside_git_repo(project_root)
     args = _build_codex_base_args(project_root, skip_git_repo_check)
@@ -149,7 +168,16 @@ def run_codex_resume(
         },
     )
 
-    return _run_codex_process(args=args, stdin_text=prompt, transcript_path=transcript_path, interrupt=interrupt)
+    return _run_codex_process(
+        args=args,
+        stdin_text=prompt,
+        transcript_path=transcript_path,
+        interrupt=interrupt,
+        live=bool(live),
+        hands_raw=bool(hands_raw),
+        redact=bool(redact),
+        on_live_line=on_live_line,
+    )
 
 
 def _run_codex_process(
@@ -158,6 +186,10 @@ def _run_codex_process(
     stdin_text: str,
     transcript_path: Path,
     interrupt: InterruptConfig | None,
+    live: bool,
+    hands_raw: bool,
+    redact: bool,
+    on_live_line: Callable[[str], None] | None,
 ) -> CodexRunResult:
     start = time.time()
     proc = subprocess.Popen(
@@ -183,6 +215,20 @@ def _run_codex_process(
     interrupt_requested = False
     interrupt_requested_at = 0.0
     next_signal_idx = 0
+    emit_live = bool(live)
+
+    def emit(line: str) -> None:
+        if not emit_live:
+            return
+        s = redact_text(line) if redact else line
+        if on_live_line is not None:
+            try:
+                on_live_line(s)
+                return
+            except Exception:
+                # Fall back to printing.
+                pass
+        print(s, flush=True)
 
     while sel.get_map():
         # Escalate signals on a timer, if requested.
@@ -218,31 +264,63 @@ def _run_codex_process(
                 transcript_path,
                 {"ts": now_rfc3339(), "stream": stream_name, "line": line},
             )
-            if stream_name == "stdout" and line.startswith("{") and line.endswith("}"):
+
+            # Best-effort live rendering:
+            # - stdout: Codex emits JSON event objects (one per line).
+            # - stderr: surface raw stderr lines (often useful in failures).
+            if stream_name != "stdout":
+                if hands_raw:
+                    emit(f"[hands:{stream_name}] {line}")
+                else:
+                    if line.strip():
+                        emit(f"[hands:stderr] {line}")
+                continue
+
+            ev: dict[str, Any] | None = None
+            if line.startswith("{") and line.endswith("}"):
                 try:
-                    ev = json.loads(line)
+                    parsed = json.loads(line)
                 except Exception:
-                    continue
-                if isinstance(ev, dict):
-                    events.append(ev)
-                    if ev.get("type") == "thread.started" and isinstance(ev.get("thread_id"), str):
-                        thread_id = ev["thread_id"]
-                    if interrupt and not interrupt_requested and ev.get("type") == "item.started":
-                        item = ev.get("item")
-                        if isinstance(item, dict) and item.get("type") == "command_execution":
-                            cmd = str(item.get("command") or "")
-                            if _should_interrupt_command(interrupt.mode, cmd):
-                                interrupt_requested = True
-                                interrupt_requested_at = time.time()
-                                next_signal_idx = 0
-                                append_transcript_line(
-                                    transcript_path,
-                                    {
-                                        "ts": now_rfc3339(),
-                                        "stream": "meta",
-                                        "line": f"mi.interrupt.requested=1 mode={interrupt.mode} command={cmd}",
-                                    },
-                                )
+                    parsed = None
+                if isinstance(parsed, dict):
+                    ev = parsed
+
+            if hands_raw:
+                emit(f"[hands:stdout] {line}")
+
+            if ev is None:
+                if (not hands_raw) and line.strip():
+                    emit(f"[hands:stdout] {line}")
+                continue
+
+            events.append(ev)
+            if ev.get("type") == "thread.started" and isinstance(ev.get("thread_id"), str):
+                thread_id = ev["thread_id"]
+            if interrupt and (not interrupt_requested) and ev.get("type") == "item.started":
+                item = ev.get("item")
+                if isinstance(item, dict) and item.get("type") == "command_execution":
+                    cmd = str(item.get("command") or "")
+                    if _should_interrupt_command(interrupt.mode, cmd):
+                        interrupt_requested = True
+                        interrupt_requested_at = time.time()
+                        next_signal_idx = 0
+                        append_transcript_line(
+                            transcript_path,
+                            {
+                                "ts": now_rfc3339(),
+                                "stream": "meta",
+                                "line": f"mi.interrupt.requested=1 mode={interrupt.mode} command={cmd}",
+                            },
+                        )
+
+            if not hands_raw:
+                for out_line in render_codex_event(ev):
+                    if out_line is None:
+                        continue
+                    s = str(out_line)
+                    if not s.strip():
+                        continue
+                    emit(f"[hands] {s}")
 
     exit_code = proc.wait()
     duration_ms = int((time.time() - start) * 1000)

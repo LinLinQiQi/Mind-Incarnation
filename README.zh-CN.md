@@ -152,8 +152,16 @@ mi settings set --scope project --cd /path/to/your/project --ask-when-uncertain 
 在 Hands 之上运行 MI（默认将 transcript + evidence 写入 `~/.mind-incarnation/projects/<id>/`；默认 Hands=Codex）：
 
 ```bash
-mi run --cd /path/to/your/project --show "完成 X，并用最小检查验证。"
+mi run --cd /path/to/your/project "完成 X，并用最小检查验证。"
 ```
+
+说明：
+
+- `mi run` 默认会打印 live 流，便于你看到全过程：
+  - `[mi]` MI 的阶段/决策日志
+  - `[mi->hands]` MI 发给 Hands 的完整 prompt（light injection + batch_input）
+  - `[hands]` Hands 的渲染输出（用 `--hands-raw` 可展示原始捕获流）
+- 脚本/CI 用 `--quiet`；不想展示 MI->Hands prompt 用 `--no-mi-prompt`；需要安全展示用 `--redact`。
 
 日常状态 + 统一查看入口（降低命令面、减少心智负担）：
 
@@ -186,7 +194,7 @@ mi edit wf_<id> --cd /path/to/your/project --request "..."
 可选：在 run 结束时跑一次 WhyTrace（opt-in；会写入 `kind=why_trace`，并可能 materialize `depends_on` 边）：
 
 ```bash
-mi run --cd /path/to/your/project --why --show "完成 X，并用最小检查验证。"
+mi run --cd /path/to/your/project --why "完成 X，并用最小检查验证。"
 ```
 
 关于 `--cd`（项目根目录）的说明：
@@ -244,7 +252,7 @@ mi project unpin
 mi project alias add repo1 --cd /path/to/your/project
 mi project alias list
 
-mi run --cd @repo1 --show "完成 X，并用最小检查验证。"
+mi run --cd @repo1 "完成 X，并用最小检查验证。"
 ```
 
 说明：为了兼容旧版本，`--json` 输出里保留了一些 legacy 字段名（例如 `codex_last_message`、`next_codex_input`），它们实际指的是 Hands。

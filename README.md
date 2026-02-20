@@ -66,7 +66,7 @@ Or without `make`:
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Internal architecture note: runtime orchestration helpers live under `mi/runtime/autopilot/` (including run-end WhyTrace flow), and CLI handlers are split under `mi/cli_commands/` (`show`/`tail` plus knowledge/workflow/host command routing). This is behavior-preserving and keeps public CLI/storage contracts unchanged.
+Internal architecture note: runtime orchestration helpers live under `mi/runtime/autopilot/` (including run-end `learn_update` + WhyTrace flows), and CLI handlers are split under `mi/cli_commands/` (`show`/`tail` plus domain handlers for claim/node/edge/why/workflow/host). This is behavior-preserving and keeps public CLI/storage contracts unchanged.
 
 ## Quickstart
 

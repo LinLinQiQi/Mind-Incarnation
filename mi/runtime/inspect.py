@@ -41,9 +41,6 @@ def classify_evidence_record(obj: dict[str, Any]) -> str:
     kind = obj.get("kind")
     if isinstance(kind, str) and kind.strip():
         return kind.strip()
-    # EvidenceItem has no "kind" field in V1.
-    if "facts" in obj and "results" in obj and "unknowns" in obj:
-        return "evidence"
     return "unknown"
 
 

@@ -7,56 +7,26 @@ from ..core.paths import ProjectPaths, project_identity
 from ..core.storage import read_json_best_effort, write_json_atomic
 
 
-def load_project_overlay(*, home_dir: Path, project_root: Path, warnings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Load (and forward-fill) the per-project overlay.json store.
-
-    Overlay is project-scoped state (hands thread id, workflow cursor, host bindings, etc.).
-    Canonical values/preferences live in Thought DB, not here.
-    """
-
-    project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
-    overlay = read_json_best_effort(project_paths.overlay_path, default=None, label="overlay", warnings=warnings)
-    changed = False
-    if overlay is None:
-        overlay = {}
-        changed = True
-
-    if not isinstance(overlay, dict):
-        overlay = {}
-        changed = True
-
-    def ensure_key(k: str, v: Any) -> None:
-        nonlocal changed
-        if k not in overlay:
-            overlay[k] = v
-            changed = True
-
-    ensure_key("project_id", project_paths.project_id)
-    ensure_key("root_path", str(project_root.resolve()))
-    ensure_key("stack_hints", [])
-    ensure_key(
-        "testless_verification_strategy",
-        {
+def _default_overlay(*, project_paths: ProjectPaths, project_root: Path, ident: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "project_id": project_paths.project_id,
+        "root_path": str(project_root.resolve()),
+        "stack_hints": [],
+        "testless_verification_strategy": {
             "chosen_once": False,
             # Derived cache pointer to the canonical Thought DB claim_id (project scope).
             # Keep this as a pointer (not full text) to avoid ambiguity about what is canonical.
             "claim_id": "",
             "rationale": "",
         },
-    )
-    ensure_key("host_bindings", [])
-    ensure_key("global_workflow_overrides", {})
-    ensure_key(
-        "hands_state",
-        {
+        "host_bindings": [],
+        "global_workflow_overrides": {},
+        "hands_state": {
             "provider": "",
             "thread_id": "",
             "updated_ts": "",
         },
-    )
-    ensure_key(
-        "workflow_run",
-        {
+        "workflow_run": {
             "version": "v1",
             "active": False,
             "workflow_id": "",
@@ -71,13 +41,81 @@ def load_project_overlay(*, home_dir: Path, project_root: Path, warnings: list[d
             "last_notes": "",
             "close_reason": "",
         },
+        "identity_key": str(ident.get("key") or "").strip(),
+        "identity": ident if isinstance(ident, dict) else {},
+    }
+
+
+def _is_str_list(obj: Any) -> bool:
+    return isinstance(obj, list) and all(isinstance(x, str) for x in obj)
+
+
+def _is_testless_strategy(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    return isinstance(obj.get("chosen_once"), bool) and isinstance(obj.get("claim_id"), str) and isinstance(obj.get("rationale"), str)
+
+
+def _is_hands_state(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    return isinstance(obj.get("provider"), str) and isinstance(obj.get("thread_id"), str) and isinstance(obj.get("updated_ts"), str)
+
+
+def _is_workflow_run(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    return (
+        isinstance(obj.get("version"), str)
+        and isinstance(obj.get("active"), bool)
+        and isinstance(obj.get("workflow_id"), str)
+        and isinstance(obj.get("workflow_name"), str)
+        and isinstance(obj.get("thread_id"), str)
+        and isinstance(obj.get("started_ts"), str)
+        and isinstance(obj.get("updated_ts"), str)
+        and _is_str_list(obj.get("completed_step_ids"))
+        and isinstance(obj.get("next_step_id"), str)
+        and isinstance(obj.get("last_batch_id"), str)
+        and isinstance(obj.get("last_confidence"), (int, float))
+        and isinstance(obj.get("last_notes"), str)
+        and isinstance(obj.get("close_reason"), str)
     )
 
-    # Update derived identity fields (used for stable cross-path resolution).
+
+def _is_overlay_valid(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    return (
+        isinstance(obj.get("project_id"), str)
+        and isinstance(obj.get("root_path"), str)
+        and _is_str_list(obj.get("stack_hints"))
+        and _is_testless_strategy(obj.get("testless_verification_strategy"))
+        and isinstance(obj.get("host_bindings"), list)
+        and isinstance(obj.get("global_workflow_overrides"), dict)
+        and _is_hands_state(obj.get("hands_state"))
+        and _is_workflow_run(obj.get("workflow_run"))
+        and isinstance(obj.get("identity_key"), str)
+        and isinstance(obj.get("identity"), dict)
+    )
+
+
+def load_project_overlay(*, home_dir: Path, project_root: Path, warnings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Load the per-project overlay.json store.
+
+    Overlay is project-scoped state (hands thread id, workflow cursor, host bindings, etc.).
+    Canonical values/preferences live in Thought DB, not here.
+    """
+
+    project_paths = ProjectPaths(home_dir=home_dir, project_root=project_root)
     ident = project_identity(project_root)
-    identity_key = str(ident.get("key") or "").strip()
-    ensure_key("identity_key", identity_key)
-    ensure_key("identity", ident if isinstance(ident, dict) else {})
+    defaults = _default_overlay(project_paths=project_paths, project_root=project_root, ident=ident)
+    raw = read_json_best_effort(project_paths.overlay_path, default=None, label="overlay", warnings=warnings)
+    changed = False
+    if _is_overlay_valid(raw):
+        overlay: dict[str, Any] = dict(raw)
+    else:
+        overlay = defaults
+        changed = True
 
     if str(overlay.get("project_id") or "").strip() != project_paths.project_id:
         overlay["project_id"] = project_paths.project_id
@@ -88,6 +126,7 @@ def load_project_overlay(*, home_dir: Path, project_root: Path, warnings: list[d
         overlay["root_path"] = cur_root_path
         changed = True
 
+    identity_key = str(ident.get("key") or "").strip()
     if identity_key and str(overlay.get("identity_key") or "").strip() != identity_key:
         overlay["identity_key"] = identity_key
         changed = True
@@ -98,70 +137,6 @@ def load_project_overlay(*, home_dir: Path, project_root: Path, warnings: list[d
     else:
         overlay["identity"] = ident
         changed = True
-
-    # Patch nested keys for forward-compat.
-    hs = overlay.get("hands_state")
-    if not isinstance(hs, dict):
-        overlay["hands_state"] = {"provider": "", "thread_id": "", "updated_ts": ""}
-        changed = True
-    else:
-        for k, default_v in (("provider", ""), ("thread_id", ""), ("updated_ts", "")):
-            if k not in hs:
-                hs[k] = default_v
-                changed = True
-
-    gwo = overlay.get("global_workflow_overrides")
-    if not isinstance(gwo, dict):
-        overlay["global_workflow_overrides"] = {}
-        changed = True
-
-    tls = overlay.get("testless_verification_strategy")
-    if not isinstance(tls, dict):
-        overlay["testless_verification_strategy"] = {"chosen_once": False, "claim_id": "", "rationale": ""}
-        changed = True
-    else:
-        for k, default_v in (("chosen_once", False), ("claim_id", ""), ("rationale", "")):
-            if k not in tls:
-                tls[k] = default_v
-                changed = True
-
-    wr = overlay.get("workflow_run")
-    if not isinstance(wr, dict):
-        overlay["workflow_run"] = {
-            "version": "v1",
-            "active": False,
-            "workflow_id": "",
-            "workflow_name": "",
-            "thread_id": "",
-            "started_ts": "",
-            "updated_ts": "",
-            "completed_step_ids": [],
-            "next_step_id": "",
-            "last_batch_id": "",
-            "last_confidence": 0.0,
-            "last_notes": "",
-            "close_reason": "",
-        }
-        changed = True
-    else:
-        for k, default_v in (
-            ("version", "v1"),
-            ("active", False),
-            ("workflow_id", ""),
-            ("workflow_name", ""),
-            ("thread_id", ""),
-            ("started_ts", ""),
-            ("updated_ts", ""),
-            ("completed_step_ids", []),
-            ("next_step_id", ""),
-            ("last_batch_id", ""),
-            ("last_confidence", 0.0),
-            ("last_notes", ""),
-            ("close_reason", ""),
-        ):
-            if k not in wr:
-                wr[k] = default_v
-                changed = True
 
     if changed:
         write_json_atomic(project_paths.overlay_path, overlay)

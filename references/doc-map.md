@@ -23,7 +23,7 @@ Examples: batching rules, stop/blocked semantics, loop-guard behavior, Mind circ
 breaker, check planning heuristics, auto-answer behavior.
 
 - Update: `docs/mi-v1-spec.md` (runtime loop + relevant sections)
-- If `mi last` / `mi run` output changed: update `README.md`, `README.zh-CN.md`
+- If `mi show last` / `mi run` output changed: update `README.md`, `README.zh-CN.md`
 - If new record kinds/fields were added: update `docs/mi-v1-spec.md` EvidenceLog section
 
 ### Prompt Pack / Schemas
@@ -39,7 +39,7 @@ Examples: add/remove prompt, change prompt semantics, schema enum/required field
 Examples: new `kind=...`, renamed fields, new transcript pointers.
 
 - Update: `docs/mi-v1-spec.md` EvidenceLog kinds list + any relevant record shapes
-- Update: `mi/inspect.py` summarization and `mi last` output if required (code)
+- Update: `mi/runtime/inspect.py` summarization and `mi show last` output if required (code)
 - Update: `README.md`, `README.zh-CN.md` if the new record kind is user-actionable
 
 ### Learned Preferences / Memory

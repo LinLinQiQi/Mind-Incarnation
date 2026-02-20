@@ -535,43 +535,6 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             effective_cd_arg=_effective_cd_arg,
         )
 
-    if args.cmd == "edit":
-        ref = str(getattr(args, "ref", "") or "").strip()
-        if not ref:
-            print("missing ref", file=sys.stderr)
-            return 2
-        if not ref.startswith("wf_"):
-            print(f"edit: unsupported ref {ref!r} (V1 supports workflows only)", file=sys.stderr)
-            return 2
-        # Delegate to workflow edit (keeps semantics in one place).
-        args2 = argparse.Namespace(**vars(args))
-        args2.cmd = "workflow"
-        args2.wf_cmd = "edit"
-        args2.id = ref
-        return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
-
-    if args.cmd == "ls":
-        kind = str(getattr(args, "ls_kind", "") or "").strip()
-        args2 = argparse.Namespace(**vars(args))
-        if kind == "claims":
-            args2.cmd = "claim"
-            args2.claim_cmd = "list"
-            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
-        if kind == "nodes":
-            args2.cmd = "node"
-            args2.node_cmd = "list"
-            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
-        if kind == "edges":
-            args2.cmd = "edge"
-            args2.edge_cmd = "list"
-            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
-        if kind == "workflows":
-            args2.cmd = "workflow"
-            args2.wf_cmd = "list"
-            return dispatch(args=args2, home_dir=home_dir, cfg=cfg)
-        print(f"unknown ls kind: {kind}", file=sys.stderr)
-        return 2
-
     if args.cmd == "config":
         if args.config_cmd == "path":
             print(str(config_path(home_dir)))
@@ -618,7 +581,7 @@ def dispatch(*, args: argparse.Namespace, home_dir: Path, cfg: dict[str, Any]) -
             print(f"Rolled back config to: {res.get('backup_path')}")
             print(f"Config: {res.get('config_path')}")
             return 0
-        if args.config_cmd in ("validate", "doctor"):
+        if args.config_cmd == "validate":
             report = validate_config(cfg)
             ok = bool(report.get("ok", False))
             errs = report.get("errors") if isinstance(report.get("errors"), list) else []

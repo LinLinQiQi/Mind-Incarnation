@@ -770,8 +770,8 @@ def run_autopilot(
             # Allow small records as-is.
             pass
 
-        # Evidence-like records.
-        if obj.get("kind") == "evidence" or ("facts" in obj and "results" in obj and "unknowns" in obj):
+        # Evidence records.
+        if obj.get("kind") == "evidence":
             seg["kind"] = "evidence"
             for k in ("facts", "actions", "results", "unknowns", "risk_signals"):
                 v = obj.get(k)
@@ -2565,7 +2565,6 @@ def run_autopilot(
                     return False
 
             if not action:
-                # Fallback: preserve legacy behavior (prompt user if allowed, otherwise block).
                 if ask_when_uncertain:
                     q = (
                         "MI detected a repeated loop (pattern="
@@ -2750,6 +2749,7 @@ def run_autopilot(
             f"extract_evidence state={str(evidence_state or '')} facts={facts_n} actions={actions_n} results={results_n} unknowns={unknowns_n} risk_signals={risk_n}",
         )
         evidence_item = {
+            "kind": "evidence",
             "batch_id": batch_id,
             "ts": now_rfc3339(),
             "thread_id": thread_id,

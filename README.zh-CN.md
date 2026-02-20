@@ -195,13 +195,13 @@ mi tail evidence --global -n 20 --json
 mi tail hands --cd /path/to/your/project -n 200
 mi tail mind --cd /path/to/your/project -n 200 --jsonl
 
-# 列表入口（分别是 claim/node/edge/workflow list 的 alias）：
-mi ls claims --cd /path/to/your/project
-mi ls nodes --cd /path/to/your/project
-mi ls workflows --cd /path/to/your/project
+# 列表入口：
+mi claim list --cd /path/to/your/project
+mi node list --cd /path/to/your/project
+mi workflow list --cd /path/to/your/project
 
-# 编辑 workflow（`mi workflow edit` 的 alias）：
-mi edit wf_<id> --cd /path/to/your/project --request "..."
+# 编辑 workflow：
+mi workflow edit wf_<id> --cd /path/to/your/project --request "..."
 ```
 
 可选：在 run 结束时跑一次 WhyTrace（opt-in；会写入 `kind=why_trace`，并可能 materialize `depends_on` 边）：

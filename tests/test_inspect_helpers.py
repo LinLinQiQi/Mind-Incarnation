@@ -48,6 +48,7 @@ class TestInspectHelpers(unittest.TestCase):
                 json.dumps({"kind": "hands_input", "batch_id": "b0", "thread_id": "t", "input": "hi", "transcript_path": "t0"}),
                 json.dumps(
                     {
+                        "kind": "evidence",
                         "batch_id": "b0",
                         "ts": "x",
                         "thread_id": "t",
@@ -161,6 +162,7 @@ class TestInspectHelpers(unittest.TestCase):
                 ),
                 json.dumps(
                     {
+                        "kind": "evidence",
                         "batch_id": "b1",
                         "ts": "x",
                         "thread_id": "t",
@@ -209,8 +211,9 @@ class TestInspectHelpers(unittest.TestCase):
             self.assertIn("m_loopbreak", refs)
 
     def test_classify_and_summarize(self) -> None:
-        ev = {"batch_id": "b0", "facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []}
+        ev = {"kind": "evidence", "batch_id": "b0", "facts": [], "actions": [], "results": [], "unknowns": [], "risk_signals": []}
         self.assertEqual(classify_evidence_record(ev), "evidence")
+        self.assertEqual(classify_evidence_record({"batch_id": "b0"}), "unknown")
         s = summarize_evidence_record({"kind": "loop_guard", "batch_id": "b0", "pattern": "aaa"})
         self.assertIn("loop_guard", s)
         s2 = summarize_evidence_record({"kind": "loop_break", "batch_id": "b0", "pattern": "aaa", "state": "ok", "output": {"action": "rewrite_next_input"}})

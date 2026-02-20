@@ -195,13 +195,13 @@ mi tail evidence --global -n 20 --json
 mi tail hands --cd /path/to/your/project -n 200
 mi tail mind --cd /path/to/your/project -n 200 --jsonl
 
-# List resources (aliases for claim/node/edge/workflow list):
-mi ls claims --cd /path/to/your/project
-mi ls nodes --cd /path/to/your/project
-mi ls workflows --cd /path/to/your/project
+# List resources:
+mi claim list --cd /path/to/your/project
+mi node list --cd /path/to/your/project
+mi workflow list --cd /path/to/your/project
 
-# Edit workflows (alias for `mi workflow edit`):
-mi edit wf_<id> --cd /path/to/your/project --request "..."
+# Edit workflows:
+mi workflow edit wf_<id> --cd /path/to/your/project --request "..."
 ```
 
 Optional: run one WhyTrace at run end (opt-in; writes `kind=why_trace` and may materialize `depends_on` edges):

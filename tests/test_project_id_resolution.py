@@ -33,7 +33,7 @@ class TestProjectIdResolution(unittest.TestCase):
             _git(repo_a, ["add", "."])
             _git(repo_a, ["commit", "-m", "init"])
 
-            # First run: creates overlay under legacy path-hash id, but writes identity fields.
+            # First run writes identity-based project metadata.
             overlay_a = load_project_overlay(home_dir=Path(home), project_root=repo_a)
             pid_a = str(overlay_a.get("project_id") or "")
             ident_a = str(overlay_a.get("identity_key") or "")

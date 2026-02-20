@@ -230,7 +230,7 @@ def collect_candidate_claims_for_target(
 
     hint_claim_ids, hint_node_ids = _extract_thought_db_hints(target_obj if isinstance(target_obj, dict) else {})
     if not hint_claim_ids and not hint_node_ids:
-        # Preserve legacy behavior when no hints exist.
+        # When no deterministic hints exist, fall back to the standard candidate collector.
         return collect_candidate_claims(
             tdb=tdb,
             mem=mem,
@@ -363,7 +363,7 @@ def collect_candidate_claims_for_target(
             if len(out) >= k:
                 return out
 
-    # 4) Backfill from memory search (FTS) if needed (same policy as legacy collector).
+    # 4) Backfill from memory search (FTS) if needed.
     q = str(query or "").strip() or ev_id
     if len(out) < k and q:
         mem.ingest_structured()

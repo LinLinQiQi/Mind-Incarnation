@@ -285,7 +285,7 @@ class TestHandsCliWrapper(unittest.TestCase):
             with open(result.evidence_log_path, "r", encoding="utf-8") as f:
                 for row in f:
                     obj = json.loads(row)
-                    if isinstance(obj, dict) and "facts" in obj and "results" in obj and "unknowns" in obj:
+                    if isinstance(obj, dict) and str(obj.get("kind") or "") == "evidence":
                         evidence_item = obj
                         break
             self.assertIsNotNone(evidence_item)

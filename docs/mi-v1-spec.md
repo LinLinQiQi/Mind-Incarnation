@@ -89,7 +89,7 @@ Workflow cursor (best-effort, V1):
 
 Cross-project recall (on-demand, V1):
 
-- Default: **enabled but conservative** (no embeddings required). Uses only MI-owned stores: `snapshot` + `workflow` + canonical Thought DB items (`claim` / `node`), searched by text. (Legacy `learned` text is non-canonical and excluded by default.)
+- Default: **enabled but conservative** (no embeddings required). Uses only MI-owned stores: `snapshot` + `workflow` + canonical Thought DB items (`claim` / `node`), searched by text.
 - Trigger points (default): once at run start, before MI asks the user, and when risk signals are detected.
 - Output is recorded as `kind="cross_project_recall"` in EvidenceLog and is included in `recent_evidence` for later Mind prompts.
 - Recall query is compacted into safe text tokens (no embeddings). EvidenceLog includes `query_raw`, `query_compact`, and `tokens_used` for auditability.
@@ -107,7 +107,7 @@ Thought DB context (always-on, deterministic, V1):
     - a conservative fallback token scan when memory search is unavailable/insufficient.
     - Then a 1-hop edge expansion may add direct neighbor claims/nodes (`depends_on/supports/contradicts/derived_from/mentions/supersedes/same_as`) within the remaining budgets (active + valid only).
   - `edges`: a small set of reasoning/provenance edges adjacent to included claim/node ids (and recent EvidenceLog `event_id`s for provenance)
-- This context is passed to the `decide_next` prompt as `thought_db_context` and should be treated as canonical when deciding (including over any raw values prompt text (`values:raw`) and any legacy learned text when conflicts arise).
+- This context is passed to the `decide_next` prompt as `thought_db_context` and should be treated as canonical when deciding (including over any raw values prompt text (`values:raw`) when conflicts arise).
 
 Loop/stuck guard (deterministic, V1):
 
@@ -507,7 +507,7 @@ Minimal shape:
 - `hands_input` (exact MI input + light injection sent to Hands for the batch)
 - `state_corrupt` (internal: an MI-owned JSON state file was unreadable/corrupt; MI quarantined it as `*.corrupt.<ts>` and continued with defaults; best-effort)
 - `defaults_claim_sync` (internal: ensured operational defaults exist as canonical global Thought DB preference Claims tagged `mi:setting:*`; records the seed/sync outcome for audit)
-- `EvidenceItem` (extracted summary per batch; includes a Mind transcript pointer for `extract_evidence`)
+- `evidence` (extracted summary per batch; includes a Mind transcript pointer for `extract_evidence`)
 - `mind_error` (a Mind prompt-pack call failed; includes schema/tag + error + best-effort transcript pointer)
 - `mind_circuit` (Mind circuit breaker state change; V1 emits `state="open"` when it stops attempting further Mind calls)
 - `risk_event` (post-hoc judgement when heuristic risk signals are present; includes a Mind transcript pointer for `risk_judge`)
@@ -553,6 +553,7 @@ Stable identifiers (V1+):
 
 ```json
 {
+  "kind": "evidence",
   "event_id": "ev_<run_id>_<seq>",
   "run_id": "run_<...> | cli_<...>",
   "seq": 1,
@@ -891,11 +892,6 @@ Optional consolidation (`learn_update`) (run-end):
 - Provenance: every new claim/edge/retraction must cite **EvidenceLog `event_id` only** from the allowed list (the `learn_suggested` events produced in the same run).
 - MI records `kind=learn_update` with the raw output and an `applied` summary (written claims/edges + retractions).
 
-Legacy note:
-
-- Older MI versions wrote free-form learned rules into `mindspec/learned.jsonl` and `projects/<project_id>/learned.jsonl`.
-- Current MI versions ignore these legacy files entirely (not used for Hands injection or recall, and not indexed). If you still have them, manually re-enter important rules as Thought DB preference/goal Claims (or delete the files).
-
 ## Workflows + Host Adapters (V1, Experimental)
 
 MI may "solidify" a user's habits into reusable workflows:
@@ -1010,7 +1006,6 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `thoughtdb/global/archive/<ts>/*.jsonl.gz` + `thoughtdb/global/archive/<ts>/manifest.json` (optional; created by `mi gc thoughtdb --global`)
 - Per project (keyed by a resolved `project_id`):
   - `projects/<project_id>/overlay.json`
-  - `projects/<project_id>/learned.jsonl` (legacy; ignored by current MI versions)
   - `projects/<project_id>/evidence.jsonl`
   - `projects/<project_id>/segment_state.json` (best-effort segment buffer for checkpoint-based mining; internal)
   - `projects/<project_id>/thoughtdb/claims.jsonl` (project Claims)
@@ -1026,12 +1021,6 @@ Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home .
   - `projects/<project_id>/transcripts/mind/*.jsonl`
   - `projects/<project_id>/transcripts/mind/archive/*.jsonl.gz` (optional; created by `mi gc transcripts`)
 
-Legacy leftovers (safe to delete; not read by current MI versions):
-
-- `<home>/mindspec/base.json`
-- `<home>/mindspec/learned.jsonl`
-- `<home>/projects/<project_id>/learned.jsonl`
-
 Note: `project_id` is derived deterministically from `identity_key`:
 
 - `identity_key`: produced by `project_identity()`:
@@ -1039,7 +1028,7 @@ Note: `project_id` is derived deterministically from `identity_key`:
   - non-git dirs: resolved absolute path
 - `project_id = sha256(identity_key)[:16]`
 
-This is stable across path moves/clones for git repos (and supports monorepo subprojects via relpath). Older MI home layouts that used path-hash ids are not recognized.
+This is stable across path moves/clones for git repos (and supports monorepo subprojects via relpath).
 
 Transcript archiving (optional): `mi gc transcripts` can gzip older transcripts into `archive/` and replace the original `.jsonl` with a small JSONL stub record:
 
@@ -1074,7 +1063,7 @@ Provider config (Mind/Hands):
 - Location: `<home>/config.json` (defaults to `~/.mind-incarnation/config.json`)
 - Initialize: `mi config init` (then edit the JSON)
 - View (redacted): `mi config show`
-- Validate: `mi config validate` (or `mi config doctor`)
+- Validate: `mi config validate`
 - Examples: `mi config examples`
 - Template: `mi config template <name>` (prints a JSON snippet to merge into `config.json`)
 - Apply template: `mi config apply-template <name>` (deep-merge into `config.json`, writes a rollback backup)
@@ -1216,20 +1205,20 @@ Notes:
   - `mi tail evidence --global` tails global EvidenceLog only
   - `mi tail hands|mind --jsonl` prints raw transcript JSONL lines
 
-List resources (front-door aliases):
+List resources:
 
 ```bash
-mi --home ~/.mind-incarnation ls claims --cd <project_root>
-mi --home ~/.mind-incarnation ls nodes --cd <project_root>
-mi --home ~/.mind-incarnation ls workflows --cd <project_root>
-mi --home ~/.mind-incarnation ls edges --cd <project_root>
+mi --home ~/.mind-incarnation claim list --cd <project_root>
+mi --home ~/.mind-incarnation node list --cd <project_root>
+mi --home ~/.mind-incarnation workflow list --cd <project_root>
+mi --home ~/.mind-incarnation edge list --cd <project_root>
 ```
 
-Edit a workflow (front-door alias; uses Mind provider):
+Edit a workflow (uses Mind provider):
 
 ```bash
-mi --home ~/.mind-incarnation edit wf_<id> --cd <project_root> --request "..."
-mi --home ~/.mind-incarnation edit wf_<id> --cd <project_root> --loop
+mi --home ~/.mind-incarnation workflow edit wf_<id> --cd <project_root> --request "..."
+mi --home ~/.mind-incarnation workflow edit wf_<id> --cd <project_root> --loop
 ```
 
 Notes on `--cd` (project root):
@@ -1326,7 +1315,7 @@ mi --home ~/.mind-incarnation memory index rebuild --no-snapshots
 Notes:
 
 - Rebuild deletes and recreates `<home>/indexes/memory.sqlite` from MI stores and EvidenceLog `snapshot` records (safe; derived).
-- Recall is text-only in V1: it searches indexed items by kind and compacts queries into safe tokens (no embeddings). Default `cross_project_recall.include_kinds` is conservative and Thought-DB-first: `snapshot` / `workflow` / `claim` / `node`. EvidenceLog `kind=cross_project_recall` records `query_raw` + `query_compact` + `tokens_used`. Legacy `learned.jsonl` is ignored by current MI versions and is not ingested by the memory index. Node items are indexed incrementally when MI creates them (checkpoint materialization) and are backfilled on `mi memory index rebuild`. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
+- Recall is text-only in V1: it searches indexed items by kind and compacts queries into safe tokens (no embeddings). Default `cross_project_recall.include_kinds` is conservative and Thought-DB-first: `snapshot` / `workflow` / `claim` / `node`. EvidenceLog `kind=cross_project_recall` records `query_raw` + `query_compact` + `tokens_used`. Node items are indexed incrementally when MI creates them (checkpoint materialization) and are backfilled on `mi memory index rebuild`. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
 - Memory backend is pluggable (internal): default is `sqlite_fts` (persisted at `<home>/indexes/memory.sqlite`). You can override via `$MI_MEMORY_BACKEND` (e.g., `in_memory` for ephemeral/test runs). `mi memory index status` prints the active backend.
 - Thought DB direction: V1 includes append-only Claim/Edge stores + checkpoint-only claim mining; full root-cause tracing and whole-graph refactors remain future extensions. See `docs/mi-thought-db.md`.
 - Internal implementation note: orchestration helpers are modularized under `mi/runtime/autopilot/` and CLI inspect handlers are modularized under `mi/cli_commands/`; this is behavior-preserving and does not change CLI/storage contracts.

@@ -66,6 +66,8 @@ make doccheck
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
+内部架构说明：runtime 编排辅助逻辑已拆分到 `mi/runtime/autopilot/`，CLI 的查看类处理（`show`/`tail`）已拆分到 `mi/cli_commands/`。该改动保持行为不变，不改变公开 CLI/存储契约。
+
 ## 快速开始
 
 初始化 providers 配置（默认写入 `~/.mind-incarnation/config.json`）：

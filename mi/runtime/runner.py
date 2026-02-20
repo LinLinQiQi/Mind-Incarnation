@@ -4,18 +4,30 @@ import json
 import sys
 import hashlib
 import secrets
-import shutil
-import subprocess
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..providers.codex_runner import CodexRunResult, InterruptConfig, run_codex_exec, run_codex_resume
+from ..providers.codex_runner import InterruptConfig, run_codex_exec, run_codex_resume
 from ..providers.llm import MiLlm
 from ..providers.mind_errors import MindCallError
 from ..core.config import load_config
 from ..core.paths import GlobalPaths, ProjectPaths, default_home_dir
+from .autopilot import (
+    AutopilotResult,
+    _batch_summary,
+    _detect_risk_signals,
+    _detect_risk_signals_from_transcript,
+    _empty_auto_answer,
+    _empty_check_plan,
+    _empty_evidence_obj,
+    _looks_like_user_question,
+    _loop_pattern,
+    _loop_sig,
+    _observe_repo,
+    _should_plan_checks,
+    _truncate,
+)
 from .prompts import (
     checkpoint_decide_prompt,
     decide_next_prompt,
@@ -29,10 +41,8 @@ from .prompts import (
 from .prompts import auto_answer_to_hands_prompt
 from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
-from .risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from ..core.storage import append_jsonl, ensure_dir, now_rfc3339, read_json_best_effort, write_json_atomic
 from ..core.redact import redact_text
-from .transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
 from ..workflows import (
     WorkflowStore,
     GlobalWorkflowStore,
@@ -57,355 +67,6 @@ from ..project.overlay_store import load_project_overlay, write_project_overlay
 
 
 _DEFAULT = object()
-
-
-def _truncate(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3] + "..."
-
-
-def _batch_summary(result: CodexRunResult) -> dict[str, Any]:
-    commands: list[dict[str, Any]] = []
-    for item in result.iter_command_executions():
-        commands.append(
-            {
-                "command": str(item.get("command") or ""),
-                "exit_code": item.get("exit_code"),
-                "output": _truncate(str(item.get("aggregated_output") or ""), 2000),
-            }
-        )
-
-    transcript_observation: dict[str, Any]
-    if isinstance(getattr(result, "events", None), list) and result.events:
-        transcript_observation = summarize_codex_events(result.events)
-    else:
-        tp = getattr(result, "raw_transcript_path", None)
-        transcript_observation = summarize_hands_transcript(Path(tp)) if tp else {}
-
-    return {
-        "thread_id": result.thread_id,
-        "exit_code": result.exit_code,
-        "commands": commands,
-        "transcript_observation": transcript_observation,
-        "last_agent_message": _truncate(result.last_agent_message(), 4000),
-    }
-
-
-def _detect_risk_signals(result: CodexRunResult) -> list[str]:
-    signals: list[str] = []
-    for item in result.iter_command_executions():
-        cmd = str(item.get("command") or "")
-        signals.extend(detect_risk_signals_from_command(cmd))
-    # Deduplicate while preserving order.
-    seen: set[str] = set()
-    out: list[str] = []
-    for s in signals:
-        if s in seen:
-            continue
-        seen.add(s)
-        out.append(s)
-    return out
-
-
-def _detect_risk_signals_from_transcript(transcript_path: Path) -> list[str]:
-    # Best-effort for non-Codex Hands providers: scan raw stdout/stderr text for risky markers.
-    signals: list[str] = []
-    try:
-        with open_transcript_text(transcript_path) as f:
-            for row in f:
-                row = row.strip()
-                if not row:
-                    continue
-                try:
-                    rec = json.loads(row)
-                except Exception:
-                    continue
-                if not isinstance(rec, dict):
-                    continue
-                if rec.get("stream") not in ("stdout", "stderr"):
-                    continue
-                raw = rec.get("line")
-                if not isinstance(raw, str):
-                    continue
-                line = raw.strip()
-                if not line:
-                    continue
-                signals.extend(detect_risk_signals_from_text_line(line, limit=200))
-
-                if len(signals) >= 20:
-                    break
-    except Exception:
-        return []
-
-    # Deduplicate while preserving order.
-    seen: set[str] = set()
-    out: list[str] = []
-    for s in signals:
-        if s in seen:
-            continue
-        seen.add(s)
-        out.append(s)
-    return out
-
-
-def _looks_like_user_question(text: str) -> bool:
-    t = (text or "").strip()
-    if not t:
-        return False
-    lower = t.lower()
-    if "?" in t:
-        return True
-    # Heuristic patterns; keep conservative to avoid extra model calls.
-    patterns = [
-        "do you want",
-        "would you like",
-        "should i",
-        "shall i",
-        "can i",
-        "may i",
-        "please confirm",
-        "please provide",
-        "which option",
-        "choose one",
-        "pick one",
-        "need your",
-        "need you to",
-        "before i proceed",
-        "to continue",
-        "what should",
-        "any preference",
-    ]
-    return any(p in lower for p in patterns)
-
-
-def _empty_auto_answer() -> dict[str, Any]:
-    return {
-        "should_answer": False,
-        "confidence": 0.0,
-        "hands_answer_input": "",
-        "needs_user_input": False,
-        "ask_user_question": "",
-        "unanswered_questions": [],
-        "notes": "",
-    }
-
-
-def _empty_evidence_obj(*, note: str = "") -> dict[str, Any]:
-    unknowns: list[str] = []
-    if note.strip():
-        unknowns.append(note.strip())
-    return {
-        "facts": [],
-        "actions": [],
-        "results": [],
-        "unknowns": unknowns,
-        "risk_signals": [],
-    }
-
-def _empty_check_plan() -> dict[str, Any]:
-    return {
-        "should_run_checks": False,
-        "needs_testless_strategy": False,
-        "testless_strategy_question": "",
-        "check_goals": [],
-        "commands_hints": [],
-        "hands_check_input": "",
-        "notes": "",
-    }
-
-
-def _should_plan_checks(
-    *,
-    summary: dict[str, Any],
-    evidence_obj: dict[str, Any],
-    hands_last_message: str,
-    repo_observation: dict[str, Any],
-) -> bool:
-    # Heuristic gate to reduce mind calls; err on the side of planning checks
-    # when there's uncertainty, failures, questions, or repo changes.
-    try:
-        if int(summary.get("exit_code") or 0) != 0:
-            return True
-    except Exception:
-        return True
-
-    unknowns = evidence_obj.get("unknowns") if isinstance(evidence_obj, dict) else None
-    if isinstance(unknowns, list) and any(str(x).strip() for x in unknowns):
-        return True
-
-    rs = evidence_obj.get("risk_signals") if isinstance(evidence_obj, dict) else None
-    if isinstance(rs, list) and any(str(x).strip() for x in rs):
-        return True
-
-    if _looks_like_user_question(hands_last_message):
-        return True
-
-    if isinstance(repo_observation, dict):
-        for k in ("git_status_porcelain", "git_diff_stat", "git_diff_cached_stat"):
-            v = repo_observation.get(k)
-            if isinstance(v, str) and v.strip():
-                return True
-
-    return False
-
-
-def _normalize_for_sig(text: str, limit: int) -> str:
-    # Normalize to reduce spurious differences (whitespace/case) while keeping a bounded signature.
-    t = " ".join((text or "").strip().split()).lower()
-    return t[:limit]
-
-
-def _loop_sig(*, hands_last_message: str, next_input: str) -> str:
-    data = _normalize_for_sig(hands_last_message, 2000) + "\n---\n" + _normalize_for_sig(next_input, 2000)
-    return hashlib.sha256(data.encode("utf-8")).hexdigest()
-
-
-def _loop_pattern(sigs: list[str]) -> str:
-    # Return a short pattern id when repetition suggests a stuck loop.
-    if len(sigs) >= 3 and sigs[-1] == sigs[-2] == sigs[-3]:
-        return "aaa"
-    if len(sigs) >= 4 and sigs[-1] == sigs[-3] and sigs[-2] == sigs[-4]:
-        return "abab"
-    return ""
-
-
-def _observe_repo(project_root: Path) -> dict[str, Any]:
-    # Read-only heuristics; keep it cheap and bounded.
-    root = project_root.resolve()
-    stack_hints: list[str] = []
-    test_hints: list[str] = []
-    has_tests = False
-    git_is_repo = False
-    git_root = ""
-    git_head = ""
-    git_status_porcelain = ""
-    git_diff_stat = ""
-    git_diff_cached_stat = ""
-
-    def exists(name: str) -> bool:
-        return (root / name).exists()
-
-    if exists("pyproject.toml") or exists("requirements.txt") or exists("setup.cfg") or exists("tox.ini"):
-        stack_hints.append("python")
-    if exists("package.json") or exists("pnpm-lock.yaml") or exists("yarn.lock"):
-        stack_hints.append("node")
-    if exists("go.mod"):
-        stack_hints.append("go")
-    if exists("Cargo.toml"):
-        stack_hints.append("rust")
-
-    # Common test configs/dirs (cheap checks).
-    for name in ("pytest.ini", "tox.ini"):
-        if exists(name):
-            has_tests = True
-            test_hints.append(name)
-
-    for name in ("tests", "test"):
-        p = root / name
-        if p.is_dir():
-            test_hints.append(f"{name}/")
-            # Look only at immediate children to avoid large scans.
-            for child in list(p.iterdir())[:200]:
-                if child.is_file():
-                    fn = child.name
-                    if fn.startswith("test_") and fn.endswith(".py"):
-                        has_tests = True
-                        test_hints.append(f"{name}/{fn}")
-                        break
-                    if fn.endswith("_test.py"):
-                        has_tests = True
-                        test_hints.append(f"{name}/{fn}")
-                        break
-
-    # Node: detect a test script if package.json exists.
-    pkg = root / "package.json"
-    if pkg.is_file():
-        try:
-            import json as _json  # local import to keep module imports minimal
-
-            obj = _json.loads(pkg.read_text(encoding="utf-8"))
-            scripts = obj.get("scripts") if isinstance(obj, dict) else None
-            test_script = scripts.get("test") if isinstance(scripts, dict) else None
-            if isinstance(test_script, str) and test_script.strip():
-                has_tests = True
-                test_hints.append("package.json scripts.test")
-        except Exception:
-            pass
-
-    # Git snapshot (bounded) for closure/check reasoning.
-    if shutil.which("git"):
-        try:
-            p = subprocess.run(
-                ["git", "rev-parse", "--is-inside-work-tree"],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                timeout=1,
-                check=False,
-            )
-            git_is_repo = p.returncode == 0 and p.stdout.strip().lower() == "true"
-        except Exception:
-            git_is_repo = False
-
-    def _run_git(args: list[str], *, timeout_s: float, limit: int) -> str:
-        try:
-            p = subprocess.run(
-                ["git", *args],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-                check=False,
-            )
-            out = (p.stdout or "").strip()
-            if p.returncode != 0 and not out:
-                out = (p.stderr or "").strip()
-            return _truncate(out, limit)
-        except Exception:
-            return ""
-
-    if git_is_repo:
-        git_root = _run_git(["rev-parse", "--show-toplevel"], timeout_s=1, limit=500)
-        git_head = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], timeout_s=1, limit=200)
-        git_status_porcelain = _run_git(["status", "--porcelain"], timeout_s=2, limit=4000)
-        git_diff_stat = _run_git(["diff", "--stat"], timeout_s=2, limit=4000)
-        git_diff_cached_stat = _run_git(["diff", "--cached", "--stat"], timeout_s=2, limit=4000)
-
-    return {
-        "project_root": str(root),
-        "stack_hints": stack_hints,
-        "has_tests": has_tests,
-        "test_hints": test_hints,
-        "git_is_repo": git_is_repo,
-        "git_root": git_root,
-        "git_head": git_head,
-        "git_status_porcelain": git_status_porcelain,
-        "git_diff_stat": git_diff_stat,
-        "git_diff_cached_stat": git_diff_cached_stat,
-    }
-
-
-@dataclass(frozen=True)
-class AutopilotResult:
-    status: str  # done|not_done|blocked
-    thread_id: str
-    project_dir: Path
-    evidence_log_path: Path
-    transcripts_dir: Path
-    batches: int
-    notes: str
-
-    def render_text(self) -> str:
-        lines = [
-            f"status={self.status} batches={self.batches} thread_id={self.thread_id}",
-            f"project_dir={self.project_dir}",
-            f"evidence_log={self.evidence_log_path}",
-            f"transcripts_dir={self.transcripts_dir}",
-        ]
-        if self.notes:
-            lines.append(f"notes={self.notes}")
-        return "\n".join(lines)
 
 
 def _read_user_answer(question: str) -> str:

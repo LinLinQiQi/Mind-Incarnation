@@ -1,7 +1,7 @@
 # Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-19
+Last updated: 2026-02-20
 
 ## Goal
 
@@ -1301,17 +1301,18 @@ mi --home ~/.mind-incarnation run --cd @pinned "<task>"
 Tail EvidenceLog:
 
 ```bash
-mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20
-mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw
-mi --home ~/.mind-incarnation evidence tail --cd <project_root> -n 20 --raw --redact
+mi --home ~/.mind-incarnation tail --cd <project_root> -n 20
+mi --home ~/.mind-incarnation tail evidence --cd <project_root> -n 20 --raw
+mi --home ~/.mind-incarnation tail evidence --cd <project_root> -n 20 --raw --redact
+mi --home ~/.mind-incarnation tail evidence --global -n 20 --json
 ```
 
 Show an EvidenceLog record by `event_id`:
 
 ```bash
-mi --home ~/.mind-incarnation evidence show <event_id> --cd <project_root>
-mi --home ~/.mind-incarnation evidence show <event_id> --cd <project_root> --redact
-mi --home ~/.mind-incarnation evidence show <event_id> --global
+mi --home ~/.mind-incarnation show <event_id> --cd <project_root>
+mi --home ~/.mind-incarnation show <event_id> --cd <project_root> --redact
+mi --home ~/.mind-incarnation show <event_id> --global
 ```
 
 Memory index (for cross-project recall; materialized view):
@@ -1328,13 +1329,14 @@ Notes:
 - Recall is text-only in V1: it searches indexed items by kind and compacts queries into safe tokens (no embeddings). Default `cross_project_recall.include_kinds` is conservative and Thought-DB-first: `snapshot` / `workflow` / `claim` / `node`. EvidenceLog `kind=cross_project_recall` records `query_raw` + `query_compact` + `tokens_used`. Legacy `learned.jsonl` is ignored by current MI versions and is not ingested by the memory index. Node items are indexed incrementally when MI creates them (checkpoint materialization) and are backfilled on `mi memory index rebuild`. When `cross_project_recall.prefer_current_project=true` (default) and `exclude_current_project=false`, results are re-ranked to prefer the current project first, then global, then other projects.
 - Memory backend is pluggable (internal): default is `sqlite_fts` (persisted at `<home>/indexes/memory.sqlite`). You can override via `$MI_MEMORY_BACKEND` (e.g., `in_memory` for ephemeral/test runs). `mi memory index status` prints the active backend.
 - Thought DB direction: V1 includes append-only Claim/Edge stores + checkpoint-only claim mining; full root-cause tracing and whole-graph refactors remain future extensions. See `docs/mi-thought-db.md`.
+- Internal implementation note: orchestration helpers are modularized under `mi/runtime/autopilot/` and CLI inspect handlers are modularized under `mi/cli_commands/`; this is behavior-preserving and does not change CLI/storage contracts.
 
 Show raw transcript (defaults to latest Hands transcript; Mind transcripts optional):
 
 ```bash
-mi --home ~/.mind-incarnation transcript show --cd <project_root> -n 200
-mi --home ~/.mind-incarnation transcript show --cd <project_root> --mind -n 200
-mi --home ~/.mind-incarnation transcript show --cd <project_root> -n 200 --redact
+mi --home ~/.mind-incarnation tail hands --cd <project_root> -n 200
+mi --home ~/.mind-incarnation tail mind --cd <project_root> -n 200
+mi --home ~/.mind-incarnation tail hands --cd <project_root> -n 200 --jsonl --redact
 ```
 
 Optional: archive older transcripts (gzip + stubs; default is dry-run):

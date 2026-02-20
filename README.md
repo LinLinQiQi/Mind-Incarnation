@@ -66,6 +66,8 @@ Or without `make`:
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
+Internal architecture note: runtime orchestration helpers now live under `mi/runtime/autopilot/`, and CLI inspection handlers (`show`/`tail`) are split under `mi/cli_commands/`. This is behavior-preserving and keeps public CLI/storage contracts unchanged.
+
 ## Quickstart
 
 Initialize provider config (writes `~/.mind-incarnation/config.json` by default):

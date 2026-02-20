@@ -71,7 +71,7 @@ def _mk_result(*, thread_id: str, last_message: str, command: str = "") -> Codex
 
 
 class TestLearnSuggestedApply(unittest.TestCase):
-    def test_auto_learn_false_records_suggestion_and_does_not_write_learned(self) -> None:
+    def test_auto_learn_false_records_suggestion_without_sidecar_file(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             cfg = default_config()
             cfg["runtime"]["violation_response"]["auto_learn"] = False
@@ -121,9 +121,9 @@ class TestLearnSuggestedApply(unittest.TestCase):
                 llm=fake_llm,
             )
 
-            # Strict Thought DB mode: MI no longer writes learned.jsonl automatically.
-            learned_path = result.project_dir / "learned.jsonl"
-            self.assertFalse(learned_path.exists(), "auto_learn=false must not write learned.jsonl (strict Thought DB mode)")
+            # MI writes preference updates into Thought DB only; no sidecar file is produced.
+            removed_sidecar_path = result.project_dir / "learned.jsonl"
+            self.assertFalse(removed_sidecar_path.exists(), "auto_learn=false must not create a sidecar preference file")
 
             suggestion_id = ""
             with open(result.evidence_log_path, "r", encoding="utf-8") as f:
@@ -145,8 +145,8 @@ class TestLearnSuggestedApply(unittest.TestCase):
                 sys.stdout = old_stdout
             self.assertEqual(code, 0)
 
-            # CLI apply-suggested materializes preference claims (not learned.jsonl).
-            self.assertFalse(learned_path.exists(), "apply-suggested should not write learned.jsonl in strict Thought DB mode")
+            # CLI apply-suggested materializes preference claims in Thought DB only.
+            self.assertFalse(removed_sidecar_path.exists(), "apply-suggested should not create a sidecar preference file")
             pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
             tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
             view = tdb.load_view(scope="project")
@@ -168,7 +168,7 @@ class TestLearnSuggestedApply(unittest.TestCase):
                             break
             self.assertTrue(found_applied, "apply-suggested should append a learn_applied record")
 
-    def test_auto_learn_true_writes_learned_and_logs_applied_ids(self) -> None:
+    def test_auto_learn_true_writes_claims_and_logs_applied_ids(self) -> None:
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project_root:
             cfg = default_config()
             cfg["runtime"]["violation_response"]["auto_learn"] = True
@@ -218,9 +218,9 @@ class TestLearnSuggestedApply(unittest.TestCase):
                 llm=fake_llm,
             )
 
-            # Strict Thought DB mode: auto learning materializes preference Claims.
-            learned_path = result.project_dir / "learned.jsonl"
-            self.assertFalse(learned_path.exists(), "auto_learn=true should not write learned.jsonl in strict Thought DB mode")
+            # Auto learning materializes preference Claims in Thought DB only.
+            removed_sidecar_path = result.project_dir / "learned.jsonl"
+            self.assertFalse(removed_sidecar_path.exists(), "auto_learn=true should not create a sidecar preference file")
 
             pp = ProjectPaths(home_dir=Path(home), project_root=Path(project_root))
             tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)

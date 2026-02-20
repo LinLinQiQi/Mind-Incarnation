@@ -111,12 +111,12 @@ class TestMindProvidersFakeHttp(unittest.TestCase):
             self.assertEqual(r.obj, _DECIDE_NEXT_OK)
             self.assertEqual(calls["n"], 2)
 
-    def test_anthropic_provider_rejects_legacy_completion_payload(self) -> None:
+    def test_anthropic_provider_rejects_completion_payload_shape(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out_dir = Path(td)
 
             def fake_http(_url: str, _body: dict, _headers: dict, _timeout_s: int) -> dict:
-                # Legacy completions-style payload; should be rejected.
+                # Completions-style payload is not accepted by this provider.
                 return {"completion": json.dumps(_DECIDE_NEXT_OK)}
 
             p = AnthropicMindProvider(

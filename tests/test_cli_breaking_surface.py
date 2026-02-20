@@ -13,7 +13,7 @@ class TestCliBreakingSurface(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["edit", "wf_x"])
 
-    def test_removed_config_doctor_alias(self) -> None:
+    def test_removed_config_doctor_subcommand(self) -> None:
         parser = build_parser()
         with self.assertRaises(SystemExit):
             parser.parse_args(["config", "doctor"])

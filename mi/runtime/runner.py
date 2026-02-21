@@ -120,8 +120,10 @@ from .autopilot.risk_event_flow import (
 )
 from .autopilot.testless_strategy_flow import (
     TestlessStrategyFlowDeps,
+    TestlessResolutionDeps,
     apply_set_testless_strategy_overlay_update,
     canonicalize_tls_and_update_overlay,
+    resolve_tls_for_checks,
     sync_tls_overlay_from_thoughtdb,
 )
 from .autopilot.workflow_progress_flow import (
@@ -1020,112 +1022,65 @@ def run_autopilot(
         Returns: (final_checks_obj, block_reason). block_reason=="" means OK.
         """
 
-        nonlocal overlay
-
-        def _notes_label(label: str) -> str:
-            n = str(notes_prefix or "").strip()
-            if n:
-                return n + " " + str(label or "").strip()
-            return str(label or "").strip()
-
-        tls_claim_strategy, _, tls_chosen_once = _sync_tls_overlay_from_thoughtdb(as_of_ts=now_rfc3339())
-
-        needs_tls = bool(checks_obj.get("needs_testless_strategy", False)) if isinstance(checks_obj, dict) else False
-        if needs_tls and not tls_chosen_once:
-            q = str(checks_obj.get("testless_strategy_question") or "").strip()
-            if not q:
-                q = "This project appears to have no tests. What testless verification strategy should MI use for this project (one-time)?"
-            answer = _read_user_answer(q)
-            if not answer:
-                return checks_obj, "user did not provide required input"
-
-            ui = evw.append(
-                {
-                    "kind": "user_input",
-                    "batch_id": str(user_input_batch_id),
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "question": q,
-                    "answer": answer,
-                }
-            )
-            evidence_window.append(
-                {
-                    "kind": "user_input",
-                    "batch_id": str(user_input_batch_id),
-                    "event_id": ui.get("event_id"),
-                    "question": q,
-                    "answer": answer,
-                }
-            )
-            evidence_window[:] = evidence_window[-8:]
-            _segment_add(ui)
-            _persist_segment_state()
-
-            # Canonicalize into Thought DB as a project preference claim.
-            src_eid = str(ui.get("event_id") or "").strip()
-            _canonicalize_tls_and_update_overlay(
-                strategy_text=answer.strip(),
-                source_event_id=src_eid,
-                fallback_batch_id=str(user_input_batch_id),
-                overlay_rationale="user provided",
-                overlay_rationale_default="user provided testless verification strategy",
-                claim_rationale=rationale,
-                default_rationale=rationale,
-                source=source,
-            )
-
-            # Re-plan checks now that the project has a strategy to follow.
-            tdb_ctx2 = _build_decide_context(hands_last_message=hands_last_message, recent_evidence=evidence_window)
-            tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
-            checks_obj2, checks_ref2, _ = _plan_checks_and_record(
-                batch_id=batch_id_after_testless,
-                tag=tag_after_testless,
-                thought_db_context=tdb_ctx2_obj,
-                repo_observation=repo_observation,
-                should_plan=True,
-                notes_on_skip="",
-                notes_on_skipped=f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_testless')})",
-                notes_on_error=f"mind_error: plan_min_checks({_notes_label('after_testless')}) failed; see EvidenceLog kind=mind_error",
-            )
-            checks_obj = checks_obj2
-
-            tls_claim_strategy, _, tls_chosen_once = _sync_tls_overlay_from_thoughtdb(as_of_ts=now_rfc3339())
-
-        # If Thought DB already provides a canonical testless strategy but the check planner
-        # still requested it, re-plan once (best-effort) to avoid blocking.
-        needs_tls2 = bool(checks_obj.get("needs_testless_strategy", False)) if isinstance(checks_obj, dict) else False
-        if needs_tls2 and tls_claim_strategy:
-            tdb_ctx_tls = _build_decide_context(hands_last_message=hands_last_message, recent_evidence=evidence_window)
-            tdb_ctx_tls_obj = tdb_ctx_tls.to_prompt_obj()
-            notes_on_skipped = f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_tls_claim')})"
-            notes_on_error = f"mind_error: plan_min_checks({_notes_label('after_tls_claim')}) failed; using Thought DB strategy"
-
-            def _postprocess_after_tls_claim(obj: dict[str, Any], state: str) -> dict[str, Any]:
-                if str(state or "") != "ok":
-                    # Ensure we don't ask again; proceed with a conservative "no checks" plan.
-                    checks_obj["needs_testless_strategy"] = False
-                    checks_obj["testless_strategy_question"] = ""
-                    base_note = str(checks_obj.get("notes") or "").strip()
-                    extra = notes_on_skipped if str(state or "") == "skipped" else notes_on_error
-                    checks_obj["notes"] = (base_note + "; " + extra).strip("; ").strip()
-                    return checks_obj
-                return obj if isinstance(obj, dict) else _empty_check_plan()
-
-            checks_obj3, _, _ = _plan_checks_and_record2(
-                batch_id=batch_id_after_tls_claim,
-                tag=tag_after_tls_claim,
-                thought_db_context=tdb_ctx_tls_obj,
-                repo_observation=repo_observation,
-                should_plan=True,
-                notes_on_skip="",
-                notes_on_skipped=notes_on_skipped,
-                notes_on_error=notes_on_error,
-                postprocess=_postprocess_after_tls_claim,
-            )
-            checks_obj = checks_obj3
-
-        return checks_obj, ""
+        return resolve_tls_for_checks(
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            hands_last_message=hands_last_message,
+            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            user_input_batch_id=user_input_batch_id,
+            batch_id_after_testless=batch_id_after_testless,
+            batch_id_after_tls_claim=batch_id_after_tls_claim,
+            tag_after_testless=tag_after_testless,
+            tag_after_tls_claim=tag_after_tls_claim,
+            notes_prefix=notes_prefix,
+            source=source,
+            rationale=rationale,
+            evidence_window=evidence_window,
+            deps=TestlessResolutionDeps(
+                now_ts=now_rfc3339,
+                thread_id=thread_id,
+                read_user_answer=_read_user_answer,
+                evidence_append=evw.append,
+                segment_add=lambda item: _segment_add(item if isinstance(item, dict) else {}),
+                persist_segment_state=_persist_segment_state,
+                sync_tls_overlay=lambda ts: _sync_tls_overlay_from_thoughtdb(as_of_ts=ts),
+                canonicalize_tls=lambda **kwargs: _canonicalize_tls_and_update_overlay(
+                    strategy_text=str(kwargs.get("strategy_text") or ""),
+                    source_event_id=str(kwargs.get("source_event_id") or ""),
+                    fallback_batch_id=str(kwargs.get("fallback_batch_id") or ""),
+                    overlay_rationale=str(kwargs.get("overlay_rationale") or ""),
+                    overlay_rationale_default=str(kwargs.get("overlay_rationale_default") or ""),
+                    claim_rationale=str(kwargs.get("claim_rationale") or ""),
+                    default_rationale=str(kwargs.get("default_rationale") or ""),
+                    source=str(kwargs.get("source") or ""),
+                ),
+                build_thought_db_context_obj=lambda hlm, recs: _build_decide_context(
+                    hands_last_message=hlm,
+                    recent_evidence=recs if isinstance(recs, list) else [],
+                ).to_prompt_obj(),
+                plan_checks_and_record=lambda **kwargs: _plan_checks_and_record(
+                    batch_id=str(kwargs.get("batch_id") or ""),
+                    tag=str(kwargs.get("tag") or ""),
+                    thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
+                    repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
+                    should_plan=bool(kwargs.get("should_plan")),
+                    notes_on_skip=str(kwargs.get("notes_on_skip") or ""),
+                    notes_on_skipped=str(kwargs.get("notes_on_skipped") or ""),
+                    notes_on_error=str(kwargs.get("notes_on_error") or ""),
+                ),
+                plan_checks_and_record2=lambda **kwargs: _plan_checks_and_record2(
+                    batch_id=str(kwargs.get("batch_id") or ""),
+                    tag=str(kwargs.get("tag") or ""),
+                    thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
+                    repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
+                    should_plan=bool(kwargs.get("should_plan")),
+                    notes_on_skip=str(kwargs.get("notes_on_skip") or ""),
+                    notes_on_skipped=str(kwargs.get("notes_on_skipped") or ""),
+                    notes_on_error=str(kwargs.get("notes_on_error") or ""),
+                    postprocess=kwargs.get("postprocess"),
+                ),
+                empty_check_plan=_empty_check_plan,
+            ),
+        )
 
     def _apply_set_testless_strategy_overlay_update(
         *,

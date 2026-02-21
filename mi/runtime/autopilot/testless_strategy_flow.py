@@ -18,6 +18,24 @@ class TestlessStrategyFlowDeps:
     refresh_overlay_refs: Callable[[], None]
 
 
+@dataclass(frozen=True)
+class TestlessResolutionDeps:
+    """Dependencies for resolving testless strategy during check planning."""
+
+    now_ts: Callable[[], str]
+    thread_id: str
+    read_user_answer: Callable[[str], str]
+    evidence_append: Callable[[dict[str, Any]], Any]
+    segment_add: Callable[[dict[str, Any]], None]
+    persist_segment_state: Callable[[], None]
+    sync_tls_overlay: Callable[[str], tuple[str, str, bool]]
+    canonicalize_tls: Callable[..., str]
+    build_thought_db_context_obj: Callable[[str, list[dict[str, Any]]], dict[str, Any]]
+    plan_checks_and_record: Callable[..., tuple[dict[str, Any], str, str]]
+    plan_checks_and_record2: Callable[..., tuple[dict[str, Any], str, str]]
+    empty_check_plan: Callable[[], dict[str, Any]]
+
+
 def sync_tls_overlay_from_thoughtdb(
     *,
     overlay: dict[str, Any],
@@ -139,3 +157,122 @@ def apply_set_testless_strategy_overlay_update(
         source=str(source or "").strip(),
         deps=deps,
     )
+
+
+def resolve_tls_for_checks(
+    *,
+    checks_obj: dict[str, Any],
+    hands_last_message: str,
+    repo_observation: dict[str, Any],
+    user_input_batch_id: str,
+    batch_id_after_testless: str,
+    batch_id_after_tls_claim: str,
+    tag_after_testless: str,
+    tag_after_tls_claim: str,
+    notes_prefix: str,
+    source: str,
+    rationale: str,
+    evidence_window: list[dict[str, Any]],
+    deps: TestlessResolutionDeps,
+) -> tuple[dict[str, Any], str]:
+    """Resolve testless strategy for a check plan (ask once + re-plan; best-effort)."""
+
+    checks = checks_obj if isinstance(checks_obj, dict) else {}
+
+    def _notes_label(label: str) -> str:
+        n = str(notes_prefix or "").strip()
+        if n:
+            return n + " " + str(label or "").strip()
+        return str(label or "").strip()
+
+    tls_claim_strategy, _, tls_chosen_once = deps.sync_tls_overlay(str(deps.now_ts() or ""))
+
+    needs_tls = bool(checks.get("needs_testless_strategy", False)) if isinstance(checks, dict) else False
+    if needs_tls and not tls_chosen_once:
+        q = str(checks.get("testless_strategy_question") or "").strip()
+        if not q:
+            q = "This project appears to have no tests. What testless verification strategy should MI use for this project (one-time)?"
+        answer = deps.read_user_answer(q)
+        if not answer:
+            return checks, "user did not provide required input"
+
+        ui = deps.evidence_append(
+            {
+                "kind": "user_input",
+                "batch_id": str(user_input_batch_id),
+                "ts": deps.now_ts(),
+                "thread_id": deps.thread_id,
+                "question": q,
+                "answer": answer,
+            }
+        )
+        ui_obj = ui if isinstance(ui, dict) else {}
+        evidence_window.append(
+            {
+                "kind": "user_input",
+                "batch_id": str(user_input_batch_id),
+                "event_id": ui_obj.get("event_id"),
+                "question": q,
+                "answer": answer,
+            }
+        )
+        evidence_window[:] = evidence_window[-8:]
+        deps.segment_add(ui_obj)
+        deps.persist_segment_state()
+
+        deps.canonicalize_tls(
+            strategy_text=str(answer or "").strip(),
+            source_event_id=str(ui_obj.get("event_id") or "").strip(),
+            fallback_batch_id=str(user_input_batch_id),
+            overlay_rationale="user provided",
+            overlay_rationale_default="user provided testless verification strategy",
+            claim_rationale=rationale,
+            default_rationale=rationale,
+            source=source,
+        )
+
+        tdb_ctx2_obj = deps.build_thought_db_context_obj(hands_last_message, evidence_window)
+        checks_obj2, _, _ = deps.plan_checks_and_record(
+            batch_id=batch_id_after_testless,
+            tag=tag_after_testless,
+            thought_db_context=tdb_ctx2_obj if isinstance(tdb_ctx2_obj, dict) else {},
+            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            should_plan=True,
+            notes_on_skip="",
+            notes_on_skipped=f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_testless')})",
+            notes_on_error=f"mind_error: plan_min_checks({_notes_label('after_testless')}) failed; see EvidenceLog kind=mind_error",
+        )
+        checks = checks_obj2 if isinstance(checks_obj2, dict) else deps.empty_check_plan()
+
+        tls_claim_strategy, _, tls_chosen_once = deps.sync_tls_overlay(str(deps.now_ts() or ""))
+
+    needs_tls2 = bool(checks.get("needs_testless_strategy", False)) if isinstance(checks, dict) else False
+    if needs_tls2 and tls_claim_strategy:
+        tdb_ctx_tls_obj = deps.build_thought_db_context_obj(hands_last_message, evidence_window)
+        notes_on_skipped = f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_tls_claim')})"
+        notes_on_error = f"mind_error: plan_min_checks({_notes_label('after_tls_claim')}) failed; using Thought DB strategy"
+
+        def _postprocess_after_tls_claim(obj: dict[str, Any], state: str) -> dict[str, Any]:
+            if str(state or "") != "ok":
+                checks["needs_testless_strategy"] = False
+                checks["testless_strategy_question"] = ""
+                base_note = str(checks.get("notes") or "").strip()
+                extra = notes_on_skipped if str(state or "") == "skipped" else notes_on_error
+                checks["notes"] = (base_note + "; " + extra).strip("; ").strip()
+                return checks
+            return obj if isinstance(obj, dict) else deps.empty_check_plan()
+
+        checks_obj3, _, _ = deps.plan_checks_and_record2(
+            batch_id=batch_id_after_tls_claim,
+            tag=tag_after_tls_claim,
+            thought_db_context=tdb_ctx_tls_obj if isinstance(tdb_ctx_tls_obj, dict) else {},
+            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            should_plan=True,
+            notes_on_skip="",
+            notes_on_skipped=notes_on_skipped,
+            notes_on_error=notes_on_error,
+            postprocess=_postprocess_after_tls_claim,
+        )
+        checks = checks_obj3 if isinstance(checks_obj3, dict) else deps.empty_check_plan()
+
+    return checks, ""

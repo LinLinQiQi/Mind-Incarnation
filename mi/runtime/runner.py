@@ -107,6 +107,10 @@ from .autopilot.next_input_flow import (
     QueueNextInputDeps,
     queue_next_input as run_queue_next_input,
 )
+from .autopilot.loop_break_checks_flow import (
+    LoopBreakChecksDeps,
+    loop_break_get_checks_input as run_loop_break_get_checks_input,
+)
 from .autopilot.learn_suggested_flow import (
     LearnSuggestedDeps,
     apply_learn_suggested,
@@ -1253,39 +1257,21 @@ def run_autopilot(
 
         Returns: (checks_input_text, block_reason). block_reason=="" means OK.
         """
-
-        chk_text = _get_check_input(existing_check_plan if isinstance(existing_check_plan, dict) else None)
-        if chk_text:
-            return chk_text, ""
-
-        checks_obj2, checks_ref2, _ = _plan_checks_and_record(
-            batch_id=f"{base_batch_id}.loop_break_checks",
-            tag=f"checks_loopbreak:{base_batch_id}",
+        return run_loop_break_get_checks_input(
+            base_batch_id=base_batch_id,
+            hands_last_message=hands_last_message,
             thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
             repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-            should_plan=True,
-            notes_on_skip="",
+            existing_check_plan=existing_check_plan if isinstance(existing_check_plan, dict) else None,
             notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
             notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
+            deps=LoopBreakChecksDeps(
+                get_check_input=_get_check_input,
+                plan_checks_and_record=_plan_checks_and_record,
+                resolve_tls_for_checks=_resolve_tls_for_checks,
+                empty_check_plan=_empty_check_plan,
+            ),
         )
-
-        checks_obj2, block_reason = _resolve_tls_for_checks(
-            checks_obj=checks_obj2 if isinstance(checks_obj2, dict) else _empty_check_plan(),
-            hands_last_message=hands_last_message,
-            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-            user_input_batch_id=f"{base_batch_id}.loop_break",
-            batch_id_after_testless=f"{base_batch_id}.loop_break_after_testless",
-            batch_id_after_tls_claim=f"{base_batch_id}.loop_break_after_tls_claim",
-            tag_after_testless=f"checks_loopbreak_after_tls:{base_batch_id}",
-            tag_after_tls_claim=f"checks_loopbreak_after_tls_claim:{base_batch_id}",
-            notes_prefix="loop_break",
-            source="user_input:testless_strategy(loop_break)",
-            rationale="user provided testless verification strategy (loop_break)",
-        )
-        if block_reason:
-            return "", block_reason
-
-        return _get_check_input(checks_obj2 if isinstance(checks_obj2, dict) else None), ""
 
     def _queue_next_input(
         *,

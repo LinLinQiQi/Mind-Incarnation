@@ -10,7 +10,7 @@ from .context_summary import summarize_thought_db_context
 from .workflow_progress import apply_workflow_progress_output
 from .batch_types import BatchLoopState, BatchLoopDeps
 from .batch_engine import run_batch_loop
-from .batch_context import BatchExecutionContext
+from .batch_context import BatchExecutionContext, build_batch_execution_context
 from .batch_effects import append_evidence_window, segment_add_and_persist
 from .batch_phases import extract_evidence_counts, build_risk_fallback, should_prompt_risk_user
 from .batch_pipeline import PreactionDecision, join_hands_inputs, compose_check_plan_log, compose_auto_answer_log
@@ -75,6 +75,7 @@ __all__ = [
     "BatchLoopDeps",
     "run_batch_loop",
     "BatchExecutionContext",
+    "build_batch_execution_context",
     "append_evidence_window",
     "segment_add_and_persist",
     "extract_evidence_counts",

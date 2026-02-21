@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sys
-import hashlib
 import secrets
 import time
 from pathlib import Path
@@ -29,6 +28,7 @@ from .autopilot import (
     _truncate,
     apply_workflow_progress_output,
     BatchExecutionContext,
+    build_batch_execution_context,
     append_evidence_window,
     segment_add_and_persist,
     extract_evidence_counts,
@@ -2697,27 +2697,15 @@ def run_autopilot(
         return obj if isinstance(obj, dict) else {}
 
     def _build_batch_execution_context(*, batch_idx: int) -> BatchExecutionContext:
-        batch_id = f"b{batch_idx}"
-        batch_ts = now_rfc3339().replace(":", "").replace("-", "")
-        light = build_light_injection(tdb=tdb, as_of_ts=now_rfc3339())
-        batch_input = next_input.strip()
-        hands_prompt = light + "\n" + batch_input + "\n"
-        sent_ts = now_rfc3339()
-        prompt_sha256 = hashlib.sha256(hands_prompt.encode("utf-8")).hexdigest()
-        use_resume = thread_id is not None and hands_resume is not None and thread_id != "unknown"
-        attempted_overlay_resume = bool(use_resume and resumed_from_overlay and batch_idx == 0)
-        return BatchExecutionContext(
+        return build_batch_execution_context(
             batch_idx=batch_idx,
-            batch_id=batch_id,
-            batch_ts=batch_ts,
-            hands_transcript=project_paths.transcripts_dir / "hands" / f"{batch_ts}_b{batch_idx}.jsonl",
-            batch_input=batch_input,
-            hands_prompt=hands_prompt,
-            light_injection=light,
-            sent_ts=sent_ts,
-            prompt_sha256=prompt_sha256,
-            use_resume=use_resume,
-            attempted_overlay_resume=attempted_overlay_resume,
+            transcripts_dir=project_paths.transcripts_dir,
+            next_input=next_input,
+            thread_id=thread_id,
+            hands_resume=hands_resume,
+            resumed_from_overlay=bool(resumed_from_overlay),
+            now_ts=now_rfc3339,
+            build_light_injection_for_ts=lambda as_of_ts: build_light_injection(tdb=tdb, as_of_ts=as_of_ts),
         )
 
     last_evidence_rec: dict[str, Any] | None = None

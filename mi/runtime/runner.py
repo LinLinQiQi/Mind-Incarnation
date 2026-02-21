@@ -82,6 +82,12 @@ from .autopilot.checkpoint_pipeline import (
     CheckpointPipelineDeps,
     run_checkpoint_pipeline,
 )
+from .autopilot.checkpoint_mining import (
+    WorkflowMiningDeps,
+    PreferenceMiningDeps,
+    mine_workflow_from_segment as run_workflow_mining,
+    mine_preferences_from_segment as run_preference_mining,
+)
 from .autopilot.node_materialize import (
     NodeMaterializeDeps,
     materialize_nodes_from_checkpoint,
@@ -1227,366 +1233,78 @@ def run_autopilot(
         )
 
     def _mine_workflow_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
-        if not bool(wf_auto_mine):
-            return
-        if executed_batches <= 0:
-            return
-
-        auto_enable = bool(wf_cfg.get("auto_enable", True))
-        auto_sync = bool(wf_cfg.get("auto_sync_on_change", True))
-        allow_single_high = bool(wf_cfg.get("allow_single_if_high_benefit", True))
-        try:
-            min_occ = int(wf_cfg.get("min_occurrences", 2) or 2)
-        except Exception:
-            min_occ = 2
-        if min_occ < 1:
-            min_occ = 1
-
-        mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
-        tdb_ctx = _build_decide_context(hands_last_message="", recent_evidence=seg_evidence[-8:])
-        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
-        prompt = suggest_workflow_prompt(
+        run_workflow_mining(
+            enabled=bool(wf_auto_mine),
+            executed_batches=int(executed_batches),
+            wf_cfg=wf_cfg if isinstance(wf_cfg, dict) else {},
+            seg_evidence=seg_evidence if isinstance(seg_evidence, list) else [],
+            base_batch_id=str(base_batch_id or ""),
+            source=str(source or ""),
+            status=str(status or ""),
+            notes=str(notes or ""),
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx_obj,
-            recent_evidence=seg_evidence,
-            notes=mine_notes,
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            thread_id=str(thread_id or ""),
+            wf_sigs_counted_in_run=wf_sigs_counted_in_run,
+            deps=WorkflowMiningDeps(
+                build_decide_context=_build_decide_context,
+                suggest_workflow_prompt_builder=suggest_workflow_prompt,
+                mind_call=_mind_call,
+                evidence_append=evw.append,
+                load_workflow_candidates=lambda: load_workflow_candidates(project_paths, warnings=state_warnings),
+                write_workflow_candidates=lambda obj: write_workflow_candidates(project_paths, obj),
+                flush_state_warnings=_flush_state_warnings,
+                write_workflow=wf_store.write,
+                new_workflow_id=new_workflow_id,
+                enabled_effective_workflows=lambda: [
+                    {k: v for k, v in w.items() if k != "_mi_scope"}
+                    for w in (wf_registry.enabled_workflows_effective(overlay=overlay) or [])
+                    if isinstance(w, dict)
+                ],
+                sync_hosts=lambda workflows: sync_hosts_from_overlay(
+                    overlay=overlay,
+                    project_id=project_paths.project_id,
+                    workflows=workflows,
+                    warnings=state_warnings,
+                ),
+                now_ts=now_rfc3339,
+            ),
         )
-        out, mind_ref, state = _mind_call(
-            schema_filename="suggest_workflow.json",
-            prompt=prompt,
-            tag=f"suggest_workflow:{base_batch_id}",
-            batch_id=f"{base_batch_id}.workflow_suggestion",
-        )
-
-        evw.append(
-            {
-                "kind": "workflow_suggestion",
-                "batch_id": f"{base_batch_id}.workflow_suggestion",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "state": state,
-                "mind_transcript_ref": mind_ref,
-                "notes": mine_notes,
-                "output": out if isinstance(out, dict) else {},
-            }
-        )
-
-        if not isinstance(out, dict):
-            return
-        if not bool(out.get("should_suggest", False)):
-            return
-        sug = out.get("suggestion")
-        if not isinstance(sug, dict):
-            return
-
-        signature = str(sug.get("signature") or "").strip()
-        if not signature:
-            return
-        benefit = str(sug.get("benefit") or "").strip()
-        reason_s = str(sug.get("reason") or "").strip()
-        confidence = sug.get("confidence")
-        try:
-            conf_f = float(confidence) if confidence is not None else 0.0
-        except Exception:
-            conf_f = 0.0
-
-        candidates = load_workflow_candidates(project_paths, warnings=state_warnings)
-        by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
-        entry = by_sig.get(signature)
-        if not isinstance(entry, dict):
-            entry = {}
-
-        try:
-            prev_n = int(entry.get("count") or 0)
-        except Exception:
-            prev_n = 0
-        already_counted = signature in wf_sigs_counted_in_run
-        if already_counted:
-            new_n = prev_n
-        else:
-            new_n = prev_n + 1
-            wf_sigs_counted_in_run.add(signature)
-        entry["count"] = new_n
-        entry["last_ts"] = now_rfc3339()
-        entry["benefit"] = benefit
-        entry["confidence"] = conf_f
-        if reason_s:
-            entry["reason"] = reason_s
-        wf_obj = sug.get("workflow") if isinstance(sug.get("workflow"), dict) else {}
-        name = str(wf_obj.get("name") or "").strip()
-        if name:
-            entry["workflow_name"] = name
-
-        by_sig[signature] = entry
-        candidates["by_signature"] = by_sig
-        write_workflow_candidates(project_paths, candidates)
-        _flush_state_warnings()
-
-        existing_wid = str(entry.get("workflow_id") or "").strip()
-        if existing_wid:
-            return
-
-        threshold = min_occ
-        if allow_single_high and benefit == "high":
-            threshold = 1
-        if new_n < threshold:
-            return
-
-        if not isinstance(wf_obj, dict) or not wf_obj:
-            return
-
-        wid = new_workflow_id()
-        wf_final = dict(wf_obj)
-        wf_final["id"] = wid
-        wf_final["enabled"] = bool(auto_enable)
-
-        src = wf_final.get("source") if isinstance(wf_final.get("source"), dict) else {}
-        ev_refs = src.get("evidence_refs") if isinstance(src.get("evidence_refs"), list) else []
-        wf_final["source"] = {
-            "kind": "suggested",
-            "reason": (reason_s or "suggest_workflow") + f" (signature={signature} benefit={benefit} confidence={conf_f:.2f})",
-            "evidence_refs": [str(x) for x in ev_refs if str(x).strip()],
-        }
-        wf_final["created_ts"] = now_rfc3339()
-        wf_final["updated_ts"] = now_rfc3339()
-
-        wf_store.write(wf_final)
-
-        entry["workflow_id"] = wid
-        entry["solidified_ts"] = now_rfc3339()
-        by_sig[signature] = entry
-        candidates["by_signature"] = by_sig
-        write_workflow_candidates(project_paths, candidates)
-
-        evw.append(
-            {
-                "kind": "workflow_solidified",
-                "batch_id": f"{base_batch_id}.workflow_solidified",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "signature": signature,
-                "count": new_n,
-                "threshold": threshold,
-                "benefit": benefit,
-                "confidence": conf_f,
-                "workflow_id": wid,
-                "workflow_name": str(wf_final.get("name") or ""),
-                "enabled": bool(wf_final.get("enabled", False)),
-            }
-        )
-
-        if auto_sync:
-            effective = wf_registry.enabled_workflows_effective(overlay=overlay)
-            effective = [{k: v for k, v in w.items() if k != "_mi_scope"} for w in effective if isinstance(w, dict)]
-            sync_obj = sync_hosts_from_overlay(
-                overlay=overlay,
-                project_id=project_paths.project_id,
-                workflows=effective,
-                warnings=state_warnings,
-            )
-            evw.append(
-                {
-                    "kind": "host_sync",
-                    "batch_id": f"{base_batch_id}.host_sync",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id or "",
-                    "source": "workflow_solidified",
-                    "sync": sync_obj,
-                }
-            )
-            _flush_state_warnings()
 
     def _mine_preferences_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
-        nonlocal overlay
-
-        if not bool(pref_auto_mine):
-            return
-        if executed_batches <= 0:
-            return
-
-        pref_allow_single_high = bool(pref_cfg.get("allow_single_if_high_benefit", True))
-        try:
-            pref_min_occ = int(pref_cfg.get("min_occurrences", 2) or 2)
-        except Exception:
-            pref_min_occ = 2
-        if pref_min_occ < 1:
-            pref_min_occ = 1
-        try:
-            pref_min_conf = float(pref_cfg.get("min_confidence", 0.75) or 0.75)
-        except Exception:
-            pref_min_conf = 0.75
-        try:
-            pref_max = int(pref_cfg.get("max_suggestions", 3) or 3)
-        except Exception:
-            pref_max = 3
-        if pref_max < 0:
-            pref_max = 0
-        if pref_max > 10:
-            pref_max = 10
-        if pref_max == 0:
-            return
-
-        mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
-        tdb_ctx = _build_decide_context(hands_last_message="", recent_evidence=seg_evidence[-8:])
-        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
-        prompt = mine_preferences_prompt(
+        run_preference_mining(
+            enabled=bool(pref_auto_mine),
+            executed_batches=int(executed_batches),
+            pref_cfg=pref_cfg if isinstance(pref_cfg, dict) else {},
+            seg_evidence=seg_evidence if isinstance(seg_evidence, list) else [],
+            base_batch_id=str(base_batch_id or ""),
+            source=str(source or ""),
+            status=str(status or ""),
+            notes=str(notes or ""),
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx_obj,
-            recent_evidence=seg_evidence,
-            notes=mine_notes,
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            thread_id=str(thread_id or ""),
+            project_id=project_paths.project_id,
+            pref_sigs_counted_in_run=pref_sigs_counted_in_run,
+            deps=PreferenceMiningDeps(
+                build_decide_context=_build_decide_context,
+                mine_preferences_prompt_builder=mine_preferences_prompt,
+                mind_call=_mind_call,
+                evidence_append=evw.append,
+                load_preference_candidates=lambda: load_preference_candidates(project_paths, warnings=state_warnings),
+                write_preference_candidates=lambda obj: write_preference_candidates(project_paths, obj),
+                flush_state_warnings=_flush_state_warnings,
+                existing_signature_map=lambda scope: tdb.existing_signature_map(scope=scope),
+                claim_signature_fn=claim_signature,
+                preference_signature_fn=preference_signature,
+                handle_learn_suggested=_handle_learn_suggested,
+                now_ts=now_rfc3339,
+            ),
         )
-        out, mind_ref, state = _mind_call(
-            schema_filename="mine_preferences.json",
-            prompt=prompt,
-            tag=f"mine_preferences:{base_batch_id}",
-            batch_id=f"{base_batch_id}.preference_mining",
-        )
-
-        evw.append(
-            {
-                "kind": "preference_mining",
-                "batch_id": f"{base_batch_id}.preference_mining",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "state": state,
-                "mind_transcript_ref": mind_ref,
-                "notes": mine_notes,
-                "output": out if isinstance(out, dict) else {},
-            }
-        )
-
-        if not isinstance(out, dict):
-            return
-        sugs = out.get("suggestions")
-        if not isinstance(sugs, list) or not sugs:
-            return
-
-        candidates = load_preference_candidates(project_paths, warnings=state_warnings)
-        by_sig = candidates.get("by_signature") if isinstance(candidates.get("by_signature"), dict) else {}
-
-        # Evidence provenance for preference claims (best-effort): cite recent segment events.
-        src_eids_pref: list[str] = []
-        seen_eids: set[str] = set()
-        for r in (seg_evidence or [])[-16:]:
-            if not isinstance(r, dict):
-                continue
-            eid = r.get("event_id")
-            if not isinstance(eid, str):
-                continue
-            e = eid.strip()
-            if not e or e in seen_eids:
-                continue
-            seen_eids.add(e)
-            src_eids_pref.append(e)
-
-        # Skip obvious duplicates against existing canonical preference claims (best-effort).
-        existing_sig_to_id = {
-            "project": tdb.existing_signature_map(scope="project"),
-            "global": tdb.existing_signature_map(scope="global"),
-        }
-
-        for raw in sugs[:pref_max]:
-            if not isinstance(raw, dict):
-                continue
-            scope = str(raw.get("scope") or "project").strip()
-            if scope not in ("global", "project"):
-                scope = "project"
-            text = str(raw.get("text") or "").strip()
-            if not text:
-                continue
-
-            pid = project_paths.project_id if scope == "project" else ""
-            sig2 = claim_signature(claim_type="preference", scope=scope, project_id=pid, text=text)
-            if sig2 in existing_sig_to_id.get(scope, {}):
-                continue
-
-            benefit = str(raw.get("benefit") or "medium").strip()
-            if benefit not in ("low", "medium", "high"):
-                benefit = "medium"
-            rationale = str(raw.get("rationale") or "").strip()
-            conf = raw.get("confidence")
-            try:
-                conf_f = float(conf) if conf is not None else 0.0
-            except Exception:
-                conf_f = 0.0
-            if conf_f < pref_min_conf:
-                continue
-
-            sig = preference_signature(scope=scope, text=text)
-            entry = by_sig.get(sig)
-            if not isinstance(entry, dict):
-                entry = {}
-
-            try:
-                prev_n = int(entry.get("count") or 0)
-            except Exception:
-                prev_n = 0
-            already_counted = sig in pref_sigs_counted_in_run
-            if already_counted:
-                new_n = prev_n
-            else:
-                new_n = prev_n + 1
-                pref_sigs_counted_in_run.add(sig)
-            entry["count"] = new_n
-            entry["last_ts"] = now_rfc3339()
-            entry["scope"] = scope
-            entry["text"] = text
-            entry["benefit"] = benefit
-            entry["confidence"] = conf_f
-            if rationale:
-                entry["rationale"] = rationale
-
-            if bool(entry.get("suggestion_emitted", False)) or bool(entry.get("applied_claim_ids")):
-                by_sig[sig] = entry
-                continue
-
-            threshold = pref_min_occ
-            if pref_allow_single_high and benefit == "high":
-                threshold = 1
-            if new_n < threshold:
-                by_sig[sig] = entry
-                continue
-
-            applied_ids = _handle_learn_suggested(
-                learn_suggested=[{"scope": scope, "text": text, "rationale": rationale or "preference_mining", "severity": "medium"}],
-                batch_id=f"{base_batch_id}.preference_solidified",
-                source="mine_preferences",
-                mind_transcript_ref=mind_ref,
-                source_event_ids=src_eids_pref,
-            )
-            entry["suggestion_emitted"] = True
-            entry["suggestion_ts"] = now_rfc3339()
-            if applied_ids:
-                entry["applied_claim_ids"] = list(applied_ids)
-                entry["solidified_ts"] = now_rfc3339()
-
-            evw.append(
-                {
-                    "kind": "preference_solidified",
-                    "batch_id": f"{base_batch_id}.preference_solidified",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id or "",
-                    "signature": sig,
-                    "count": new_n,
-                    "threshold": threshold,
-                    "benefit": benefit,
-                    "confidence": conf_f,
-                    "scope": scope,
-                    "text": text,
-                    "applied_claim_ids": list(applied_ids),
-                }
-            )
-            by_sig[sig] = entry
-
-        candidates["by_signature"] = by_sig
-        write_preference_candidates(project_paths, candidates)
-        _flush_state_warnings()
 
     def _mine_claims_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
         """Mine high-signal atomic Claims into Thought DB (checkpoint-only; best-effort)."""

@@ -92,6 +92,10 @@ from .autopilot.node_materialize import (
     NodeMaterializeDeps,
     materialize_nodes_from_checkpoint,
 )
+from .autopilot.next_input_flow import (
+    LoopGuardDeps,
+    apply_loop_guard,
+)
 from .autopilot.segment_state import (
     add_segment_record,
     clear_segment_state,
@@ -1518,6 +1522,7 @@ def run_autopilot(
         check_plan: dict[str, Any] | None = None,
     ) -> bool:
         """Set next_input for the next Hands batch, with loop-guard + loop-break (best-effort)."""
+
         nonlocal next_input, status, notes, sent_sigs
 
         candidate = (nxt or "").strip()
@@ -1526,186 +1531,49 @@ def run_autopilot(
             notes = f"{reason}: empty next input"
             return False
 
-        sig = _loop_sig(hands_last_message=hands_last_message, next_input=candidate)
-        sent_sigs.append(sig)
-        sent_sigs = sent_sigs[-6:]
+        loop = apply_loop_guard(
+            candidate=candidate,
+            hands_last_message=hands_last_message,
+            batch_id=batch_id,
+            reason=reason,
+            sent_sigs=sent_sigs,
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
+            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            check_plan=check_plan if isinstance(check_plan, dict) else {},
+            evidence_window=evidence_window,
+            thread_id=str(thread_id or ""),
+            deps=LoopGuardDeps(
+                loop_sig=_loop_sig,
+                loop_pattern=_loop_pattern,
+                now_ts=now_rfc3339,
+                truncate=_truncate,
+                evidence_append=evw.append,
+                append_segment_record=lambda rec: segment_add_and_persist(
+                    segment_add=_segment_add,
+                    persist_segment_state=_persist_segment_state,
+                    item=rec,
+                ),
+                resolve_ask_when_uncertain=lambda: bool(
+                    resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain
+                ),
+                loop_break_prompt_builder=loop_break_prompt,
+                mind_call=_mind_call,
+                loop_break_get_checks_input=_loop_break_get_checks_input,
+                read_user_answer=_read_user_answer,
+                append_user_input_record=_append_user_input_record,
+            ),
+        )
 
-        pattern = _loop_pattern(sent_sigs)
-        if pattern:
-            evw.append(
-                {
-                    "kind": "loop_guard",
-                    "batch_id": batch_id,
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "pattern": pattern,
-                    "hands_last_message": _truncate(hands_last_message, 800),
-                    "next_input": _truncate(candidate, 800),
-                    "reason": reason,
-                }
-            )
-            evidence_window.append({"kind": "loop_guard", "batch_id": batch_id, "pattern": pattern, "reason": reason})
-            evidence_window[:] = evidence_window[-8:]
-
-            ask_when_uncertain = bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain)
-
-            # Best-effort automatic loop breaking: prefer rewriting the next instruction or forcing checks
-            # before asking the user (minimize burden; avoid protocol tyranny).
-            lb_prompt = loop_break_prompt(
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay,
-                thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
-                recent_evidence=evidence_window,
-                repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-                loop_pattern=pattern,
-                loop_reason=reason,
-                hands_last_message=hands_last_message,
-                planned_next_input=candidate,
-            )
-            lb_obj, lb_ref, lb_state = _mind_call(
-                schema_filename="loop_break.json",
-                prompt=lb_prompt,
-                tag=f"loopbreak:{batch_id}",
-                batch_id=batch_id,
-            )
-
-            lb_rec = evw.append(
-                {
-                    "kind": "loop_break",
-                    "batch_id": batch_id,
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "pattern": pattern,
-                    "reason": reason,
-                    "state": lb_state,
-                    "mind_transcript_ref": lb_ref,
-                    "output": lb_obj if isinstance(lb_obj, dict) else {},
-                }
-            )
-            evidence_window.append(
-                {
-                    "kind": "loop_break",
-                    "batch_id": batch_id,
-                    "event_id": lb_rec.get("event_id"),
-                    "pattern": pattern,
-                    "state": lb_state,
-                    "action": (lb_obj.get("action") if isinstance(lb_obj, dict) else ""),
-                    "reason": reason,
-                }
-            )
-            evidence_window[:] = evidence_window[-8:]
-            _segment_add(lb_rec)
-            _persist_segment_state()
-
-            action = str(lb_obj.get("action") or "").strip() if isinstance(lb_obj, dict) else ""
-
-            # Helper: ask user override, used only as a last resort.
-            def _prompt_user_override(question: str) -> str:
-                override = _read_user_answer(question)
-                ui = evw.append(
-                    {
-                        "kind": "user_input",
-                        "batch_id": batch_id,
-                        "ts": now_rfc3339(),
-                        "thread_id": thread_id,
-                        "question": question,
-                        "answer": override,
-                    }
-                )
-                evidence_window.append(
-                    {
-                        "kind": "user_input",
-                        "batch_id": batch_id,
-                        "event_id": ui.get("event_id"),
-                        "question": question,
-                        "answer": override,
-                    }
-                )
-                evidence_window[:] = evidence_window[-8:]
-                _segment_add(ui)
-                _persist_segment_state()
-                return override
-
-            if action == "stop_done":
-                status = "done"
-                notes = f"loop_break: stop_done ({reason})"
-                return False
-
-            if action == "stop_blocked":
-                status = "blocked"
-                notes = f"loop_break: stop_blocked ({reason})"
-                return False
-
-            if action == "rewrite_next_input":
-                rewritten = str(lb_obj.get("rewritten_next_input") or "").strip() if isinstance(lb_obj, dict) else ""
-                if rewritten:
-                    candidate = rewritten
-                    sent_sigs.clear()
-                else:
-                    action = ""  # fall through to fallback
-
-            if action == "run_checks_then_continue":
-                chk_text, block_reason = _loop_break_get_checks_input(
-                    base_batch_id=batch_id,
-                    hands_last_message=hands_last_message,
-                    thought_db_context=thought_db_context,
-                    repo_observation=repo_observation,
-                    existing_check_plan=check_plan,
-                )
-                if block_reason:
-                    status = "blocked"
-                    notes = block_reason
-                    return False
-
-                if chk_text:
-                    candidate = chk_text
-                    sent_sigs.clear()
-                else:
-                    action = ""  # fall through
-
-            if action == "ask_user":
-                if ask_when_uncertain:
-                    q = str(lb_obj.get("ask_user_question") or "").strip() if isinstance(lb_obj, dict) else ""
-                    if not q:
-                        q = (
-                            "MI detected a repeated loop (pattern="
-                            + pattern
-                            + "). Provide a new instruction to send to Hands, or type 'stop' to end:"
-                        )
-                    override = _prompt_user_override(q)
-                    ov = override.strip()
-                    if not ov or ov.lower() in ("stop", "quit", "q"):
-                        status = "blocked"
-                        notes = "stopped by loop_guard"
-                        return False
-                    candidate = ov
-                    sent_sigs.clear()
-                else:
-                    status = "blocked"
-                    notes = "loop_guard triggered (ask_when_uncertain=false)"
-                    return False
-
-            if not action:
-                if ask_when_uncertain:
-                    q = (
-                        "MI detected a repeated loop (pattern="
-                        + pattern
-                        + "). Provide a new instruction to send to Hands, or type 'stop' to end:"
-                    )
-                    override = _prompt_user_override(q)
-                    ov = override.strip()
-                    if not ov or ov.lower() in ("stop", "quit", "q"):
-                        status = "blocked"
-                        notes = "stopped by loop_guard"
-                        return False
-                    candidate = ov
-                    sent_sigs.clear()
-                else:
-                    status = "blocked"
-                    notes = "loop_guard triggered"
-                    return False
+        sent_sigs = list(loop.sent_sigs)
+        if not bool(loop.proceed):
+            status = str(loop.status or "blocked")
+            notes = str(loop.notes or "")
+            return False
+        candidate = str(loop.candidate or "").strip()
 
         # Checkpoint after the current batch, before sending the next instruction to Hands.
         _maybe_checkpoint_and_mine(

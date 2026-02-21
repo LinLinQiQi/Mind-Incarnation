@@ -9,7 +9,6 @@ from typing import Any
 
 from ..providers.codex_runner import InterruptConfig, run_codex_exec, run_codex_resume
 from ..providers.llm import MiLlm
-from ..providers.mind_errors import MindCallError
 from ..core.config import load_config
 from ..core.paths import GlobalPaths, ProjectPaths, default_home_dir
 from .autopilot import (
@@ -109,6 +108,11 @@ from .autopilot.learn_suggested_flow import (
 from .autopilot.auto_answer_flow import (
     AutoAnswerQueryDeps,
     query_auto_answer_to_hands,
+)
+from .autopilot.mind_call_flow import (
+    MindCallDeps,
+    MindCallState,
+    run_mind_call,
 )
 from .autopilot.ask_user_flow import (
     AskUserAutoAnswerAttemptDeps,
@@ -617,50 +621,6 @@ def run_autopilot(
             learn_suggested_records_this_run.append(rec)
         return list(applied_claim_ids)
 
-    def _log_mind_error(
-        *,
-        batch_id: str,
-        schema_filename: str,
-        tag: str,
-        error: str,
-        mind_transcript_ref: str,
-    ) -> None:
-        evw.append(
-            {
-                "kind": "mind_error",
-                "batch_id": batch_id,
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "schema_filename": str(schema_filename),
-                "tag": str(tag),
-                "mind_transcript_ref": str(mind_transcript_ref or ""),
-                "error": _truncate(str(error or ""), 2000),
-            }
-        )
-
-    def _log_mind_circuit_open(
-        *,
-        batch_id: str,
-        schema_filename: str,
-        tag: str,
-        error: str,
-    ) -> None:
-        evw.append(
-            {
-                "kind": "mind_circuit",
-                "batch_id": batch_id,
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "state": "open",
-                "threshold": mind_circuit_threshold,
-                "failures_total": mind_failures_total,
-                "failures_consecutive": mind_failures_consecutive,
-                "schema_filename": str(schema_filename),
-                "tag": str(tag),
-                "error": _truncate(str(error or ""), 2000),
-            }
-        )
-
     def _mind_call(
         *,
         schema_filename: str,
@@ -677,64 +637,30 @@ def run_autopilot(
 
         nonlocal mind_failures_total, mind_failures_consecutive, mind_circuit_open
 
-        if mind_circuit_open:
-            return None, "", "skipped"
-
-        try:
-            res = llm.call(schema_filename=schema_filename, prompt=prompt, tag=tag)
-            obj = getattr(res, "obj", None)
-            tp = getattr(res, "transcript_path", None)
-            mind_ref = str(tp) if tp else ""
-            mind_failures_consecutive = 0
-            return (obj if isinstance(obj, dict) else None), mind_ref, "ok"
-        except Exception as e:
-            mind_ref = ""
-
-            tp = getattr(e, "transcript_path", None)
-            if isinstance(tp, Path):
-                mind_ref = str(tp)
-            elif isinstance(tp, str) and tp.strip():
-                mind_ref = tp.strip()
-            elif isinstance(e, MindCallError) and e.transcript_path:
-                mind_ref = str(e.transcript_path)
-
-            mind_failures_total += 1
-            mind_failures_consecutive += 1
-
-            _log_mind_error(
-                batch_id=batch_id,
-                schema_filename=schema_filename,
-                tag=tag,
-                error=str(e),
-                mind_transcript_ref=mind_ref,
-            )
-            evidence_window.append(
-                {
-                    "kind": "mind_error",
-                    "batch_id": batch_id,
-                    "schema_filename": schema_filename,
-                    "tag": tag,
-                    "error": _truncate(str(e), 400),
-                }
-            )
-            evidence_window[:] = evidence_window[-8:]
-
-            if not mind_circuit_open and mind_failures_consecutive >= mind_circuit_threshold:
-                mind_circuit_open = True
-                _log_mind_circuit_open(batch_id=batch_id, schema_filename=schema_filename, tag=tag, error=str(e))
-                evidence_window.append(
-                    {
-                        "kind": "mind_circuit",
-                        "batch_id": batch_id,
-                        "state": "open",
-                        "threshold": mind_circuit_threshold,
-                        "failures_consecutive": mind_failures_consecutive,
-                        "note": "opened due to repeated mind_error",
-                    }
-                )
-                evidence_window[:] = evidence_window[-8:]
-
-            return None, mind_ref, "error"
+        res = run_mind_call(
+            state=MindCallState(
+                failures_total=mind_failures_total,
+                failures_consecutive=mind_failures_consecutive,
+                circuit_open=mind_circuit_open,
+            ),
+            thread_id=str(thread_id or ""),
+            batch_id=batch_id,
+            schema_filename=schema_filename,
+            prompt=prompt,
+            tag=tag,
+            threshold=mind_circuit_threshold,
+            evidence_window=evidence_window,
+            deps=MindCallDeps(
+                llm_call=llm.call,
+                evidence_append=evw.append,
+                now_ts=now_rfc3339,
+                truncate=_truncate,
+            ),
+        )
+        mind_failures_total = int(res.next_state.failures_total)
+        mind_failures_consecutive = int(res.next_state.failures_consecutive)
+        mind_circuit_open = bool(res.next_state.circuit_open)
+        return res.obj if isinstance(res.obj, dict) else None, str(res.mind_transcript_ref or ""), str(res.state or "")
 
     def _segment_add(obj: dict[str, Any]) -> None:
         add_segment_record(

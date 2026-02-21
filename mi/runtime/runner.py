@@ -62,6 +62,11 @@ from .autopilot import (
     BatchPredecideDeps,
     run_batch_predecide,
 )
+from .autopilot.services import (
+    find_testless_strategy_claim,
+    parse_testless_strategy_from_claim_text,
+    upsert_testless_strategy_claim,
+)
 from .prompts import (
     checkpoint_decide_prompt,
     decide_next_prompt,
@@ -93,7 +98,6 @@ from ..thoughtdb.context import build_decide_next_thoughtdb_context
 from .injection import build_light_injection
 from ..thoughtdb import ThoughtDbStore, claim_signature
 from ..thoughtdb.operational_defaults import ensure_operational_defaults_claims_current, resolve_operational_defaults
-from ..thoughtdb.pins import TESTLESS_STRATEGY_TAG
 from ..project.overlay_store import load_project_overlay, write_project_overlay
 
 
@@ -866,116 +870,21 @@ def run_autopilot(
         _segment_add(rec)
         _persist_segment_state()
 
-    _TLS_PREFIX = "When this project has no tests, use this verification strategy:"
-
-    def _testless_strategy_claim_text(strategy: str) -> str:
-        s = " ".join((strategy or "").strip().split())
-        if not s:
-            return ""
-        return f"{_TLS_PREFIX} {s}"
-
     def _parse_testless_strategy_from_claim_text(text: str) -> str:
-        t = (text or "").strip()
-        if not t:
-            return ""
-        if t.startswith(_TLS_PREFIX):
-            return t[len(_TLS_PREFIX) :].strip()
-        return t
+        return parse_testless_strategy_from_claim_text(text)
 
     def _find_testless_strategy_claim(*, as_of_ts: str) -> dict[str, Any] | None:
-        """Return the active project-scoped testless strategy preference claim (best-effort)."""
-        v = tdb.load_view(scope="project")
-        for c in v.iter_claims(include_inactive=False, include_aliases=False, as_of_ts=as_of_ts):
-            if not isinstance(c, dict):
-                continue
-            ct = str(c.get("claim_type") or "").strip()
-            if ct not in ("preference", "goal"):
-                continue
-            tags = c.get("tags") if isinstance(c.get("tags"), list) else []
-            tagset = {str(x).strip() for x in tags if str(x).strip()}
-            if TESTLESS_STRATEGY_TAG in tagset:
-                return c
-        return None
+        return find_testless_strategy_claim(tdb=tdb, as_of_ts=as_of_ts)
 
     def _upsert_testless_strategy_claim(*, strategy_text: str, source_event_id: str, source: str, rationale: str) -> str:
-        """Create/update the project-scoped testless verification strategy as a preference Claim.
-
-        If an existing tagged claim exists with a different text, supersede it.
-        """
-        s = (strategy_text or "").strip()
-        if not s:
-            return ""
-
-        text = _testless_strategy_claim_text(s)
-        if not text:
-            return ""
-
-        as_of = now_rfc3339()
-        existing = _find_testless_strategy_claim(as_of_ts=as_of)
-        existing_id = str(existing.get("claim_id") or "").strip() if isinstance(existing, dict) else ""
-        existing_text = str(existing.get("text") or "").strip() if isinstance(existing, dict) else ""
-        if existing_id and existing_text == text:
-            return existing_id
-
-        pid = project_paths.project_id
-        sig = claim_signature(claim_type="preference", scope="project", project_id=pid, text=text)
-        sig_map = tdb.existing_signature_map(scope="project")
-        if sig in sig_map:
-            cid0 = str(sig_map[sig])
-            # If a different tagged strategy exists, still connect it for evolution tracking.
-            if existing_id and existing_id != cid0 and source_event_id:
-                try:
-                    tdb.append_edge(
-                        edge_type="supersedes",
-                        from_id=existing_id,
-                        to_id=cid0,
-                        scope="project",
-                        visibility="project",
-                        source_event_ids=[source_event_id],
-                        notes="testless strategy dedupe",
-                    )
-                except Exception:
-                    pass
-            return cid0
-
-        tags = [TESTLESS_STRATEGY_TAG, "mi:verify", "mi:testless", f"mi:source:{(source or '').strip() or 'unknown'}"]
-        note = (rationale or "").strip()
-        if note:
-            note = f"{note} (source={source})"
-        else:
-            note = f"source={source}"
-
-        try:
-            cid = tdb.append_claim_create(
-                claim_type="preference",
-                text=text,
-                scope="project",
-                visibility="project",
-                valid_from=None,
-                valid_to=None,
-                tags=tags,
-                source_event_ids=([str(source_event_id).strip()] if str(source_event_id or "").strip() else []),
-                confidence=1.0,
-                notes=note,
-            )
-        except Exception:
-            return ""
-
-        if existing_id and source_event_id:
-            try:
-                tdb.append_edge(
-                    edge_type="supersedes",
-                    from_id=existing_id,
-                    to_id=cid,
-                    scope="project",
-                    visibility="project",
-                    source_event_ids=[source_event_id],
-                    notes="update testless verification strategy",
-                )
-            except Exception:
-                pass
-
-        return cid
+        return upsert_testless_strategy_claim(
+            tdb=tdb,
+            project_id=project_paths.project_id,
+            strategy_text=strategy_text,
+            source_event_id=source_event_id,
+            source=source,
+            rationale=rationale,
+        )
 
     def _ensure_testless_strategy_claim_current() -> None:
         """Unify testless verification strategy storage via Thought DB.

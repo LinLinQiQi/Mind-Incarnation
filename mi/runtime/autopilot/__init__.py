@@ -19,12 +19,23 @@ from .run_deps import RunDeps
 from .hands_flow import HandsFlowDeps, run_hands_batch
 from .run_context import RunContext, RunMutableState
 from .run_engine import RunEngineDeps, run_autopilot_engine
+from .contracts import AutopilotState, StateMachineState, TransitionResult
+from .state_machine import StateMachineTrace, run_state_machine_loop, compact_transition_trace
 from .decide_flow import DecidePhaseDeps, run_decide_next_phase
 from .checks_flow import PlanChecksAutoAnswerDeps, run_plan_checks_and_auto_answer
 from .risk_flow import WorkflowRiskPhaseDeps, run_workflow_and_risk_phase
 from .extract_flow import ExtractEvidenceDeps, run_extract_evidence_phase
 from .preaction_flow import PreactionPhaseDeps, run_preaction_phase
 from .predecide_flow import BatchPredecideDeps, BatchPredecideResult, run_batch_predecide
+from .services import (
+    ChecksService,
+    RiskService,
+    WorkflowService,
+    LearnService,
+    MemoryRecallService,
+    DecideService,
+    EvidenceService,
+)
 
 __all__ = [
     "AutopilotResult",
@@ -70,6 +81,19 @@ __all__ = [
     "RunMutableState",
     "RunEngineDeps",
     "run_autopilot_engine",
+    "AutopilotState",
+    "StateMachineState",
+    "TransitionResult",
+    "StateMachineTrace",
+    "run_state_machine_loop",
+    "compact_transition_trace",
+    "ChecksService",
+    "RiskService",
+    "WorkflowService",
+    "LearnService",
+    "MemoryRecallService",
+    "DecideService",
+    "EvidenceService",
     "DecidePhaseDeps",
     "run_decide_next_phase",
     "PlanChecksAutoAnswerDeps",

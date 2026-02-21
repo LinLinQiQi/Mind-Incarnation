@@ -120,6 +120,11 @@ from .autopilot.recall_flow import (
     RecallDeps,
     maybe_cross_project_recall_write_through as run_cross_project_recall_write_through,
 )
+from .autopilot.interaction_record_flow import (
+    InteractionRecordDeps,
+    append_auto_answer_record_with_tracking as run_append_auto_answer_record,
+    append_user_input_record_with_tracking as run_append_user_input_record,
+)
 from .autopilot.ask_user_flow import (
     AskUserAutoAnswerAttemptDeps,
     AskUserRedecideDeps,
@@ -1402,47 +1407,45 @@ def run_autopilot(
         """Append user input evidence and keep segment/evidence windows in sync."""
 
         nonlocal evidence_window
-        ui = evw.append(
-            {
-                "kind": "user_input",
-                "batch_id": str(batch_id),
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "question": question,
-                "answer": answer,
-            }
+        return run_append_user_input_record(
+            batch_id=str(batch_id),
+            question=question,
+            answer=answer,
+            evidence_window=evidence_window,
+            deps=InteractionRecordDeps(
+                evidence_append=evw.append,
+                append_window=append_evidence_window,
+                append_segment_record=lambda item: segment_add_and_persist(
+                    segment_add=_segment_add,
+                    persist_segment_state=_persist_segment_state,
+                    item=item,
+                ),
+                now_ts=now_rfc3339,
+                thread_id=thread_id,
+            ),
         )
-        append_evidence_window(
-            evidence_window,
-            {"kind": "user_input", "batch_id": str(batch_id), "event_id": ui.get("event_id"), "question": question, "answer": answer},
-        )
-        segment_add_and_persist(segment_add=_segment_add, persist_segment_state=_persist_segment_state, item=ui)
-        return ui
 
     def _append_auto_answer_record(*, batch_id: str, mind_transcript_ref: str, auto_answer: dict[str, Any]) -> dict[str, Any]:
         """Append auto_answer evidence and keep segment/evidence windows in sync."""
 
         nonlocal evidence_window
-        rec = evw.append(
-            {
-                "kind": "auto_answer",
-                "batch_id": str(batch_id),
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "mind_transcript_ref": str(mind_transcript_ref or ""),
-                "auto_answer": auto_answer if isinstance(auto_answer, dict) else {},
-            }
+        return run_append_auto_answer_record(
+            batch_id=str(batch_id),
+            mind_transcript_ref=str(mind_transcript_ref or ""),
+            auto_answer=auto_answer if isinstance(auto_answer, dict) else {},
+            evidence_window=evidence_window,
+            deps=InteractionRecordDeps(
+                evidence_append=evw.append,
+                append_window=append_evidence_window,
+                append_segment_record=lambda item: segment_add_and_persist(
+                    segment_add=_segment_add,
+                    persist_segment_state=_persist_segment_state,
+                    item=item,
+                ),
+                now_ts=now_rfc3339,
+                thread_id=thread_id,
+            ),
         )
-        append_evidence_window(
-            evidence_window,
-            {"kind": "auto_answer", "batch_id": str(batch_id), "event_id": rec.get("event_id"), **(auto_answer if isinstance(auto_answer, dict) else {})},
-        )
-        segment_add_and_persist(
-            segment_add=_segment_add,
-            persist_segment_state=_persist_segment_state,
-            item={"kind": "auto_answer", "batch_id": str(batch_id), "event_id": rec.get("event_id"), **(auto_answer if isinstance(auto_answer, dict) else {})},
-        )
-        return rec
 
     def _handle_decide_next_missing(
         *,

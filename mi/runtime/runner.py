@@ -27,8 +27,40 @@ from .autopilot import (
     _observe_repo,
     _should_plan_checks,
     _truncate,
+    apply_workflow_progress_output,
+    BatchExecutionContext,
+    append_evidence_window,
+    segment_add_and_persist,
+    extract_evidence_counts,
+    build_risk_fallback,
+    should_prompt_risk_user,
+    PreactionDecision,
+    join_hands_inputs,
+    compose_check_plan_log,
+    compose_auto_answer_log,
+    load_active_workflow,
+    match_workflow_for_task,
     maybe_run_learn_update_on_run_end,
     maybe_run_why_trace_on_run_end,
+    summarize_thought_db_context,
+    workflow_step_ids,
+    RunState,
+    RunDeps,
+    HandsFlowDeps,
+    run_hands_batch,
+    DecidePhaseDeps,
+    run_decide_next_phase,
+    PlanChecksAutoAnswerDeps,
+    run_plan_checks_and_auto_answer,
+    WorkflowRiskPhaseDeps,
+    run_workflow_and_risk_phase,
+    RunMutableState,
+    RunEngineDeps,
+    run_autopilot_engine,
+    ExtractEvidenceDeps,
+    PreactionPhaseDeps,
+    BatchPredecideDeps,
+    run_batch_predecide,
 )
 from .prompts import (
     checkpoint_decide_prompt,
@@ -198,48 +230,7 @@ def run_autopilot(
 
     # Workflow trigger routing (effective): if an enabled workflow (project or global) matches the task,
     # inject it into the very first batch input (lightweight; no step slicing).
-    def _match_workflow_for_task(task_text: str) -> dict[str, Any] | None:
-        t = (task_text or "").lower()
-        best: dict[str, Any] | None = None
-        best_score = -1
-        for w in wf_registry.enabled_workflows_effective(overlay=overlay):
-            if not isinstance(w, dict):
-                continue
-            trig = w.get("trigger") if isinstance(w.get("trigger"), dict) else {}
-            mode = str(trig.get("mode") or "").strip()
-            pat = str(trig.get("pattern") or "").strip()
-            if mode != "task_contains" or not pat:
-                continue
-            if pat.lower() not in t:
-                continue
-            score = len(pat)
-            if score > best_score:
-                best = w
-                best_score = score
-        return best
-
-    def _workflow_step_ids(workflow: dict[str, Any]) -> list[str]:
-        ids: list[str] = []
-        for s in workflow.get("steps") if isinstance(workflow.get("steps"), list) else []:
-            if not isinstance(s, dict):
-                continue
-            sid = str(s.get("id") or "").strip()
-            if sid:
-                ids.append(sid)
-        return ids
-
-    def _active_workflow() -> dict[str, Any] | None:
-        if not bool(workflow_run.get("active", False)):
-            return None
-        wid = str(workflow_run.get("workflow_id") or "").strip()
-        if not wid:
-            return None
-        try:
-            return wf_registry.load_effective(wid)
-        except Exception:
-            return None
-
-    matched = _match_workflow_for_task(task)
+    matched = match_workflow_for_task(task_text=task, workflows=wf_registry.enabled_workflows_effective(overlay=overlay))
     if matched:
         wid = str(matched.get("id") or "").strip()
         name = str(matched.get("name") or "").strip()
@@ -247,7 +238,7 @@ def run_autopilot(
         pat = str(trig.get("pattern") or "").strip()
         # Best-effort workflow cursor: internal only. It does NOT impose step-by-step reporting.
         # The cursor is used to provide next-step context to Mind prompts.
-        step_ids = _workflow_step_ids(matched)
+        step_ids = workflow_step_ids(matched)
         workflow_run.clear()
         workflow_run.update(
             {
@@ -2596,180 +2587,205 @@ def run_autopilot(
         notes = reason
         return True
 
-    last_evidence_rec: dict[str, Any] | None = None
-    last_decide_next_rec: dict[str, Any] | None = None
+    def _append_user_input_record(*, batch_id: str, question: str, answer: str) -> dict[str, Any]:
+        """Append user input evidence and keep segment/evidence windows in sync."""
 
-    executed_batches = 0
-    last_batch_id = ""
-    max_batches_exhausted = False
-    for batch_idx in range(max_batches):
-        batch_id = f"b{batch_idx}"
-        last_batch_id = batch_id
-        batch_ts = now_rfc3339().replace(":", "").replace("-", "")
-        hands_transcript = project_paths.transcripts_dir / "hands" / f"{batch_ts}_b{batch_idx}.jsonl"
-
-        light = build_light_injection(tdb=tdb, as_of_ts=now_rfc3339())
-        batch_input = next_input.strip()
-        hands_prompt = light + "\n" + batch_input + "\n"
-        sent_ts = now_rfc3339()
-        prompt_sha256 = hashlib.sha256(hands_prompt.encode("utf-8")).hexdigest()
-
-        use_resume = thread_id is not None and hands_resume is not None and thread_id != "unknown"
-        attempted_overlay_resume = bool(use_resume and resumed_from_overlay and batch_idx == 0)
-
-        _emit_prefixed(
-            "[mi]",
-            f"batch_start {batch_id} provider={(cur_provider or 'codex')} mode={('resume' if use_resume else 'exec')} thread_id={(thread_id or '')} transcript={hands_transcript}",
-        )
-        if not bool(no_mi_prompt):
-            _emit_prefixed("[mi->hands]", "--- light_injection ---")
-            _emit_prefixed("[mi->hands]", light.rstrip("\n"))
-            _emit_prefixed("[mi->hands]", "--- batch_input ---")
-            _emit_prefixed("[mi->hands]", batch_input.rstrip("\n"))
-
-        if not use_resume:
-            result = hands_exec(
-                prompt=hands_prompt,
-                project_root=project_path,
-                transcript_path=hands_transcript,
-                full_auto=True,
-                sandbox=None,
-                output_schema_path=None,
-                interrupt=interrupt_cfg,
-            )
-        else:
-            result = hands_resume(
-                thread_id=thread_id,
-                prompt=hands_prompt,
-                project_root=project_path,
-                transcript_path=hands_transcript,
-                full_auto=True,
-                sandbox=None,
-                output_schema_path=None,
-                interrupt=interrupt_cfg,
-            )
-
-            # If we resumed using a persisted thread id and it failed, fall back to a fresh exec.
-            if attempted_overlay_resume and int(getattr(result, "exit_code", 0) or 0) != 0:
-                evw.append(
-                    {
-                        "kind": "hands_resume_failed",
-                        "batch_id": batch_id,
-                        "ts": now_rfc3339(),
-                        "thread_id": thread_id,
-                        "provider": cur_provider,
-                        "exit_code": getattr(result, "exit_code", None),
-                        "notes": "resume failed; falling back to exec",
-                        "transcript_path": str(hands_transcript),
-                    }
-                )
-                hands_transcript = project_paths.transcripts_dir / "hands" / f"{batch_ts}_b{batch_idx}_exec_after_resume_fail.jsonl"
-                result = hands_exec(
-                    prompt=hands_prompt,
-                    project_root=project_path,
-                    transcript_path=hands_transcript,
-                    full_auto=True,
-                    sandbox=None,
-                    output_schema_path=None,
-                    interrupt=interrupt_cfg,
-                )
-
-        # Prefer a non-unknown thread id when available.
-        res_tid = str(getattr(result, "thread_id", "") or "")
-        if res_tid and res_tid != "unknown":
-            thread_id = res_tid
-        elif thread_id is None:
-            thread_id = res_tid or "unknown"
-
-        executed_batches += 1
-        _emit_prefixed("[mi]", f"hands_done {batch_id} exit_code={getattr(result, 'exit_code', None)} thread_id={thread_id}")
-
-        # Persist last seen Hands thread id so future `mi run --continue-hands` can resume.
-        if thread_id and thread_id != "unknown":
-            hands_state = overlay.get("hands_state") if isinstance(overlay.get("hands_state"), dict) else {}
-            if not isinstance(hands_state, dict):
-                hands_state = {}
-                overlay["hands_state"] = hands_state
-            if cur_provider:
-                hands_state["provider"] = cur_provider
-            if str(hands_state.get("thread_id") or "") != thread_id or not str(hands_state.get("updated_ts") or ""):
-                hands_state["thread_id"] = thread_id
-                hands_state["updated_ts"] = now_rfc3339()
-                write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-
-        # Persist exactly what MI sent to Hands (transparency + later audit).
-        evw.append(
+        nonlocal evidence_window
+        ui = evw.append(
             {
-                "kind": "hands_input",
-                "batch_id": batch_id,
-                "ts": sent_ts,
-                "thread_id": thread_id or result.thread_id,
-                "transcript_path": str(hands_transcript),
-                "input": batch_input,
-                "light_injection": light,
-                "prompt_sha256": prompt_sha256,
+                "kind": "user_input",
+                "batch_id": str(batch_id),
+                "ts": now_rfc3339(),
+                "thread_id": thread_id,
+                "question": question,
+                "answer": answer,
             }
         )
+        append_evidence_window(
+            evidence_window,
+            {"kind": "user_input", "batch_id": str(batch_id), "event_id": ui.get("event_id"), "question": question, "answer": answer},
+        )
+        segment_add_and_persist(segment_add=_segment_add, persist_segment_state=_persist_segment_state, item=ui)
+        return ui
 
-        repo_obs = _observe_repo(project_path)
+    def _append_auto_answer_record(*, batch_id: str, mind_transcript_ref: str, auto_answer: dict[str, Any]) -> dict[str, Any]:
+        """Append auto_answer evidence and keep segment/evidence windows in sync."""
 
-        # Evidence extraction (LLM) from machine summary.
-        summary = _batch_summary(result)
-        extract_prompt = extract_evidence_prompt(
+        nonlocal evidence_window
+        rec = evw.append(
+            {
+                "kind": "auto_answer",
+                "batch_id": str(batch_id),
+                "ts": now_rfc3339(),
+                "thread_id": thread_id,
+                "mind_transcript_ref": str(mind_transcript_ref or ""),
+                "auto_answer": auto_answer if isinstance(auto_answer, dict) else {},
+            }
+        )
+        append_evidence_window(
+            evidence_window,
+            {"kind": "auto_answer", "batch_id": str(batch_id), "event_id": rec.get("event_id"), **(auto_answer if isinstance(auto_answer, dict) else {})},
+        )
+        segment_add_and_persist(
+            segment_add=_segment_add,
+            persist_segment_state=_persist_segment_state,
+            item={"kind": "auto_answer", "batch_id": str(batch_id), "event_id": rec.get("event_id"), **(auto_answer if isinstance(auto_answer, dict) else {})},
+        )
+        return rec
+
+    def _handle_decide_next_missing(
+        *,
+        batch_idx: int,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        tdb_ctx_obj: dict[str, Any],
+        decision_state: str,
+    ) -> bool:
+        """Fallback when decide_next fails/skips."""
+
+        nonlocal status, notes
+        ask_when_uncertain = bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain)
+        if ask_when_uncertain:
+            if decision_state == "skipped":
+                if _looks_like_user_question(hands_last):
+                    q = hands_last.strip()
+                else:
+                    q = "MI Mind circuit is OPEN (repeated failures). Provide the next instruction to send to Hands, or type 'stop' to end:"
+            else:
+                q = "MI Mind failed to decide next action. Provide next instruction to send to Hands, or type 'stop' to end:"
+            override = _read_user_answer(q)
+            _append_user_input_record(batch_id=f"b{batch_idx}", question=q, answer=override)
+
+            ov = (override or "").strip()
+            if not ov or ov.lower() in ("stop", "quit", "q"):
+                status = "blocked"
+                notes = "stopped after mind_circuit_open(decide_next)" if decision_state == "skipped" else "stopped after mind_error(decide_next)"
+                return False
+            if not _queue_next_input(
+                nxt=ov,
+                hands_last_message=hands_last,
+                batch_id=f"b{batch_idx}",
+                reason="mind_circuit_open(decide_next): user override" if decision_state == "skipped" else "mind_error(decide_next): user override",
+                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                thought_db_context=tdb_ctx_obj,
+                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+            ):
+                return False
+            return True
+
+        status = "blocked"
+        notes = (
+            "mind_circuit_open(decide_next): could not proceed (ask_when_uncertain=false)"
+            if decision_state == "skipped"
+            else "mind_error(decide_next): could not proceed (ask_when_uncertain=false)"
+        )
+        return False
+
+    def _ask_user_auto_answer_attempt(
+        *,
+        batch_idx: int,
+        q: str,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        tdb_ctx_obj: dict[str, Any],
+        batch_suffix: str,
+        tag_suffix: str,
+        queue_reason: str,
+        note_skipped: str,
+        note_error: str,
+    ) -> tuple[bool | None, str]:
+        """Try one auto_answer attempt for an ask_user question.
+
+        Returns:
+        - (True/False, q): immediate batch result when an instruction was queued (or queue failed)
+        - (None, q): no immediate queue; caller may continue and possibly ask user
+        """
+
+        nonlocal evidence_window
+
+        if not q:
+            return None, q
+
+        tdb_ctx_aa = build_decide_next_thoughtdb_context(
+            tdb=tdb,
+            as_of_ts=now_rfc3339(),
+            task=task,
+            hands_last_message=q,
+            recent_evidence=evidence_window,
+            mem=mem.service,
+        )
+        tdb_ctx_aa_obj = tdb_ctx_aa.to_prompt_obj()
+        aa_prompt = auto_answer_to_hands_prompt(
             task=task,
             hands_provider=cur_provider,
-            light_injection=light,
-            batch_input=batch_input,
-            hands_batch_summary=summary,
-            repo_observation=repo_obs,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay,
+            thought_db_context=tdb_ctx_aa_obj,
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+            recent_evidence=evidence_window,
+            hands_last_message=q,
         )
-        evidence_obj, evidence_mind_ref, evidence_state = _mind_call(
-            schema_filename="extract_evidence.json",
-            prompt=extract_prompt,
-            tag=f"extract_b{batch_idx}",
-            batch_id=batch_id,
+        aa_obj, aa_ref, aa_state = _mind_call(
+            schema_filename="auto_answer_to_hands.json",
+            prompt=aa_prompt,
+            tag=f"{tag_suffix}_b{batch_idx}",
+            batch_id=f"b{batch_idx}.{batch_suffix}",
         )
-        if evidence_obj is None:
-            if evidence_state == "skipped":
-                evidence_obj = _empty_evidence_obj(note="mind_circuit_open: extract_evidence skipped")
+
+        aa_out = _empty_auto_answer()
+        if aa_obj is None:
+            if aa_state == "skipped":
+                aa_out["notes"] = note_skipped
             else:
-                evidence_obj = _empty_evidence_obj(note="mind_error: extract_evidence failed; see EvidenceLog kind=mind_error")
-
-        if isinstance(evidence_obj, dict):
-            facts_n = len(evidence_obj.get("facts") or []) if isinstance(evidence_obj.get("facts"), list) else 0
-            actions_n = len(evidence_obj.get("actions") or []) if isinstance(evidence_obj.get("actions"), list) else 0
-            results_n = len(evidence_obj.get("results") or []) if isinstance(evidence_obj.get("results"), list) else 0
-            unknowns_n = len(evidence_obj.get("unknowns") or []) if isinstance(evidence_obj.get("unknowns"), list) else 0
-            risk_n = len(evidence_obj.get("risk_signals") or []) if isinstance(evidence_obj.get("risk_signals"), list) else 0
+                aa_out["notes"] = note_error
         else:
-            facts_n = actions_n = results_n = unknowns_n = risk_n = 0
-        _emit_prefixed(
-            "[mi]",
-            f"extract_evidence state={str(evidence_state or '')} facts={facts_n} actions={actions_n} results={results_n} unknowns={unknowns_n} risk_signals={risk_n}",
-        )
-        evidence_item = {
-            "kind": "evidence",
-            "batch_id": batch_id,
-            "ts": now_rfc3339(),
-            "thread_id": thread_id,
-            "hands_transcript_ref": str(hands_transcript),
-            "mind_transcript_ref": evidence_mind_ref,
-            "mi_input": batch_input,
-            "transcript_observation": summary.get("transcript_observation") or {},
-            "repo_observation": repo_obs,
-            **evidence_obj,
-        }
-        evidence_rec = evw.append(evidence_item)
-        last_evidence_rec = evidence_rec
-        evidence_window.append(evidence_rec)
-        evidence_window = evidence_window[-8:]
-        _segment_add(evidence_rec)
-        _persist_segment_state()
+            aa_out = aa_obj
 
-        # Canonical values/preferences context: Thought DB subgraph (deterministic, small budget).
-        # Used for Mind prompt-pack calls in this batch; Hands light injection is handled separately.
-        hands_last = result.last_agent_message()
-        tdb_ctx_batch = build_decide_next_thoughtdb_context(
+        _append_auto_answer_record(
+            batch_id=f"b{batch_idx}.{batch_suffix}",
+            mind_transcript_ref=aa_ref,
+            auto_answer=aa_out if isinstance(aa_out, dict) else {},
+        )
+
+        aa_text = ""
+        if isinstance(aa_out, dict) and bool(aa_out.get("should_answer", False)):
+            aa_text = str(aa_out.get("hands_answer_input") or "").strip()
+        chk_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
+        combined = join_hands_inputs(aa_text, chk_text)
+        if combined:
+            queued = _queue_next_input(
+                nxt=combined,
+                hands_last_message=hands_last,
+                batch_id=f"b{batch_idx}.{batch_suffix}",
+                reason=queue_reason,
+                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                thought_db_context=tdb_ctx_obj,
+                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+            )
+            return (True if queued else False), q
+
+        if isinstance(aa_out, dict) and bool(aa_out.get("needs_user_input", False)):
+            q2 = str(aa_out.get("ask_user_question") or "").strip()
+            if q2:
+                q = q2
+        return None, q
+
+    def _ask_user_redecide_with_input(
+        *,
+        batch_idx: int,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        answer: str,
+    ) -> bool:
+        """Re-decide after collecting user input (no extra Hands run before decision)."""
+
+        nonlocal status, notes, last_decide_next_rec, evidence_window
+
+        tdb_ctx2 = build_decide_next_thoughtdb_context(
             tdb=tdb,
             as_of_ts=now_rfc3339(),
             task=task,
@@ -2777,462 +2793,187 @@ def run_autopilot(
             recent_evidence=evidence_window,
             mem=mem.service,
         )
-        tdb_ctx_batch_obj = tdb_ctx_batch.to_prompt_obj()
-
-        # Best-effort workflow progress: infer which workflow steps are completed and what the next step is.
-        active_wf = _active_workflow()
-        if isinstance(active_wf, dict) and active_wf:
-            latest_evidence = {
-                "batch_id": batch_id,
-                "facts": evidence_obj.get("facts") if isinstance(evidence_obj, dict) else [],
-                "actions": evidence_obj.get("actions") if isinstance(evidence_obj, dict) else [],
-                "results": evidence_obj.get("results") if isinstance(evidence_obj, dict) else [],
-                "unknowns": evidence_obj.get("unknowns") if isinstance(evidence_obj, dict) else [],
-                "risk_signals": evidence_obj.get("risk_signals") if isinstance(evidence_obj, dict) else [],
-                "repo_observation": repo_obs,
-                "transcript_observation": summary.get("transcript_observation") or {},
-            }
-            wf_prog_prompt = workflow_progress_prompt(
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay,
-                thought_db_context=tdb_ctx_batch_obj,
-                workflow=active_wf,
-                workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-                latest_evidence=latest_evidence,
-                last_batch_input=batch_input,
-                hands_last_message=hands_last,
-            )
-            wf_prog_obj, wf_prog_ref, wf_prog_state = _mind_call(
-                schema_filename="workflow_progress.json",
-                prompt=wf_prog_prompt,
-                tag=f"wf_progress_b{batch_idx}",
-                batch_id=f"{batch_id}.workflow_progress",
-            )
-            evw.append(
-                {
-                    "kind": "workflow_progress",
-                    "batch_id": f"{batch_id}.workflow_progress",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "workflow_id": str(active_wf.get("id") or ""),
-                    "workflow_name": str(active_wf.get("name") or ""),
-                    "state": wf_prog_state,
-                    "mind_transcript_ref": wf_prog_ref,
-                    "output": wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
-                }
-            )
-
-            if isinstance(wf_prog_obj, dict) and bool(wf_prog_obj.get("should_update", False)):
-                step_allow = set(_workflow_step_ids(active_wf))
-                raw_done = wf_prog_obj.get("completed_step_ids") if isinstance(wf_prog_obj.get("completed_step_ids"), list) else []
-                done_ids: list[str] = []
-                seen_done: set[str] = set()
-                for x in raw_done:
-                    xs = str(x or "").strip()
-                    if not xs or xs in seen_done:
-                        continue
-                    if xs not in step_allow:
-                        continue
-                    seen_done.add(xs)
-                    done_ids.append(xs)
-
-                nxt = str(wf_prog_obj.get("next_step_id") or "").strip()
-                if nxt and nxt not in step_allow:
-                    nxt = ""
-                if not nxt:
-                    # Deterministic fallback: first step not marked done (list order).
-                    for sid in _workflow_step_ids(active_wf):
-                        if sid not in seen_done:
-                            nxt = sid
-                            break
-
-                workflow_run["version"] = str(workflow_run.get("version") or "v1")
-                workflow_run["active"] = bool(workflow_run.get("active", True))
-                workflow_run["workflow_id"] = str(active_wf.get("id") or workflow_run.get("workflow_id") or "")
-                workflow_run["workflow_name"] = str(active_wf.get("name") or workflow_run.get("workflow_name") or "")
-                if thread_id and thread_id != "unknown":
-                    workflow_run["thread_id"] = thread_id
-                workflow_run["completed_step_ids"] = done_ids
-                workflow_run["next_step_id"] = nxt
-                workflow_run["last_batch_id"] = batch_id
-                workflow_run["last_confidence"] = wf_prog_obj.get("confidence")
-                workflow_run["last_notes"] = str(wf_prog_obj.get("notes") or "").strip()
-                workflow_run["updated_ts"] = now_rfc3339()
-
-                should_close = bool(wf_prog_obj.get("should_close", False))
-                if should_close or not nxt:
-                    workflow_run["active"] = False
-                    workflow_run["close_reason"] = str(wf_prog_obj.get("close_reason") or "").strip()
-
-                overlay["workflow_run"] = workflow_run
-                write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-
-        # Post-hoc risk judgement (LLM) when heuristic signals are present.
-        risk_signals = _detect_risk_signals(result)
-        if not risk_signals and not (isinstance(getattr(result, "events", None), list) and result.events):
-            risk_signals = _detect_risk_signals_from_transcript(hands_transcript)
-        if risk_signals:
-            # On-demand recall: similar past risk decisions/preferences can reduce unnecessary prompting.
-            _maybe_cross_project_recall(
-                batch_id=f"{batch_id}.risk_recall",
-                reason="risk_signal",
-                query=(" ".join([str(x) for x in risk_signals if str(x).strip()]) + "\n" + task).strip(),
-            )
-            risk_prompt = risk_judge_prompt(
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay,
-                thought_db_context=tdb_ctx_batch_obj,
-                risk_signals=risk_signals,
-                hands_last_message=hands_last,
-            )
-            risk_obj, risk_mind_ref, risk_state = _mind_call(
-                schema_filename="risk_judge.json",
-                prompt=risk_prompt,
-                tag=f"risk_b{batch_idx}",
-                batch_id=batch_id,
-            )
-            if risk_obj is None:
-                # Conservative fallback when Mind cannot evaluate a risky signal.
-                cat = "other"
-                sev = "high"
-                for s in risk_signals:
-                    prefix = s.split(":", 1)[0].strip().lower()
-                    if prefix in ("network", "install", "push", "publish", "delete", "privilege"):
-                        cat = prefix
-                        break
-                if cat == "delete":
-                    sev = "critical"
-                risk_obj = {
-                    "category": cat,
-                    "severity": sev,
-                    "should_ask_user": True,
-                    "mitigation": [
-                        ("mind_circuit_open: risk_judge skipped; treat as high risk" if risk_state == "skipped" else "mind_error: risk_judge failed; treat as high risk")
-                    ],
-                    "learn_suggested": [],
-                }
-            risk_rec = evw.append(
-                {
-                    "kind": "risk_event",
-                    "batch_id": f"b{batch_idx}",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "risk_signals": risk_signals,
-                    "mind_transcript_ref": risk_mind_ref,
-                    "risk": risk_obj,
-                }
-            )
-            evidence_window.append({"kind": "risk_event", "batch_id": f"b{batch_idx}", "event_id": risk_rec.get("event_id"), **risk_obj})
-            evidence_window = evidence_window[-8:]
-            _segment_add(
-                {
-                    "kind": "risk_event",
-                    "batch_id": f"b{batch_idx}",
-                    "event_id": risk_rec.get("event_id"),
-                    "risk_signals": risk_signals,
-                    "category": risk_obj.get("category"),
-                    "severity": risk_obj.get("severity"),
-                }
-            )
-            _persist_segment_state()
-
-            # Learned tightening suggestions from risk_judge.
-            applied = _handle_learn_suggested(
-                learn_suggested=risk_obj.get("learn_suggested"),
-                batch_id=f"b{batch_idx}",
-                source="risk_judge",
-                mind_transcript_ref=risk_mind_ref,
-                source_event_ids=[str(risk_rec.get("event_id") or "").strip()],
-            )
-
-            # Optional immediate user escalation on high risk.
-            vr = runtime_cfg.get("violation_response") if isinstance(runtime_cfg.get("violation_response"), dict) else {}
-            ask_user = bool(vr.get("ask_user_on_high_risk", True))
-            severity = str(risk_obj.get("severity") or "low")
-            should_ask_user = bool(risk_obj.get("should_ask_user", False))
-            cat = str(risk_obj.get("category") or "other")
-
-            sev_list = vr.get("ask_user_risk_severities")
-            if isinstance(sev_list, list) and any(str(x).strip() for x in sev_list):
-                sev_allow = {str(x).strip() for x in sev_list if str(x).strip()}
-            else:
-                sev_allow = {"high", "critical"}
-
-            cat_list = vr.get("ask_user_risk_categories")
-            if isinstance(cat_list, list) and any(str(x).strip() for x in cat_list):
-                cat_allow = {str(x).strip() for x in cat_list if str(x).strip()}
-            else:
-                cat_allow = set()
-
-            respect_should = bool(vr.get("ask_user_respect_should_ask_user", True))
-            should_prompt = (
-                ask_user
-                and (severity in sev_allow)
-                and (not cat_allow or cat in cat_allow)
-                and (should_ask_user if respect_should else True)
-            )
-
-            if should_prompt:
-                mitig = risk_obj.get("mitigation") or []
-                mitig_s = "; ".join([str(x) for x in mitig if str(x).strip()][:3])
-                q = f"Risk action detected (category={cat}, severity={severity}). Continue? (y/N)\nMitigation: {mitig_s}"
-                answer = _read_user_answer(q)
-                if answer.strip().lower() not in ("y", "yes"):
-                    status = "blocked"
-                    notes = "stopped after risk event"
-                    break
-
-        repo_obs = evidence_item.get("repo_observation") or {}
-
-        # Plan minimal checks (LLM) only when uncertainty/risk/change suggests it.
-        should_plan_checks = _should_plan_checks(
-            summary=summary,
-            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
+        tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
+        tdb_ctx2_summary = summarize_thought_db_context(tdb_ctx2)
+        decision_prompt2 = decide_next_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay,
+            thought_db_context=tdb_ctx2_obj,
+            active_workflow=load_active_workflow(workflow_run=workflow_run, load_effective=wf_registry.load_effective),
+            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+            recent_evidence=evidence_window,
             hands_last_message=hands_last,
             repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+            auto_answer=_empty_auto_answer(),
         )
-        checks_obj, checks_mind_ref, _ = _plan_checks_and_record(
-            batch_id=batch_id,
-            tag=f"checks_b{batch_idx}",
-            thought_db_context=tdb_ctx_batch_obj,
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            should_plan=should_plan_checks,
-            notes_on_skip="skipped: no uncertainty/risk/question detected",
-            notes_on_skipped="skipped: mind_circuit_open (plan_min_checks)",
-            notes_on_error="mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error",
+        decision_obj2, decision2_mind_ref, decision2_state = _mind_call(
+            schema_filename="decide_next.json",
+            prompt=decision_prompt2,
+            tag=f"decide_after_user_b{batch_idx}",
+            batch_id=f"b{batch_idx}.after_user",
         )
-        if isinstance(checks_obj, dict):
-            _emit_prefixed(
-                "[mi]",
-                "plan_min_checks "
-                + f"should_run_checks={bool(checks_obj.get('should_run_checks', False))} "
-                + f"needs_testless_strategy={bool(checks_obj.get('needs_testless_strategy', False))}",
-            )
-
-        # Auto-answer Hands when it is asking the user questions; only ask the user if MI cannot answer.
-        auto_answer_obj = _empty_auto_answer()
-        if _looks_like_user_question(hands_last):
-            aa_prompt = auto_answer_to_hands_prompt(
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay,
-                thought_db_context=tdb_ctx_batch_obj,
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                recent_evidence=evidence_window,
+        if decision_obj2 is None:
+            chk_text2 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
+            combined_user2 = join_hands_inputs(answer.strip(), chk_text2)
+            if not _queue_next_input(
+                nxt=combined_user2,
                 hands_last_message=hands_last,
-            )
-            auto_answer_mind_ref = ""
-            aa_obj, auto_answer_mind_ref, aa_state = _mind_call(
-                schema_filename="auto_answer_to_hands.json",
-                prompt=aa_prompt,
-                tag=f"autoanswer_b{batch_idx}",
-                batch_id=batch_id,
-            )
-            if aa_obj is None:
-                auto_answer_obj = _empty_auto_answer()
-                if aa_state == "skipped":
-                    auto_answer_obj["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands)"
-                else:
-                    auto_answer_obj["notes"] = "mind_error: auto_answer_to_hands failed; see EvidenceLog kind=mind_error"
-            else:
-                auto_answer_obj = aa_obj
-            if isinstance(auto_answer_obj, dict):
-                cf = auto_answer_obj.get("confidence")
-                try:
-                    cf_s = f"{float(cf):.2f}" if cf is not None else ""
-                except Exception:
-                    cf_s = str(cf or "")
-                _emit_prefixed(
-                    "[mi]",
-                    "auto_answer_to_hands "
-                    + f"state={str(aa_state or '')} "
-                    + f"should_answer={bool(auto_answer_obj.get('should_answer', False))} "
-                    + f"needs_user_input={bool(auto_answer_obj.get('needs_user_input', False))} "
-                    + (f"confidence={cf_s}" if cf_s else ""),
-                )
-            aa_rec = evw.append(
-                {
-                    "kind": "auto_answer",
-                    "batch_id": f"b{batch_idx}",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "mind_transcript_ref": auto_answer_mind_ref,
-                    "auto_answer": auto_answer_obj,
-                }
-            )
-            evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}", "event_id": aa_rec.get("event_id"), **auto_answer_obj})
-            evidence_window = evidence_window[-8:]
-            _segment_add(
-                {
-                    "kind": "auto_answer",
-                    "batch_id": f"b{batch_idx}",
-                    "event_id": aa_rec.get("event_id"),
-                    **(auto_answer_obj if isinstance(auto_answer_obj, dict) else {}),
-                }
-            )
-            _persist_segment_state()
-
-        # Deterministic pre-action arbitration to minimize user burden:
-        # 1) If auto_answer requires user input -> ask user, then send answer to Hands (optionally with checks).
-        # 2) If minimal checks require a testless verification strategy and it hasn't been chosen -> ask once and persist.
-        # 3) If MI can answer Hands and/or run minimal checks -> send to Hands (skip decide_next for this iteration).
-        if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("needs_user_input", False)):
-            q = str(auto_answer_obj.get("ask_user_question") or "").strip() or hands_last.strip() or "Need more information:"
-            # Before asking the user, do a conservative cross-project recall and retry auto_answer once.
-            _maybe_cross_project_recall(
-                batch_id=f"b{batch_idx}.before_user_recall",
-                reason="before_ask_user",
-                query=(q + "\n" + task).strip(),
-            )
-            aa_retry = _empty_auto_answer()
-            aa_prompt_retry = auto_answer_to_hands_prompt(
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay,
-                thought_db_context=tdb_ctx_batch_obj,
+                batch_id=f"b{batch_idx}.after_user",
+                reason=(
+                    "mind_circuit_open(decide_next after user): send user answer"
+                    if decision2_state == "skipped"
+                    else "mind_error(decide_next after user): send user answer"
+                ),
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+                thought_db_context=tdb_ctx2_obj,
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                recent_evidence=evidence_window,
-                hands_last_message=q,
-            )
-            aa_obj_r, aa_r_ref, aa_r_state = _mind_call(
-                schema_filename="auto_answer_to_hands.json",
-                prompt=aa_prompt_retry,
-                tag=f"autoanswer_retry_after_recall_b{batch_idx}",
-                batch_id=f"b{batch_idx}.after_recall",
-            )
-            if aa_obj_r is None:
-                aa_retry = _empty_auto_answer()
-                if aa_r_state == "skipped":
-                    aa_retry["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands retry after recall)"
-                else:
-                    aa_retry["notes"] = "mind_error: auto_answer_to_hands retry failed; see EvidenceLog kind=mind_error"
-            else:
-                aa_retry = aa_obj_r
-            aa2_rec = evw.append(
-                {
-                    "kind": "auto_answer",
-                    "batch_id": f"b{batch_idx}.after_recall",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "mind_transcript_ref": aa_r_ref,
-                    "auto_answer": aa_retry,
-                }
-            )
-            evidence_window.append({"kind": "auto_answer", "batch_id": f"b{batch_idx}.after_recall", "event_id": aa2_rec.get("event_id"), **aa_retry})
-            evidence_window[:] = evidence_window[-8:]
-            _segment_add(
-                {
-                    "kind": "auto_answer",
-                    "batch_id": f"b{batch_idx}.after_recall",
-                    "event_id": aa2_rec.get("event_id"),
-                    **(aa_retry if isinstance(aa_retry, dict) else {}),
-                }
-            )
-            _persist_segment_state()
+            ):
+                return False
+            return True
 
-            aa_text2 = ""
-            if isinstance(aa_retry, dict) and bool(aa_retry.get("should_answer", False)):
-                aa_text2 = str(aa_retry.get("hands_answer_input") or "").strip()
-            if aa_text2:
-                check_text2 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
-                combined2 = "\n\n".join([x for x in [aa_text2, check_text2] if x])
-                if combined2:
-                    if not _queue_next_input(
-                        nxt=combined2,
-                        hands_last_message=hands_last,
-                        batch_id=f"b{batch_idx}.after_recall",
-                        reason="auto-answered after cross-project recall",
-                        repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                        thought_db_context=tdb_ctx_batch_obj,
-                        check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                    ):
-                        break
-                    continue
+        decision_obj_after_user = decision_obj2
+        decide_rec2 = _log_decide_next(
+            decision_obj=decision_obj_after_user,
+            batch_id=f"b{batch_idx}",
+            phase="after_user",
+            mind_transcript_ref=decision2_mind_ref,
+            thought_db_context_summary=tdb_ctx2_summary,
+        )
+        if isinstance(decide_rec2, dict) and str(decide_rec2.get("event_id") or "").strip():
+            last_decide_next_rec = decide_rec2
+        if decide_rec2:
+            segment_add_and_persist(segment_add=_segment_add, persist_segment_state=_persist_segment_state, item=decide_rec2)
 
-            if isinstance(aa_retry, dict) and bool(aa_retry.get("needs_user_input", False)):
-                q2 = str(aa_retry.get("ask_user_question") or "").strip()
-                if q2:
-                    q = q2
+        overlay_update = decision_obj_after_user.get("update_project_overlay") or {}
+        if isinstance(overlay_update, dict):
+            _apply_set_testless_strategy_overlay_update(
+                set_tls=overlay_update.get("set_testless_strategy"),
+                decide_event_id=str((decide_rec2 or {}).get("event_id") or ""),
+                fallback_batch_id=f"b{batch_idx}.after_user.set_testless",
+                default_rationale="decide_next(after_user) overlay update",
+                source="decide_next.after_user:set_testless_strategy",
+            )
 
-            answer = _read_user_answer(q)
-            if not answer:
+        _handle_learn_suggested(
+            learn_suggested=decision_obj_after_user.get("learn_suggested"),
+            batch_id=f"b{batch_idx}.after_user",
+            source="decide_next.after_user",
+            mind_transcript_ref=decision2_mind_ref,
+            source_event_ids=[str((decide_rec2 or {}).get("event_id") or "").strip()],
+        )
+
+        next_action = str(decision_obj_after_user.get("next_action") or "stop")
+        status = str(decision_obj_after_user.get("status") or "not_done")
+        notes = str(decision_obj_after_user.get("notes") or "")
+
+        if next_action == "stop":
+            return False
+        if next_action == "send_to_hands":
+            nxt = str(decision_obj_after_user.get("next_hands_input") or "").strip()
+            if not nxt:
                 status = "blocked"
-                notes = "user did not provide required input"
-                break
-            ui2 = evw.append(
-                {
-                    "kind": "user_input",
-                    "batch_id": f"b{batch_idx}",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "question": q,
-                    "answer": answer,
-                }
-            )
-            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "event_id": ui2.get("event_id"), "question": q, "answer": answer})
-            evidence_window = evidence_window[-8:]
-            _segment_add(ui2)
-            _persist_segment_state()
-
-            check_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
-            combined_user = "\n\n".join([x for x in [answer.strip(), check_text] if x])
+                notes = "decide_next returned send_to_hands without next_hands_input (after user input)"
+                return False
             if not _queue_next_input(
-                nxt=combined_user,
+                nxt=nxt,
                 hands_last_message=hands_last,
-                batch_id=f"b{batch_idx}",
-                reason="answered after user input",
+                batch_id=f"b{batch_idx}.after_user",
+                reason="send_to_hands after user input",
                 repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                thought_db_context=tdb_ctx_batch_obj,
+                thought_db_context=tdb_ctx2_obj,
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             ):
-                break
-            continue
+                return False
+            return True
 
-        checks_obj, block_reason = _resolve_tls_for_checks(
-            checks_obj=checks_obj if isinstance(checks_obj, dict) else _empty_check_plan(),
-            hands_last_message=hands_last,
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            user_input_batch_id=f"b{batch_idx}",
-            batch_id_after_testless=f"b{batch_idx}.after_testless",
-            batch_id_after_tls_claim=f"b{batch_idx}.after_tls_claim",
-            tag_after_testless=f"checks_after_tls_b{batch_idx}",
-            tag_after_tls_claim=f"checks_after_tls_claim_b{batch_idx}",
-            notes_prefix="",
-            source="user_input:testless_strategy",
-            rationale="user provided testless verification strategy",
+        status = "blocked"
+        notes = f"unexpected next_action={next_action} after user input"
+        return False
+
+    def _handle_decide_next_ask_user(
+        *,
+        batch_idx: int,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        tdb_ctx_obj: dict[str, Any],
+        decision_obj: dict[str, Any],
+    ) -> bool:
+        """Handle decide_next(next_action=ask_user) path with auto-answer retries and re-decide."""
+
+        nonlocal status, notes
+
+        q = str(decision_obj.get("ask_user_question") or "Need more information:").strip()
+
+        r1, q = _ask_user_auto_answer_attempt(
+            batch_idx=batch_idx,
+            q=q,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_obj=tdb_ctx_obj,
+            batch_suffix="from_decide",
+            tag_suffix="autoanswer_from_decide",
+            queue_reason="auto-answered instead of prompting user",
+            note_skipped="skipped: mind_circuit_open (auto_answer_to_hands from decide_next)",
+            note_error="mind_error: auto_answer_to_hands(from decide_next) failed; see EvidenceLog kind=mind_error",
         )
-        if block_reason:
+        if isinstance(r1, bool):
+            return r1
+
+        # Before asking the user, do a conservative cross-project recall and retry auto_answer once.
+        _maybe_cross_project_recall(
+            batch_id=f"b{batch_idx}.from_decide.before_user_recall",
+            reason="before_ask_user",
+            query=(q + "\n" + task).strip(),
+        )
+        r2, q = _ask_user_auto_answer_attempt(
+            batch_idx=batch_idx,
+            q=q,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_obj=tdb_ctx_obj,
+            batch_suffix="from_decide.after_recall",
+            tag_suffix="autoanswer_from_decide_after_recall",
+            queue_reason="auto-answered (after recall) instead of prompting user",
+            note_skipped="skipped: mind_circuit_open (auto_answer_to_hands from decide_next after recall)",
+            note_error="mind_error: auto_answer_to_hands(from decide_next after recall) failed; see EvidenceLog kind=mind_error",
+        )
+        if isinstance(r2, bool):
+            return r2
+
+        answer = _read_user_answer(q or "Need more information:")
+        if not answer:
             status = "blocked"
-            notes = block_reason
-            break
+            notes = "user did not provide required input"
+            return False
+        _append_user_input_record(batch_id=f"b{batch_idx}", question=q, answer=answer)
 
-        answer_text = ""
-        if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("should_answer", False)):
-            answer_text = str(auto_answer_obj.get("hands_answer_input") or "").strip()
-        check_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
-        combined = "\n\n".join([x for x in [answer_text, check_text] if x])
-        if combined:
-            if not _queue_next_input(
-                nxt=combined,
-                hands_last_message=hands_last,
-                batch_id=f"b{batch_idx}",
-                reason="sent auto-answer/checks to Hands",
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                thought_db_context=tdb_ctx_batch_obj,
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-            ):
-                break
-            continue
+        return _ask_user_redecide_with_input(
+            batch_idx=batch_idx,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            answer=answer,
+        )
 
-        # Decide what to do next.
+    def _decide_next_query(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        auto_answer_obj: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, str, str, dict[str, Any], dict[str, Any]]:
+        """Build decide_next prompt, call Mind, and return decision plus prompt context."""
+
+        nonlocal evidence_window
+
         tdb_ctx = build_decide_next_thoughtdb_context(
             tdb=tdb,
             as_of_ts=now_rfc3339(),
@@ -3242,24 +2983,14 @@ def run_autopilot(
             mem=mem.service,
         )
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
-        tdb_ctx_summary = {
-            "as_of_ts": tdb_ctx.as_of_ts,
-            "node_ids": [str(n.get("node_id") or "") for n in (tdb_ctx.nodes or []) if isinstance(n, dict) and str(n.get("node_id") or "").strip()],
-            "values_claim_ids": [str(c.get("claim_id") or "") for c in (tdb_ctx.values_claims or []) if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
-            "pref_goal_claim_ids": [
-                str(c.get("claim_id") or "") for c in (tdb_ctx.pref_goal_claims or []) if isinstance(c, dict) and str(c.get("claim_id") or "").strip()
-            ],
-            "query_claim_ids": [str(c.get("claim_id") or "") for c in (tdb_ctx.query_claims or []) if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
-            "edges_n": len(tdb_ctx.edges or []),
-            "notes": str(tdb_ctx.notes or "").strip(),
-        }
+        tdb_ctx_summary = summarize_thought_db_context(tdb_ctx)
         decision_prompt = decide_next_prompt(
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
             project_overlay=overlay,
             thought_db_context=tdb_ctx_obj,
-            active_workflow=_active_workflow(),
+            active_workflow=load_active_workflow(workflow_run=workflow_run, load_effective=wf_registry.load_effective),
             workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
             recent_evidence=evidence_window,
             hands_last_message=hands_last,
@@ -3273,63 +3004,24 @@ def run_autopilot(
             tag=f"decide_b{batch_idx}",
             batch_id=batch_id,
         )
-        if decision_obj is None:
-            ask_when_uncertain = bool(
-                resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain
-            )
-            if ask_when_uncertain:
-                if decision_state == "skipped":
-                    if _looks_like_user_question(hands_last):
-                        q = hands_last.strip()
-                    else:
-                        q = (
-                            "MI Mind circuit is OPEN (repeated failures). "
-                            "Provide the next instruction to send to Hands, or type 'stop' to end:"
-                        )
-                else:
-                    q = "MI Mind failed to decide next action. Provide next instruction to send to Hands, or type 'stop' to end:"
-                override = _read_user_answer(q)
-                ui4 = evw.append(
-                    {
-                        "kind": "user_input",
-                        "batch_id": f"b{batch_idx}",
-                        "ts": now_rfc3339(),
-                        "thread_id": thread_id,
-                        "question": q,
-                        "answer": override,
-                    }
-                )
-                evidence_window.append(
-                    {"kind": "user_input", "batch_id": f"b{batch_idx}", "event_id": ui4.get("event_id"), "question": q, "answer": override}
-                )
-                evidence_window = evidence_window[-8:]
-                _segment_add(ui4)
-                _persist_segment_state()
+        return (
+            decision_obj if isinstance(decision_obj, dict) else None,
+            str(decision_mind_ref or ""),
+            str(decision_state or ""),
+            tdb_ctx_obj,
+            tdb_ctx_summary,
+        )
 
-                ov = (override or "").strip()
-                if not ov or ov.lower() in ("stop", "quit", "q"):
-                    status = "blocked"
-                    notes = "stopped after mind_circuit_open(decide_next)" if decision_state == "skipped" else "stopped after mind_error(decide_next)"
-                    break
-                if not _queue_next_input(
-                    nxt=ov,
-                    hands_last_message=hands_last,
-                    batch_id=f"b{batch_idx}",
-                    reason="mind_circuit_open(decide_next): user override" if decision_state == "skipped" else "mind_error(decide_next): user override",
-                    repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                    thought_db_context=tdb_ctx_obj,
-                    check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                ):
-                    break
-                continue
+    def _decide_next_record_effects(
+        *,
+        batch_idx: int,
+        decision_obj: dict[str, Any],
+        decision_mind_ref: str,
+        tdb_ctx_summary: dict[str, Any],
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Persist decide_next outputs and apply declared side effects."""
 
-            status = "blocked"
-            notes = (
-                "mind_circuit_open(decide_next): could not proceed (ask_when_uncertain=false)"
-                if decision_state == "skipped"
-                else "mind_error(decide_next): could not proceed (ask_when_uncertain=false)"
-            )
-            break
+        nonlocal status, notes, last_decide_next_rec
 
         decide_rec = _log_decide_next(
             decision_obj=decision_obj,
@@ -3366,7 +3058,7 @@ def run_autopilot(
             )
 
         # Write learn suggestions (append-only; reversible via claim retraction).
-        applied = _handle_learn_suggested(
+        _handle_learn_suggested(
             learn_suggested=decision_obj.get("learn_suggested"),
             batch_id=f"b{batch_idx}",
             source="decide_next",
@@ -3388,344 +3080,41 @@ def run_autopilot(
             + f"status={status} next_action={next_action} "
             + (f"confidence={cf_s}" if cf_s else ""),
         )
+        return next_action, decide_rec if isinstance(decide_rec, dict) else None
+
+    def _decide_next_route_action(
+        *,
+        batch_idx: int,
+        next_action: str,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        tdb_ctx_obj: dict[str, Any],
+        decision_obj: dict[str, Any],
+    ) -> bool:
+        """Route and apply next_action from decide_next."""
+
+        nonlocal status, notes
 
         if next_action == "stop":
-            break
+            return False
 
         if next_action == "ask_user":
-            q = str(decision_obj.get("ask_user_question") or "Need more information:").strip()
-
-            # Before bothering the user, attempt to auto-answer using values/evidence.
-            aa_from_decide = _empty_auto_answer()
-            if q:
-                tdb_ctx_aa = build_decide_next_thoughtdb_context(
-                    tdb=tdb,
-                    as_of_ts=now_rfc3339(),
-                    task=task,
-                    hands_last_message=q,
-                    recent_evidence=evidence_window,
-                    mem=mem.service,
-                )
-                tdb_ctx_aa_obj = tdb_ctx_aa.to_prompt_obj()
-                aa_prompt2 = auto_answer_to_hands_prompt(
-                    task=task,
-                    hands_provider=cur_provider,
-                    mindspec_base=_mindspec_base_runtime(),
-                    project_overlay=overlay,
-                    thought_db_context=tdb_ctx_aa_obj,
-                    repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                    check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                    recent_evidence=evidence_window,
-                    hands_last_message=q,
-                )
-                aa_obj2, aa2_mind_ref, aa2_state = _mind_call(
-                    schema_filename="auto_answer_to_hands.json",
-                    prompt=aa_prompt2,
-                    tag=f"autoanswer_from_decide_b{batch_idx}",
-                    batch_id=f"b{batch_idx}.from_decide",
-                )
-                if aa_obj2 is None:
-                    aa_from_decide = _empty_auto_answer()
-                    if aa2_state == "skipped":
-                        aa_from_decide["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands from decide_next)"
-                    else:
-                        aa_from_decide["notes"] = "mind_error: auto_answer_to_hands(from decide_next) failed; see EvidenceLog kind=mind_error"
-                else:
-                    aa_from_decide = aa_obj2
-
-                aa3_rec = evw.append(
-                    {
-                        "kind": "auto_answer",
-                        "batch_id": f"b{batch_idx}.from_decide",
-                        "ts": now_rfc3339(),
-                        "thread_id": thread_id,
-                        "mind_transcript_ref": aa2_mind_ref,
-                        "auto_answer": aa_from_decide,
-                    }
-                )
-                evidence_window.append(
-                    {"kind": "auto_answer", "batch_id": f"b{batch_idx}.from_decide", "event_id": aa3_rec.get("event_id"), **aa_from_decide}
-                )
-                evidence_window = evidence_window[-8:]
-                _segment_add(
-                    {
-                        "kind": "auto_answer",
-                        "batch_id": f"b{batch_idx}.from_decide",
-                        "event_id": aa3_rec.get("event_id"),
-                        **(aa_from_decide if isinstance(aa_from_decide, dict) else {}),
-                    }
-                )
-                _persist_segment_state()
-
-                aa_text = ""
-                if isinstance(aa_from_decide, dict) and bool(aa_from_decide.get("should_answer", False)):
-                    aa_text = str(aa_from_decide.get("hands_answer_input") or "").strip()
-                chk_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
-                combined2 = "\n\n".join([x for x in [aa_text, chk_text] if x])
-                if combined2:
-                    if not _queue_next_input(
-                        nxt=combined2,
-                        hands_last_message=hands_last,
-                        batch_id=f"b{batch_idx}.from_decide",
-                        reason="auto-answered instead of prompting user",
-                        repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                        thought_db_context=tdb_ctx_obj,
-                        check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                    ):
-                        break
-                    continue
-
-                if isinstance(aa_from_decide, dict) and bool(aa_from_decide.get("needs_user_input", False)):
-                    q2 = str(aa_from_decide.get("ask_user_question") or "").strip()
-                    if q2:
-                        q = q2
-
-            # Before asking the user, do a conservative cross-project recall and retry auto_answer once.
-            _maybe_cross_project_recall(
-                batch_id=f"b{batch_idx}.from_decide.before_user_recall",
-                reason="before_ask_user",
-                query=(q + "\n" + task).strip(),
+            return _handle_decide_next_ask_user(
+                batch_idx=batch_idx,
+                hands_last=hands_last,
+                repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+                checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+                tdb_ctx_obj=tdb_ctx_obj,
+                decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
             )
-            aa_retry2 = _empty_auto_answer()
-            if q:
-                tdb_ctx_aa2 = build_decide_next_thoughtdb_context(
-                    tdb=tdb,
-                    as_of_ts=now_rfc3339(),
-                    task=task,
-                    hands_last_message=q,
-                    recent_evidence=evidence_window,
-                    mem=mem.service,
-                )
-                tdb_ctx_aa2_obj = tdb_ctx_aa2.to_prompt_obj()
-                aa_prompt3 = auto_answer_to_hands_prompt(
-                    task=task,
-                    hands_provider=cur_provider,
-                    mindspec_base=_mindspec_base_runtime(),
-                    project_overlay=overlay,
-                    thought_db_context=tdb_ctx_aa2_obj,
-                    repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                    check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                    recent_evidence=evidence_window,
-                    hands_last_message=q,
-                )
-                aa_obj3, aa3_ref, aa3_state = _mind_call(
-                    schema_filename="auto_answer_to_hands.json",
-                    prompt=aa_prompt3,
-                    tag=f"autoanswer_from_decide_after_recall_b{batch_idx}",
-                    batch_id=f"b{batch_idx}.from_decide.after_recall",
-                )
-                if aa_obj3 is None:
-                    aa_retry2 = _empty_auto_answer()
-                    if aa3_state == "skipped":
-                        aa_retry2["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands from decide_next after recall)"
-                    else:
-                        aa_retry2["notes"] = "mind_error: auto_answer_to_hands(from decide_next after recall) failed; see EvidenceLog kind=mind_error"
-                else:
-                    aa_retry2 = aa_obj3
-
-                aa4_rec = evw.append(
-                    {
-                        "kind": "auto_answer",
-                        "batch_id": f"b{batch_idx}.from_decide.after_recall",
-                        "ts": now_rfc3339(),
-                        "thread_id": thread_id,
-                        "mind_transcript_ref": aa3_ref,
-                        "auto_answer": aa_retry2,
-                    }
-                )
-                evidence_window.append(
-                    {
-                        "kind": "auto_answer",
-                        "batch_id": f"b{batch_idx}.from_decide.after_recall",
-                        "event_id": aa4_rec.get("event_id"),
-                        **aa_retry2,
-                    }
-                )
-                evidence_window[:] = evidence_window[-8:]
-                _segment_add(
-                    {
-                        "kind": "auto_answer",
-                        "batch_id": f"b{batch_idx}.from_decide.after_recall",
-                        "event_id": aa4_rec.get("event_id"),
-                        **(aa_retry2 if isinstance(aa_retry2, dict) else {}),
-                    }
-                )
-                _persist_segment_state()
-
-                aa_text3 = ""
-                if isinstance(aa_retry2, dict) and bool(aa_retry2.get("should_answer", False)):
-                    aa_text3 = str(aa_retry2.get("hands_answer_input") or "").strip()
-                chk_text3 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
-                combined3 = "\n\n".join([x for x in [aa_text3, chk_text3] if x])
-                if combined3:
-                    if not _queue_next_input(
-                        nxt=combined3,
-                        hands_last_message=hands_last,
-                        batch_id=f"b{batch_idx}.from_decide.after_recall",
-                        reason="auto-answered (after recall) instead of prompting user",
-                        repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                        thought_db_context=tdb_ctx_obj,
-                        check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                    ):
-                        break
-                    continue
-
-                if isinstance(aa_retry2, dict) and bool(aa_retry2.get("needs_user_input", False)):
-                    q3 = str(aa_retry2.get("ask_user_question") or "").strip()
-                    if q3:
-                        q = q3
-
-            answer = _read_user_answer(q or "Need more information:")
-            if not answer:
-                status = "blocked"
-                notes = "user did not provide required input"
-                break
-            ui5 = evw.append(
-                {
-                    "kind": "user_input",
-                    "batch_id": f"b{batch_idx}",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id,
-                    "question": q,
-                    "answer": answer,
-                }
-            )
-            evidence_window.append({"kind": "user_input", "batch_id": f"b{batch_idx}", "event_id": ui5.get("event_id"), "question": q, "answer": answer})
-            evidence_window = evidence_window[-8:]
-            _segment_add(ui5)
-            _persist_segment_state()
-
-            # Re-decide with the user input included (no extra Hands run yet).
-            tdb_ctx2 = build_decide_next_thoughtdb_context(
-                tdb=tdb,
-                as_of_ts=now_rfc3339(),
-                task=task,
-                hands_last_message=hands_last,
-                recent_evidence=evidence_window,
-                mem=mem.service,
-            )
-            tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
-            tdb_ctx2_summary = {
-                "as_of_ts": tdb_ctx2.as_of_ts,
-                "node_ids": [str(n.get("node_id") or "") for n in (tdb_ctx2.nodes or []) if isinstance(n, dict) and str(n.get("node_id") or "").strip()],
-                "values_claim_ids": [str(c.get("claim_id") or "") for c in (tdb_ctx2.values_claims or []) if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
-                "pref_goal_claim_ids": [
-                    str(c.get("claim_id") or "")
-                    for c in (tdb_ctx2.pref_goal_claims or [])
-                    if isinstance(c, dict) and str(c.get("claim_id") or "").strip()
-                ],
-                "query_claim_ids": [str(c.get("claim_id") or "") for c in (tdb_ctx2.query_claims or []) if isinstance(c, dict) and str(c.get("claim_id") or "").strip()],
-                "edges_n": len(tdb_ctx2.edges or []),
-                "notes": str(tdb_ctx2.notes or "").strip(),
-            }
-            decision_prompt2 = decide_next_prompt(
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay,
-                thought_db_context=tdb_ctx2_obj,
-                active_workflow=_active_workflow(),
-                workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-                recent_evidence=evidence_window,
-                hands_last_message=hands_last,
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                auto_answer=_empty_auto_answer(),
-            )
-            decision_obj2, decision2_mind_ref, decision2_state = _mind_call(
-                schema_filename="decide_next.json",
-                prompt=decision_prompt2,
-                tag=f"decide_after_user_b{batch_idx}",
-                batch_id=f"b{batch_idx}.after_user",
-            )
-            if decision_obj2 is None:
-                # Safe fallback: send the user answer to Hands (optionally with checks),
-                # rather than blocking on a missing post-user decision.
-                chk_text2 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
-                combined_user2 = "\n\n".join([x for x in [answer.strip(), chk_text2] if x])
-                if not _queue_next_input(
-                    nxt=combined_user2,
-                    hands_last_message=hands_last,
-                    batch_id=f"b{batch_idx}.after_user",
-                    reason=(
-                        "mind_circuit_open(decide_next after user): send user answer"
-                        if decision2_state == "skipped"
-                        else "mind_error(decide_next after user): send user answer"
-                    ),
-                    repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                    thought_db_context=tdb_ctx2_obj,
-                    check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                ):
-                    break
-                continue
-
-            decision_obj = decision_obj2
-            decide_rec2 = _log_decide_next(
-                decision_obj=decision_obj,
-                batch_id=f"b{batch_idx}",
-                phase="after_user",
-                mind_transcript_ref=decision2_mind_ref,
-                thought_db_context_summary=tdb_ctx2_summary,
-            )
-            if isinstance(decide_rec2, dict) and str(decide_rec2.get("event_id") or "").strip():
-                last_decide_next_rec = decide_rec2
-            if decide_rec2:
-                _segment_add(decide_rec2)
-                _persist_segment_state()
-
-            # Apply overlay + learn suggestions from the post-user decision.
-            overlay_update = decision_obj.get("update_project_overlay") or {}
-            if isinstance(overlay_update, dict):
-                _apply_set_testless_strategy_overlay_update(
-                    set_tls=overlay_update.get("set_testless_strategy"),
-                    decide_event_id=str((decide_rec2 or {}).get("event_id") or ""),
-                    fallback_batch_id=f"b{batch_idx}.after_user.set_testless",
-                    default_rationale="decide_next(after_user) overlay update",
-                    source="decide_next.after_user:set_testless_strategy",
-                )
-
-            applied2 = _handle_learn_suggested(
-                learn_suggested=decision_obj.get("learn_suggested"),
-                batch_id=f"b{batch_idx}.after_user",
-                source="decide_next.after_user",
-                mind_transcript_ref=decision2_mind_ref,
-                source_event_ids=[str((decide_rec2 or {}).get("event_id") or "").strip()],
-            )
-
-            next_action = str(decision_obj.get("next_action") or "stop")
-            status = str(decision_obj.get("status") or "not_done")
-            notes = str(decision_obj.get("notes") or "")
-
-            if next_action == "stop":
-                break
-            if next_action == "send_to_hands":
-                nxt = str(decision_obj.get("next_hands_input") or "").strip()
-                if not nxt:
-                    status = "blocked"
-                    notes = "decide_next returned send_to_hands without next_hands_input (after user input)"
-                    break
-                if not _queue_next_input(
-                    nxt=nxt,
-                    hands_last_message=hands_last,
-                    batch_id=f"b{batch_idx}.after_user",
-                    reason="send_to_hands after user input",
-                    repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                    thought_db_context=tdb_ctx2_obj,
-                    check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-                ):
-                    break
-                continue
-
-            status = "blocked"
-            notes = f"unexpected next_action={next_action} after user input"
-            break
 
         if next_action == "send_to_hands":
             nxt = str(decision_obj.get("next_hands_input") or "").strip()
             if not nxt:
                 status = "blocked"
                 notes = "decide_next returned send_to_hands without next_hands_input"
-                break
+                return False
             if not _queue_next_input(
                 nxt=nxt,
                 hands_last_message=hands_last,
@@ -3735,73 +3124,983 @@ def run_autopilot(
                 thought_db_context=tdb_ctx_obj,
                 check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             ):
-                break
-            continue
+                return False
+            return True
 
         status = "blocked"
         notes = f"unknown next_action={next_action}"
-        break
-    else:
-        max_batches_exhausted = True
-        status = "blocked"
-        notes = f"reached max_batches={max_batches}"
+        return False
 
-    # Final checkpoint for long-running sessions: mine when the model judges a boundary (done/blocked/max_batches),
-    # even if the run ended without queueing a next Hands batch.
-    if checkpoint_enabled and executed_batches > 0 and last_batch_id:
-        final_hint = "max_batches" if max_batches_exhausted else str(status or "")
-        _maybe_checkpoint_and_mine(
-            batch_id=last_batch_id,
-            planned_next_input="",
-            status_hint=final_hint,
-            note="run_end",
+    def _phase_decide_next(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        auto_answer_obj: dict[str, Any],
+    ) -> bool:
+        return run_decide_next_phase(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            auto_answer_obj=auto_answer_obj if isinstance(auto_answer_obj, dict) else {},
+            deps=DecidePhaseDeps(
+                query=_decide_next_query,
+                handle_missing=_handle_decide_next_missing,
+                record_effects=_decide_next_record_effects,
+                route_action=_decide_next_route_action,
+            ),
         )
 
-    maybe_run_learn_update_on_run_end(
-        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
-        executed_batches=int(executed_batches),
-        last_batch_id=str(last_batch_id or ""),
-        learn_suggested_records_this_run=learn_suggested_records_this_run,
-        tdb=tdb,
-        evw=evw,
-        mind_call=_mind_call,
-        emit_prefixed=_emit_prefixed,
-        truncate=_truncate,
-        task=task,
-        hands_provider=cur_provider,
-        mindspec_base=_mindspec_base_runtime(),
-        project_overlay=overlay if isinstance(overlay, dict) else {},
-        status=str(status or ""),
-        notes=str(notes or ""),
-        thread_id=(thread_id or ""),
+    def _predecide_run_hands(*, ctx: BatchExecutionContext) -> Any:
+        """Execute Hands for one batch and persist session/input records."""
+
+        nonlocal thread_id, executed_batches
+
+        result, st = run_hands_batch(
+            ctx=ctx,
+            state=RunState(thread_id=thread_id, executed_batches=executed_batches),
+            deps=HandsFlowDeps(
+                run_deps=RunDeps(
+                    emit_prefixed=_emit_prefixed,
+                    now_ts=now_rfc3339,
+                    evidence_append=evw.append,
+                ),
+                project_root=project_path,
+                transcripts_dir=project_paths.transcripts_dir,
+                cur_provider=cur_provider,
+                no_mi_prompt=bool(no_mi_prompt),
+                interrupt_cfg=interrupt_cfg,
+                overlay=overlay,
+                hands_exec=hands_exec,
+                hands_resume=hands_resume,
+                write_overlay=lambda ov: write_project_overlay(home_dir=home, project_root=project_path, overlay=ov),
+            ),
+        )
+        thread_id = st.thread_id
+        executed_batches = int(st.executed_batches or 0)
+        return result
+
+    def _predecide_retry_auto_answer_after_recall(
+        *,
+        batch_idx: int,
+        question: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        tdb_ctx_batch_obj: dict[str, Any],
+    ) -> tuple[dict[str, Any], str]:
+        """Retry auto_answer after conservative cross-project recall."""
+
+        nonlocal evidence_window
+
+        q = str(question or "").strip()
+        _maybe_cross_project_recall(
+            batch_id=f"b{batch_idx}.before_user_recall",
+            reason="before_ask_user",
+            query=(q + "\n" + task).strip(),
+        )
+        aa_prompt_retry = auto_answer_to_hands_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay,
+            thought_db_context=tdb_ctx_batch_obj,
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+            recent_evidence=evidence_window,
+            hands_last_message=q,
+        )
+        aa_obj_r, aa_r_ref, aa_r_state = _mind_call(
+            schema_filename="auto_answer_to_hands.json",
+            prompt=aa_prompt_retry,
+            tag=f"autoanswer_retry_after_recall_b{batch_idx}",
+            batch_id=f"b{batch_idx}.after_recall",
+        )
+        if aa_obj_r is None:
+            aa_retry = _empty_auto_answer()
+            if aa_r_state == "skipped":
+                aa_retry["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands retry after recall)"
+            else:
+                aa_retry["notes"] = "mind_error: auto_answer_to_hands retry failed; see EvidenceLog kind=mind_error"
+        else:
+            aa_retry = aa_obj_r if isinstance(aa_obj_r, dict) else _empty_auto_answer()
+        _append_auto_answer_record(
+            batch_id=f"b{batch_idx}.after_recall",
+            mind_transcript_ref=aa_r_ref,
+            auto_answer=aa_retry if isinstance(aa_retry, dict) else {},
+        )
+        if isinstance(aa_retry, dict) and bool(aa_retry.get("needs_user_input", False)):
+            q2 = str(aa_retry.get("ask_user_question") or "").strip()
+            if q2:
+                q = q2
+        return aa_retry if isinstance(aa_retry, dict) else _empty_auto_answer(), q
+
+    def _predecide_try_queue_answer_with_checks(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        queue_reason: str,
+        answer_text: str,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        tdb_ctx_batch_obj: dict[str, Any],
+    ) -> bool | None:
+        """Queue answer + checks when either side has content."""
+
+        check_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
+        combined = join_hands_inputs(str(answer_text or "").strip(), check_text)
+        if not combined:
+            return None
+        if not _queue_next_input(
+            nxt=combined,
+            hands_last_message=hands_last,
+            batch_id=batch_id,
+            reason=queue_reason,
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            thought_db_context=tdb_ctx_batch_obj,
+            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+        ):
+            return False
+        return True
+
+    def _predecide_prompt_user_then_queue(
+        *,
+        batch_idx: int,
+        question: str,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        tdb_ctx_batch_obj: dict[str, Any],
+    ) -> bool:
+        """Ask the user and queue answer (+ checks)."""
+
+        nonlocal status, notes
+
+        answer = _read_user_answer(question)
+        if not answer:
+            status = "blocked"
+            notes = "user did not provide required input"
+            return False
+        _append_user_input_record(batch_id=f"b{batch_idx}", question=question, answer=answer)
+
+        queued = _predecide_try_queue_answer_with_checks(
+            batch_idx=batch_idx,
+            batch_id=f"b{batch_idx}",
+            queue_reason="answered after user input",
+            answer_text=answer,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
+        )
+        return bool(queued)
+
+    def _predecide_handle_auto_answer_needs_user(
+        *,
+        batch_idx: int,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        tdb_ctx_batch_obj: dict[str, Any],
+        checks_obj: dict[str, Any],
+        auto_answer_obj: dict[str, Any],
+    ) -> tuple[bool, dict[str, Any]]:
+        """Handle pre-decide branch where initial auto_answer requests user input."""
+
+        q = str(auto_answer_obj.get("ask_user_question") or "").strip() or hands_last.strip() or "Need more information:"
+        aa_retry, q = _predecide_retry_auto_answer_after_recall(
+            batch_idx=batch_idx,
+            question=q,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
+        )
+
+        aa_text = ""
+        if isinstance(aa_retry, dict) and bool(aa_retry.get("should_answer", False)):
+            aa_text = str(aa_retry.get("hands_answer_input") or "").strip()
+        queued_retry = _predecide_try_queue_answer_with_checks(
+            batch_idx=batch_idx,
+            batch_id=f"b{batch_idx}.after_recall",
+            queue_reason="auto-answered after cross-project recall",
+            answer_text=aa_text,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
+        )
+        if isinstance(queued_retry, bool):
+            return queued_retry, checks_obj if isinstance(checks_obj, dict) else {}
+
+        asked = _predecide_prompt_user_then_queue(
+            batch_idx=batch_idx,
+            question=q,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
+        )
+        return asked, checks_obj if isinstance(checks_obj, dict) else {}
+
+    def _predecide_apply_preactions(
+        *,
+        batch_idx: int,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        tdb_ctx_batch_obj: dict[str, Any],
+        checks_obj: dict[str, Any],
+        auto_answer_obj: dict[str, Any],
+    ) -> tuple[bool | None, dict[str, Any]]:
+        """Apply deterministic pre-action arbitration before decide_next."""
+
+        nonlocal status, notes
+
+        if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("needs_user_input", False)):
+            handled, checks_out = _predecide_handle_auto_answer_needs_user(
+                batch_idx=batch_idx,
+                hands_last=hands_last,
+                repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+                tdb_ctx_batch_obj=tdb_ctx_batch_obj,
+                checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+                auto_answer_obj=auto_answer_obj,
+            )
+            return handled, checks_out
+
+        checks_obj, block_reason = _resolve_tls_for_checks(
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else _empty_check_plan(),
+            hands_last_message=hands_last,
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            user_input_batch_id=f"b{batch_idx}",
+            batch_id_after_testless=f"b{batch_idx}.after_testless",
+            batch_id_after_tls_claim=f"b{batch_idx}.after_tls_claim",
+            tag_after_testless=f"checks_after_tls_b{batch_idx}",
+            tag_after_tls_claim=f"checks_after_tls_claim_b{batch_idx}",
+            notes_prefix="",
+            source="user_input:testless_strategy",
+            rationale="user provided testless verification strategy",
+        )
+        if block_reason:
+            status = "blocked"
+            notes = block_reason
+            return False, checks_obj
+
+        answer_text = ""
+        if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("should_answer", False)):
+            answer_text = str(auto_answer_obj.get("hands_answer_input") or "").strip()
+        queued = _predecide_try_queue_answer_with_checks(
+            batch_idx=batch_idx,
+            batch_id=f"b{batch_idx}",
+            queue_reason="sent auto-answer/checks to Hands",
+            answer_text=answer_text,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
+        )
+        if isinstance(queued, bool):
+            return queued, checks_obj
+        return None, checks_obj
+
+    def _predecide_extract_evidence_and_context(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        ctx: BatchExecutionContext,
+        result: Any,
+        repo_obs: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
+        """Run extract_evidence and build Thought DB context for this batch."""
+
+        nonlocal last_evidence_rec, evidence_window
+
+        summary = _batch_summary(result)
+        extract_prompt = extract_evidence_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            light_injection=ctx.light_injection,
+            batch_input=ctx.batch_input,
+            hands_batch_summary=summary,
+            repo_observation=repo_obs,
+        )
+        evidence_obj, evidence_mind_ref, evidence_state = _mind_call(
+            schema_filename="extract_evidence.json",
+            prompt=extract_prompt,
+            tag=f"extract_b{batch_idx}",
+            batch_id=batch_id,
+        )
+        if evidence_obj is None:
+            if evidence_state == "skipped":
+                evidence_obj = _empty_evidence_obj(note="mind_circuit_open: extract_evidence skipped")
+            else:
+                evidence_obj = _empty_evidence_obj(note="mind_error: extract_evidence failed; see EvidenceLog kind=mind_error")
+
+        counts = extract_evidence_counts(evidence_obj if isinstance(evidence_obj, dict) else None)
+        _emit_prefixed(
+            "[mi]",
+            "extract_evidence "
+            + f"state={str(evidence_state or '')} "
+            + f"facts={counts['facts']} actions={counts['actions']} "
+            + f"results={counts['results']} unknowns={counts['unknowns']} risk_signals={counts['risk_signals']}",
+        )
+        evidence_item = {
+            "kind": "evidence",
+            "batch_id": batch_id,
+            "ts": now_rfc3339(),
+            "thread_id": thread_id,
+            "hands_transcript_ref": str(ctx.hands_transcript),
+            "mind_transcript_ref": evidence_mind_ref,
+            "mi_input": ctx.batch_input,
+            "transcript_observation": summary.get("transcript_observation") or {},
+            "repo_observation": repo_obs,
+            **evidence_obj,
+        }
+        evidence_rec = evw.append(evidence_item)
+        last_evidence_rec = evidence_rec
+        append_evidence_window(evidence_window, evidence_rec)
+        segment_add_and_persist(segment_add=_segment_add, persist_segment_state=_persist_segment_state, item=evidence_rec)
+
+        hands_last = result.last_agent_message()
+        tdb_ctx_batch = build_decide_next_thoughtdb_context(
+            tdb=tdb,
+            as_of_ts=now_rfc3339(),
+            task=task,
+            hands_last_message=hands_last,
+            recent_evidence=evidence_window,
+            mem=mem.service,
+        )
+        tdb_ctx_batch_obj = tdb_ctx_batch.to_prompt_obj()
+        return (
+            summary if isinstance(summary, dict) else {},
+            evidence_obj if isinstance(evidence_obj, dict) else {},
+            str(hands_last or ""),
+            tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+        )
+
+    def _workflow_progress_build_latest_evidence(
+        *,
+        batch_id: str,
+        summary: dict[str, Any],
+        evidence_obj: dict[str, Any],
+        repo_obs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build workflow_progress latest_evidence payload."""
+
+        return {
+            "batch_id": batch_id,
+            "facts": evidence_obj.get("facts") if isinstance(evidence_obj, dict) else [],
+            "actions": evidence_obj.get("actions") if isinstance(evidence_obj, dict) else [],
+            "results": evidence_obj.get("results") if isinstance(evidence_obj, dict) else [],
+            "unknowns": evidence_obj.get("unknowns") if isinstance(evidence_obj, dict) else [],
+            "risk_signals": evidence_obj.get("risk_signals") if isinstance(evidence_obj, dict) else [],
+            "repo_observation": repo_obs if isinstance(repo_obs, dict) else {},
+            "transcript_observation": (summary if isinstance(summary, dict) else {}).get("transcript_observation") or {},
+        }
+
+    def _workflow_progress_query(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        active_wf: dict[str, Any],
+        latest_evidence: dict[str, Any],
+        hands_last: str,
+        tdb_ctx_batch_obj: dict[str, Any],
+        ctx: BatchExecutionContext,
+    ) -> tuple[dict[str, Any], str, str]:
+        """Query Mind for workflow progress state."""
+
+        wf_prog_prompt = workflow_progress_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay,
+            thought_db_context=tdb_ctx_batch_obj,
+            workflow=active_wf if isinstance(active_wf, dict) else {},
+            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+            latest_evidence=latest_evidence if isinstance(latest_evidence, dict) else {},
+            last_batch_input=ctx.batch_input,
+            hands_last_message=hands_last,
+        )
+        wf_prog_obj, wf_prog_ref, wf_prog_state = _mind_call(
+            schema_filename="workflow_progress.json",
+            prompt=wf_prog_prompt,
+            tag=f"wf_progress_b{batch_idx}",
+            batch_id=f"{batch_id}.workflow_progress",
+        )
+        return (
+            wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
+            str(wf_prog_ref or ""),
+            str(wf_prog_state or ""),
+        )
+
+    def _workflow_progress_record_event(
+        *,
+        batch_id: str,
+        active_wf: dict[str, Any],
+        wf_prog_obj: dict[str, Any],
+        wf_prog_ref: str,
+        wf_prog_state: str,
+    ) -> None:
+        """Record workflow_progress event in evidence log."""
+
+        evw.append(
+            {
+                "kind": "workflow_progress",
+                "batch_id": f"{batch_id}.workflow_progress",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id,
+                "workflow_id": str((active_wf if isinstance(active_wf, dict) else {}).get("id") or ""),
+                "workflow_name": str((active_wf if isinstance(active_wf, dict) else {}).get("name") or ""),
+                "state": str(wf_prog_state or ""),
+                "mind_transcript_ref": str(wf_prog_ref or ""),
+                "output": wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
+            }
+        )
+
+    def _workflow_progress_apply_overlay_if_changed(
+        *,
+        batch_id: str,
+        active_wf: dict[str, Any],
+        wf_prog_obj: dict[str, Any],
+    ) -> None:
+        """Apply workflow progress output and persist overlay only when changed."""
+
+        if apply_workflow_progress_output(
+            active_workflow=active_wf if isinstance(active_wf, dict) else {},
+            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+            wf_progress_output=wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
+            batch_id=batch_id,
+            thread_id=str(thread_id or ""),
+            now_ts=now_rfc3339,
+        ):
+            overlay["workflow_run"] = workflow_run
+            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
+
+    def _predecide_apply_workflow_progress(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        summary: dict[str, Any],
+        evidence_obj: dict[str, Any],
+        repo_obs: dict[str, Any],
+        hands_last: str,
+        tdb_ctx_batch_obj: dict[str, Any],
+        ctx: BatchExecutionContext,
+    ) -> None:
+        """Update workflow cursor/state using workflow_progress output (best-effort)."""
+
+        active_wf = load_active_workflow(workflow_run=workflow_run, load_effective=wf_registry.load_effective)
+        if not (isinstance(active_wf, dict) and active_wf):
+            return
+
+        latest_evidence = _workflow_progress_build_latest_evidence(
+            batch_id=batch_id,
+            summary=summary if isinstance(summary, dict) else {},
+            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+        )
+        wf_prog_obj, wf_prog_ref, wf_prog_state = _workflow_progress_query(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
+            active_wf=active_wf,
+            latest_evidence=latest_evidence,
+            hands_last=hands_last,
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            ctx=ctx,
+        )
+        _workflow_progress_record_event(
+            batch_id=batch_id,
+            active_wf=active_wf,
+            wf_prog_obj=wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
+            wf_prog_ref=wf_prog_ref,
+            wf_prog_state=wf_prog_state,
+        )
+        _workflow_progress_apply_overlay_if_changed(
+            batch_id=batch_id,
+            active_wf=active_wf,
+            wf_prog_obj=wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
+        )
+
+    def _predecide_detect_risk_signals(*, result: Any, ctx: BatchExecutionContext) -> list[str]:
+        """Detect risk signals from structured events, then transcript fallback when needed."""
+
+        risk_signals = _detect_risk_signals(result)
+        if not risk_signals and not (isinstance(getattr(result, "events", None), list) and result.events):
+            risk_signals = _detect_risk_signals_from_transcript(ctx.hands_transcript)
+        return [str(x) for x in risk_signals if str(x).strip()]
+
+    def _predecide_query_risk_judge(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        risk_signals: list[str],
+        hands_last: str,
+        tdb_ctx_batch_obj: dict[str, Any],
+    ) -> tuple[dict[str, Any], str]:
+        """Run recall + risk_judge and normalize fallback output."""
+
+        _maybe_cross_project_recall(
+            batch_id=f"{batch_id}.risk_recall",
+            reason="risk_signal",
+            query=(" ".join([str(x) for x in risk_signals if str(x).strip()]) + "\n" + task).strip(),
+        )
+        risk_prompt = risk_judge_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay,
+            thought_db_context=tdb_ctx_batch_obj,
+            risk_signals=risk_signals,
+            hands_last_message=hands_last,
+        )
+        risk_obj, risk_mind_ref, risk_state = _mind_call(
+            schema_filename="risk_judge.json",
+            prompt=risk_prompt,
+            tag=f"risk_b{batch_idx}",
+            batch_id=batch_id,
+        )
+        if risk_obj is None or not isinstance(risk_obj, dict):
+            risk_obj = build_risk_fallback(risk_signals, state=str(risk_state or ""))
+        return risk_obj if isinstance(risk_obj, dict) else {}, str(risk_mind_ref or "")
+
+    def _predecide_record_risk_event(
+        *,
+        batch_idx: int,
+        risk_signals: list[str],
+        risk_obj: dict[str, Any],
+        risk_mind_ref: str,
+    ) -> dict[str, Any]:
+        """Persist risk event to EvidenceLog + segment + evidence window."""
+
+        nonlocal evidence_window
+
+        risk_rec = evw.append(
+            {
+                "kind": "risk_event",
+                "batch_id": f"b{batch_idx}",
+                "ts": now_rfc3339(),
+                "thread_id": thread_id,
+                "risk_signals": risk_signals,
+                "mind_transcript_ref": risk_mind_ref,
+                "risk": risk_obj if isinstance(risk_obj, dict) else {},
+            }
+        )
+        append_evidence_window(
+            evidence_window,
+            {
+                "kind": "risk_event",
+                "batch_id": f"b{batch_idx}",
+                "event_id": risk_rec.get("event_id"),
+                **(risk_obj if isinstance(risk_obj, dict) else {}),
+            },
+        )
+        segment_add_and_persist(
+            segment_add=_segment_add,
+            persist_segment_state=_persist_segment_state,
+            item={
+                "kind": "risk_event",
+                "batch_id": f"b{batch_idx}",
+                "event_id": risk_rec.get("event_id"),
+                "risk_signals": risk_signals,
+                "category": (risk_obj if isinstance(risk_obj, dict) else {}).get("category"),
+                "severity": (risk_obj if isinstance(risk_obj, dict) else {}).get("severity"),
+            },
+        )
+        return risk_rec if isinstance(risk_rec, dict) else {}
+
+    def _predecide_apply_risk_learn_suggested(
+        *,
+        batch_idx: int,
+        risk_obj: dict[str, Any],
+        risk_mind_ref: str,
+        risk_event_id: str,
+    ) -> None:
+        """Apply learn_suggested emitted by risk_judge."""
+
+        _handle_learn_suggested(
+            learn_suggested=(risk_obj if isinstance(risk_obj, dict) else {}).get("learn_suggested"),
+            batch_id=f"b{batch_idx}",
+            source="risk_judge",
+            mind_transcript_ref=risk_mind_ref,
+            source_event_ids=[str(risk_event_id or "").strip()],
+        )
+
+    def _predecide_maybe_prompt_risk_continue(*, risk_obj: dict[str, Any]) -> bool | None:
+        """Apply runtime violation policy; return False when user blocks run."""
+
+        nonlocal status, notes
+
+        vr = runtime_cfg.get("violation_response") if isinstance(runtime_cfg.get("violation_response"), dict) else {}
+        severity = str((risk_obj if isinstance(risk_obj, dict) else {}).get("severity") or "low")
+        cat = str((risk_obj if isinstance(risk_obj, dict) else {}).get("category") or "other")
+        should_prompt = should_prompt_risk_user(
+            risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
+            violation_response_cfg=vr,
+        )
+        if not should_prompt:
+            return None
+
+        mitig = (risk_obj if isinstance(risk_obj, dict) else {}).get("mitigation") or []
+        mitig_s = "; ".join([str(x) for x in mitig if str(x).strip()][:3])
+        q = f"Risk action detected (category={cat}, severity={severity}). Continue? (y/N)\nMitigation: {mitig_s}"
+        answer = _read_user_answer(q)
+        if answer.strip().lower() not in ("y", "yes"):
+            status = "blocked"
+            notes = "stopped after risk event"
+            return False
+        return None
+
+    def _predecide_judge_and_handle_risk(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        risk_signals: list[str],
+        hands_last: str,
+        tdb_ctx_batch_obj: dict[str, Any],
+    ) -> bool | None:
+        """Run risk_judge, record evidence, and enforce runtime violation policy."""
+
+        risk_obj, risk_mind_ref = _predecide_query_risk_judge(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
+            risk_signals=[str(x) for x in risk_signals if str(x).strip()],
+            hands_last=hands_last,
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+        )
+        risk_rec = _predecide_record_risk_event(
+            batch_idx=batch_idx,
+            risk_signals=[str(x) for x in risk_signals if str(x).strip()],
+            risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
+            risk_mind_ref=risk_mind_ref,
+        )
+        _predecide_apply_risk_learn_suggested(
+            batch_idx=batch_idx,
+            risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
+            risk_mind_ref=risk_mind_ref,
+            risk_event_id=str((risk_rec or {}).get("event_id") or "").strip(),
+        )
+        return _predecide_maybe_prompt_risk_continue(risk_obj=risk_obj if isinstance(risk_obj, dict) else {})
+
+    def _predecide_apply_workflow_and_risk(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        result: Any,
+        summary: dict[str, Any],
+        evidence_obj: dict[str, Any],
+        repo_obs: dict[str, Any],
+        hands_last: str,
+        tdb_ctx_batch_obj: dict[str, Any],
+        ctx: BatchExecutionContext,
+    ) -> bool | None:
+        """Apply workflow progress and risk handling before checks/auto-answer."""
+
+        return run_workflow_and_risk_phase(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
+            result=result,
+            summary=summary if isinstance(summary, dict) else {},
+            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            hands_last=hands_last,
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            ctx=ctx,
+            deps=WorkflowRiskPhaseDeps(
+                apply_workflow_progress=_predecide_apply_workflow_progress,
+                detect_risk_signals=_predecide_detect_risk_signals,
+                judge_and_handle_risk=_predecide_judge_and_handle_risk,
+            ),
+        )
+
+    def _predecide_plan_checks(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        summary: dict[str, Any],
+        evidence_obj: dict[str, Any],
+        repo_obs: dict[str, Any],
+        hands_last: str,
+        tdb_ctx_batch_obj: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Plan minimal checks and emit check-plan log."""
+
+        should_plan_checks = _should_plan_checks(
+            summary=summary if isinstance(summary, dict) else {},
+            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
+            hands_last_message=hands_last,
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+        )
+        checks_obj, _, _ = _plan_checks_and_record(
+            batch_id=batch_id,
+            tag=f"checks_b{batch_idx}",
+            thought_db_context=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            should_plan=should_plan_checks,
+            notes_on_skip="skipped: no uncertainty/risk/question detected",
+            notes_on_skipped="skipped: mind_circuit_open (plan_min_checks)",
+            notes_on_error="mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error",
+        )
+        if isinstance(checks_obj, dict):
+            _emit_prefixed("[mi]", compose_check_plan_log(checks_obj))
+            return checks_obj
+        return _empty_check_plan()
+
+    def _auto_answer_query_and_normalize(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        tdb_ctx_batch_obj: dict[str, Any],
+    ) -> tuple[dict[str, Any], str, str]:
+        """Query auto_answer_to_hands and normalize fallback object."""
+
+        nonlocal evidence_window
+
+        aa_prompt = auto_answer_to_hands_prompt(
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay,
+            thought_db_context=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+            recent_evidence=evidence_window,
+            hands_last_message=hands_last,
+        )
+        aa_obj, auto_answer_mind_ref, aa_state = _mind_call(
+            schema_filename="auto_answer_to_hands.json",
+            prompt=aa_prompt,
+            tag=f"autoanswer_b{batch_idx}",
+            batch_id=batch_id,
+        )
+        if aa_obj is None:
+            auto_answer_obj = _empty_auto_answer()
+            if aa_state == "skipped":
+                auto_answer_obj["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands)"
+            else:
+                auto_answer_obj["notes"] = "mind_error: auto_answer_to_hands failed; see EvidenceLog kind=mind_error"
+        else:
+            auto_answer_obj = aa_obj if isinstance(aa_obj, dict) else _empty_auto_answer()
+        return (
+            auto_answer_obj if isinstance(auto_answer_obj, dict) else _empty_auto_answer(),
+            str(auto_answer_mind_ref or ""),
+            str(aa_state or ""),
+        )
+
+    def _predecide_maybe_auto_answer(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        hands_last: str,
+        repo_obs: dict[str, Any],
+        checks_obj: dict[str, Any],
+        tdb_ctx_batch_obj: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Auto-answer Hands only when last message looks like a direct question."""
+
+        if not _looks_like_user_question(hands_last):
+            return _empty_auto_answer()
+
+        auto_answer_obj, auto_answer_mind_ref, aa_state = _auto_answer_query_and_normalize(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+        )
+        _emit_prefixed(
+            "[mi]",
+            compose_auto_answer_log(state=str(aa_state or ""), auto_answer_obj=auto_answer_obj if isinstance(auto_answer_obj, dict) else {}),
+        )
+        _append_auto_answer_record(
+            batch_id=f"b{batch_idx}",
+            mind_transcript_ref=auto_answer_mind_ref,
+            auto_answer=auto_answer_obj if isinstance(auto_answer_obj, dict) else {},
+        )
+        return auto_answer_obj if isinstance(auto_answer_obj, dict) else _empty_auto_answer()
+
+    def _predecide_plan_checks_and_auto_answer(
+        *,
+        batch_idx: int,
+        batch_id: str,
+        summary: dict[str, Any],
+        evidence_obj: dict[str, Any],
+        repo_obs: dict[str, Any],
+        hands_last: str,
+        tdb_ctx_batch_obj: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Plan checks and optionally auto-answer Hands questions."""
+
+        checks_obj, auto_answer_obj = run_plan_checks_and_auto_answer(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
+            summary=summary if isinstance(summary, dict) else {},
+            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            hands_last=hands_last,
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            deps=PlanChecksAutoAnswerDeps(
+                plan_checks=_predecide_plan_checks,
+                maybe_auto_answer=_predecide_maybe_auto_answer,
+            ),
+        )
+        return (
+            checks_obj if isinstance(checks_obj, dict) else _empty_check_plan(),
+            auto_answer_obj if isinstance(auto_answer_obj, dict) else _empty_auto_answer(),
+        )
+
+    def _dict_or_empty(obj: Any) -> dict[str, Any]:
+        return obj if isinstance(obj, dict) else {}
+
+    def _build_batch_execution_context(*, batch_idx: int) -> BatchExecutionContext:
+        batch_id = f"b{batch_idx}"
+        batch_ts = now_rfc3339().replace(":", "").replace("-", "")
+        light = build_light_injection(tdb=tdb, as_of_ts=now_rfc3339())
+        batch_input = next_input.strip()
+        hands_prompt = light + "\n" + batch_input + "\n"
+        sent_ts = now_rfc3339()
+        prompt_sha256 = hashlib.sha256(hands_prompt.encode("utf-8")).hexdigest()
+        use_resume = thread_id is not None and hands_resume is not None and thread_id != "unknown"
+        attempted_overlay_resume = bool(use_resume and resumed_from_overlay and batch_idx == 0)
+        return BatchExecutionContext(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
+            batch_ts=batch_ts,
+            hands_transcript=project_paths.transcripts_dir / "hands" / f"{batch_ts}_b{batch_idx}.jsonl",
+            batch_input=batch_input,
+            hands_prompt=hands_prompt,
+            light_injection=light,
+            sent_ts=sent_ts,
+            prompt_sha256=prompt_sha256,
+            use_resume=use_resume,
+            attempted_overlay_resume=attempted_overlay_resume,
+        )
+
+    last_evidence_rec: dict[str, Any] | None = None
+    last_decide_next_rec: dict[str, Any] | None = None
+
+    executed_batches = 0
+    last_batch_id = ""
+    max_batches_exhausted = False
+    def _phase_batch_predecide(batch_idx: int, batch_id: str) -> bool | PreactionDecision:
+        nonlocal last_batch_id
+        out = run_batch_predecide(
+            batch_idx=batch_idx,
+            deps=BatchPredecideDeps(
+                build_context=_build_batch_execution_context,
+                run_hands=_predecide_run_hands,
+                observe_repo=lambda: _observe_repo(project_path),
+                dict_or_empty=_dict_or_empty,
+                extract_deps=ExtractEvidenceDeps(extract_context=_predecide_extract_evidence_and_context),
+                workflow_risk_deps=WorkflowRiskPhaseDeps(
+                    apply_workflow_progress=_predecide_apply_workflow_progress,
+                    detect_risk_signals=_predecide_detect_risk_signals,
+                    judge_and_handle_risk=_predecide_judge_and_handle_risk,
+                ),
+                checks_deps=PlanChecksAutoAnswerDeps(
+                    plan_checks=_predecide_plan_checks,
+                    maybe_auto_answer=_predecide_maybe_auto_answer,
+                ),
+                preaction_deps=PreactionPhaseDeps(
+                    apply_preactions=_predecide_apply_preactions,
+                    empty_auto_answer=_empty_auto_answer,
+                ),
+            ),
+        )
+        last_batch_id = str(out.batch_id or f"b{batch_idx}")
+        return out.out
+
+    def _run_single_batch(batch_idx: int, batch_id: str) -> bool:
+        """Run one batch pipeline: pre-decide phases, then decide_next when needed."""
+
+        nonlocal status, notes
+        out = _phase_batch_predecide(batch_idx, batch_id)
+        if isinstance(out, bool):
+            return out
+        if not isinstance(out, PreactionDecision):
+            status = "blocked"
+            notes = "invalid pre-decide pipeline output"
+            return False
+        return _phase_decide_next(
+            batch_idx=batch_idx,
+            batch_id=f"b{batch_idx}",
+            hands_last=str(out.hands_last or ""),
+            repo_obs=out.repo_obs if isinstance(out.repo_obs, dict) else {},
+            checks_obj=out.checks_obj if isinstance(out.checks_obj, dict) else {},
+            auto_answer_obj=out.auto_answer_obj if isinstance(out.auto_answer_obj, dict) else _empty_auto_answer(),
+        )
+
+    def _run_learn_update() -> None:
+        maybe_run_learn_update_on_run_end(
+            runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
+            executed_batches=int(executed_batches),
+            last_batch_id=str(last_batch_id or ""),
+            learn_suggested_records_this_run=learn_suggested_records_this_run,
+            tdb=tdb,
+            evw=evw,
+            mind_call=_mind_call,
+            emit_prefixed=_emit_prefixed,
+            truncate=_truncate,
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            status=str(status or ""),
+            notes=str(notes or ""),
+            thread_id=(thread_id or ""),
+        )
+
+    def _run_why_trace() -> None:
+        maybe_run_why_trace_on_run_end(
+            enabled=bool(auto_why_on_end),
+            executed_batches=int(executed_batches),
+            last_batch_id=str(last_batch_id or ""),
+            last_decide_next_rec=last_decide_next_rec if isinstance(last_decide_next_rec, dict) else None,
+            last_evidence_rec=last_evidence_rec if isinstance(last_evidence_rec, dict) else None,
+            tdb=tdb,
+            mem_service=mem.service,
+            project_paths=project_paths,
+            why_top_k=int(why_top_k),
+            why_write_edges=bool(why_write_edges),
+            why_min_write_conf=float(why_min_write_conf),
+            mind_call=_mind_call,
+            evw=evw,
+            thread_id=(thread_id or ""),
+        )
+
+    def _apply_engine_state_outcome(*, engine_state: RunMutableState) -> None:
+        nonlocal status, notes, last_batch_id, max_batches_exhausted
+        if bool(engine_state.max_batches_exhausted):
+            status = str(engine_state.status or status)
+            notes = str(engine_state.notes or notes)
+        last_batch_id = str(engine_state.last_batch_id or last_batch_id)
+        max_batches_exhausted = bool(engine_state.max_batches_exhausted)
+
+    engine_state = run_autopilot_engine(
+        max_batches=max_batches,
+        state=RunMutableState(
+            status=str(status or ""),
+            notes=str(notes or ""),
+            last_batch_id=str(last_batch_id or ""),
+            max_batches_exhausted=False,
+        ),
+        deps=RunEngineDeps(
+            run_single_batch=_run_single_batch,
+            executed_batches_getter=lambda: int(executed_batches),
+            checkpoint_enabled=bool(checkpoint_enabled),
+            checkpoint_runner=_maybe_checkpoint_and_mine,
+            learn_runner=_run_learn_update,
+            why_runner=_run_why_trace,
+            snapshot_flusher=tdb.flush_snapshots_best_effort,
+            state_warning_flusher=_flush_state_warnings,
+        ),
     )
-
-    maybe_run_why_trace_on_run_end(
-        enabled=bool(auto_why_on_end),
-        executed_batches=int(executed_batches),
-        last_batch_id=str(last_batch_id or ""),
-        last_decide_next_rec=last_decide_next_rec if isinstance(last_decide_next_rec, dict) else None,
-        last_evidence_rec=last_evidence_rec if isinstance(last_evidence_rec, dict) else None,
-        tdb=tdb,
-        mem_service=mem.service,
-        project_paths=project_paths,
-        why_top_k=int(why_top_k),
-        why_write_edges=bool(why_write_edges),
-        why_min_write_conf=float(why_min_write_conf),
-        mind_call=_mind_call,
-        evw=evw,
-        thread_id=(thread_id or ""),
-    )
-
-    # Best-effort: persist Thought DB view snapshots at the end of the run.
-    # This keeps cold-start `load_view()` fast even when the view was maintained hot in-memory.
-    try:
-        tdb.flush_snapshots_best_effort()
-    except Exception:
-        pass
-
-    # Best-effort: record any recovered/corrupt state files that were quarantined during this run.
-    _flush_state_warnings()
+    _apply_engine_state_outcome(engine_state=engine_state)
 
     return AutopilotResult(
         status=status,

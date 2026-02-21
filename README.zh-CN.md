@@ -66,7 +66,7 @@ make doccheck
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
-内部架构说明：runtime 编排辅助逻辑已拆分到 `mi/runtime/autopilot/`（包含 run-end `learn_update` + WhyTrace 流程），CLI 处理已拆分到 `mi/cli_commands/`（`show`/`tail` 以及 claim/node/edge/why/workflow/host 领域路由）。该改动保持行为不变，不改变公开 CLI/存储契约。
+内部架构说明：runtime 编排辅助逻辑位于 `mi/runtime/autopilot/`（包含 batch-loop engine 骨架、workflow cursor 辅助逻辑、batch context/effects 辅助组件、pre-decide pipeline 辅助模块、evidence/risk 策略 phase helper，以及 run-end `learn_update` + WhyTrace 流程）。`run_autopilot` 在保持行为不变的前提下，把每个 batch 收敛为“pre-decide 子阶段（run_hands + preaction arbitration helper）+ decide phase helper”；其中 decide 阶段进一步把 `decide_next` 缺失兜底与 `next_action=ask_user` 路径拆为独立 helper，降低分支漂移风险。CLI 处理拆分在 `mi/cli_dispatch.py` 与 `mi/cli_commands/`（`show`/`tail`、领域路由、`run`/`memory`/`gc` 运行时命令处理、status/project-selection 处理，以及 config/init/values/settings 处理）。values 写入逻辑进一步抽离到 `mi/cli_commands/values_set_flow.py`（`run_values_set_flow`），由 `cli_dispatch` 注入调用，便于复用与测试。Thought DB 内部以 append/view/service 三层实现（`mi/thoughtdb/append_store.py`、`mi/thoughtdb/view_store.py`、`mi/thoughtdb/service_store.py`），并通过 `ThoughtDbStore` 对外保持一致。该改动保持行为不变，不改变公开 CLI/存储契约。
 
 ## 快速开始
 

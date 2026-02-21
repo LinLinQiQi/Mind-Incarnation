@@ -100,6 +100,10 @@ from .autopilot.learn_suggested_flow import (
     LearnSuggestedDeps,
     apply_learn_suggested,
 )
+from .autopilot.auto_answer_flow import (
+    AutoAnswerQueryDeps,
+    query_auto_answer_to_hands,
+)
 from .autopilot.evidence_flow import (
     EvidenceAppendDeps,
     append_evidence_with_tracking,
@@ -2607,37 +2611,23 @@ def run_autopilot(
     ) -> tuple[dict[str, Any], str, str]:
         """Query auto_answer_to_hands and normalize fallback object."""
 
-        nonlocal evidence_window
-
-        aa_prompt = auto_answer_to_hands_prompt(
+        return query_auto_answer_to_hands(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
+            project_overlay=overlay if isinstance(overlay, dict) else {},
             thought_db_context=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
             repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
             check_plan=checks_obj if isinstance(checks_obj, dict) else {},
             recent_evidence=evidence_window,
             hands_last_message=hands_last,
-        )
-        aa_obj, auto_answer_mind_ref, aa_state = _mind_call(
-            schema_filename="auto_answer_to_hands.json",
-            prompt=aa_prompt,
-            tag=f"autoanswer_b{batch_idx}",
-            batch_id=batch_id,
-        )
-        if aa_obj is None:
-            auto_answer_obj = _empty_auto_answer()
-            if aa_state == "skipped":
-                auto_answer_obj["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands)"
-            else:
-                auto_answer_obj["notes"] = "mind_error: auto_answer_to_hands failed; see EvidenceLog kind=mind_error"
-        else:
-            auto_answer_obj = aa_obj if isinstance(aa_obj, dict) else _empty_auto_answer()
-        return (
-            auto_answer_obj if isinstance(auto_answer_obj, dict) else _empty_auto_answer(),
-            str(auto_answer_mind_ref or ""),
-            str(aa_state or ""),
+            deps=AutoAnswerQueryDeps(
+                auto_answer_prompt_builder=auto_answer_to_hands_prompt,
+                mind_call=_mind_call,
+                empty_auto_answer=_empty_auto_answer,
+            ),
         )
 
     def _predecide_maybe_auto_answer(

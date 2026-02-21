@@ -72,6 +72,12 @@ from .autopilot.decide_actions import (
     handle_decide_next_missing,
     route_decide_next_action,
 )
+from .autopilot.decide_query_flow import (
+    DecideNextQueryDeps,
+    DecideRecordEffectsDeps,
+    query_decide_next as run_query_decide_next,
+    record_decide_next_effects as run_record_decide_next_effects,
+)
 from .autopilot.risk_predecide import (
     RiskPredecideDeps,
     maybe_prompt_risk_continue,
@@ -1747,37 +1753,27 @@ def run_autopilot(
     ) -> tuple[dict[str, Any] | None, str, str, dict[str, Any], dict[str, Any]]:
         """Build decide_next prompt, call Mind, and return decision plus prompt context."""
 
-        nonlocal evidence_window
-
-        tdb_ctx = _build_decide_context(hands_last_message=hands_last, recent_evidence=evidence_window)
-        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
-        tdb_ctx_summary = summarize_thought_db_context(tdb_ctx)
-        decision_prompt = decide_next_prompt(
+        return run_query_decide_next(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx_obj,
-            active_workflow=load_active_workflow(workflow_run=workflow_run, load_effective=wf_registry.load_effective),
+            project_overlay=overlay if isinstance(overlay, dict) else {},
             workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-            recent_evidence=evidence_window,
-            hands_last_message=hands_last,
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-            auto_answer=auto_answer_obj,
-        )
-        decision_obj, decision_mind_ref, decision_state = _mind_call(
-            schema_filename="decide_next.json",
-            prompt=decision_prompt,
-            tag=f"decide_b{batch_idx}",
-            batch_id=batch_id,
-        )
-        return (
-            decision_obj if isinstance(decision_obj, dict) else None,
-            str(decision_mind_ref or ""),
-            str(decision_state or ""),
-            tdb_ctx_obj,
-            tdb_ctx_summary,
+            workflow_load_effective=wf_registry.load_effective,
+            recent_evidence=evidence_window if isinstance(evidence_window, list) else [],
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            auto_answer_obj=auto_answer_obj if isinstance(auto_answer_obj, dict) else {},
+            deps=DecideNextQueryDeps(
+                build_decide_context=_build_decide_context,
+                summarize_thought_db_context=summarize_thought_db_context,
+                decide_next_prompt_builder=decide_next_prompt,
+                load_active_workflow=load_active_workflow,
+                mind_call=_mind_call,
+            ),
         )
 
     def _decide_next_record_effects(
@@ -1791,64 +1787,26 @@ def run_autopilot(
 
         nonlocal status, notes, last_decide_next_rec
 
-        decide_rec = _log_decide_next(
-            decision_obj=decision_obj,
-            batch_id=f"b{batch_idx}",
-            phase="initial",
-            mind_transcript_ref=decision_mind_ref,
-            thought_db_context_summary=tdb_ctx_summary,
-        )
-        if isinstance(decide_rec, dict) and str(decide_rec.get("event_id") or "").strip():
-            last_decide_next_rec = decide_rec
-        if decide_rec:
-            _segment_add(decide_rec)
-        else:
-            _segment_add(
-                {
-                    "kind": "decide_next",
-                    "batch_id": f"b{batch_idx}",
-                    "next_action": decision_obj.get("next_action"),
-                    "status": decision_obj.get("status"),
-                    "notes": decision_obj.get("notes"),
-                }
-            )
-        _persist_segment_state()
-
-        # Apply project overlay updates (e.g., testless verification strategy).
-        overlay_update = decision_obj.get("update_project_overlay") or {}
-        if isinstance(overlay_update, dict):
-            _apply_set_testless_strategy_overlay_update(
-                set_tls=overlay_update.get("set_testless_strategy"),
-                decide_event_id=str((decide_rec or {}).get("event_id") or ""),
-                fallback_batch_id=f"b{batch_idx}.set_testless",
-                default_rationale="decide_next overlay update",
-                source="decide_next:set_testless_strategy",
-            )
-
-        # Write learn suggestions (append-only; reversible via claim retraction).
-        _handle_learn_suggested(
-            learn_suggested=decision_obj.get("learn_suggested"),
-            batch_id=f"b{batch_idx}",
-            source="decide_next",
-            mind_transcript_ref=decision_mind_ref,
-            source_event_ids=[str((decide_rec or {}).get("event_id") or "").strip()],
+        res = run_record_decide_next_effects(
+            batch_idx=batch_idx,
+            decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
+            decision_mind_ref=str(decision_mind_ref or ""),
+            tdb_ctx_summary=tdb_ctx_summary if isinstance(tdb_ctx_summary, dict) else {},
+            deps=DecideRecordEffectsDeps(
+                log_decide_next=_log_decide_next,
+                segment_add=_segment_add,
+                persist_segment_state=_persist_segment_state,
+                apply_set_testless_strategy_overlay_update=_apply_set_testless_strategy_overlay_update,
+                handle_learn_suggested=_handle_learn_suggested,
+                emit_prefixed=_emit_prefixed,
+            ),
         )
 
-        next_action = str(decision_obj.get("next_action") or "stop")
-        status = str(decision_obj.get("status") or "not_done")
-        notes = str(decision_obj.get("notes") or "")
-        cf = decision_obj.get("confidence")
-        try:
-            cf_s = f"{float(cf):.2f}" if cf is not None else ""
-        except Exception:
-            cf_s = str(cf or "")
-        _emit_prefixed(
-            "[mi]",
-            "decide_next "
-            + f"status={status} next_action={next_action} "
-            + (f"confidence={cf_s}" if cf_s else ""),
-        )
-        return next_action, decide_rec if isinstance(decide_rec, dict) else None
+        if isinstance(res.decide_rec, dict) and str(res.decide_rec.get("event_id") or "").strip():
+            last_decide_next_rec = res.decide_rec
+        status = str(res.status or "not_done")
+        notes = str(res.notes or "")
+        return str(res.next_action or "stop"), res.decide_rec if isinstance(res.decide_rec, dict) else None
 
     def _decide_next_route_action(
         *,

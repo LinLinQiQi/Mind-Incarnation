@@ -100,6 +100,10 @@ from .autopilot.learn_suggested_flow import (
     LearnSuggestedDeps,
     apply_learn_suggested,
 )
+from .autopilot.risk_event_flow import (
+    RiskEventAppendDeps,
+    append_risk_event_with_tracking,
+)
 from .autopilot.workflow_progress_flow import (
     WorkflowProgressQueryDeps,
     apply_workflow_progress_and_persist,
@@ -2441,41 +2445,24 @@ def run_autopilot(
     ) -> dict[str, Any]:
         """Persist risk event to EvidenceLog + segment + evidence window."""
 
-        nonlocal evidence_window
-
-        risk_rec = evw.append(
-            {
-                "kind": "risk_event",
-                "batch_id": f"b{batch_idx}",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "risk_signals": risk_signals,
-                "mind_transcript_ref": risk_mind_ref,
-                "risk": risk_obj if isinstance(risk_obj, dict) else {},
-            }
+        return append_risk_event_with_tracking(
+            batch_idx=batch_idx,
+            risk_signals=risk_signals,
+            risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
+            risk_mind_ref=risk_mind_ref,
+            evidence_window=evidence_window,
+            deps=RiskEventAppendDeps(
+                evidence_append=evw.append,
+                append_window=append_evidence_window,
+                segment_add=lambda item: segment_add_and_persist(
+                    segment_add=_segment_add,
+                    persist_segment_state=_persist_segment_state,
+                    item=item if isinstance(item, dict) else {},
+                ),
+                now_ts=now_rfc3339,
+                thread_id=thread_id,
+            ),
         )
-        append_evidence_window(
-            evidence_window,
-            {
-                "kind": "risk_event",
-                "batch_id": f"b{batch_idx}",
-                "event_id": risk_rec.get("event_id"),
-                **(risk_obj if isinstance(risk_obj, dict) else {}),
-            },
-        )
-        segment_add_and_persist(
-            segment_add=_segment_add,
-            persist_segment_state=_persist_segment_state,
-            item={
-                "kind": "risk_event",
-                "batch_id": f"b{batch_idx}",
-                "event_id": risk_rec.get("event_id"),
-                "risk_signals": risk_signals,
-                "category": (risk_obj if isinstance(risk_obj, dict) else {}).get("category"),
-                "severity": (risk_obj if isinstance(risk_obj, dict) else {}).get("severity"),
-            },
-        )
-        return risk_rec if isinstance(risk_rec, dict) else {}
 
     def _predecide_apply_risk_learn_suggested(
         *,

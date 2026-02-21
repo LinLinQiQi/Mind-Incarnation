@@ -100,6 +100,10 @@ from .autopilot.learn_suggested_flow import (
     LearnSuggestedDeps,
     apply_learn_suggested,
 )
+from .autopilot.evidence_flow import (
+    EvidenceAppendDeps,
+    append_evidence_with_tracking,
+)
 from .autopilot.risk_event_flow import (
     RiskEventAppendDeps,
     append_risk_event_with_tracking,
@@ -2309,22 +2313,28 @@ def run_autopilot(
             + f"facts={counts['facts']} actions={counts['actions']} "
             + f"results={counts['results']} unknowns={counts['unknowns']} risk_signals={counts['risk_signals']}",
         )
-        evidence_item = {
-            "kind": "evidence",
-            "batch_id": batch_id,
-            "ts": now_rfc3339(),
-            "thread_id": thread_id,
-            "hands_transcript_ref": str(ctx.hands_transcript),
-            "mind_transcript_ref": evidence_mind_ref,
-            "mi_input": ctx.batch_input,
-            "transcript_observation": summary.get("transcript_observation") or {},
-            "repo_observation": repo_obs,
-            **evidence_obj,
-        }
-        evidence_rec = evw.append(evidence_item)
+        evidence_rec = append_evidence_with_tracking(
+            batch_id=batch_id,
+            hands_transcript_ref=str(ctx.hands_transcript),
+            mind_transcript_ref=evidence_mind_ref,
+            mi_input=ctx.batch_input,
+            transcript_observation=summary.get("transcript_observation") or {},
+            repo_observation=repo_obs,
+            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
+            evidence_window=evidence_window,
+            deps=EvidenceAppendDeps(
+                evidence_append=evw.append,
+                append_window=append_evidence_window,
+                segment_add=lambda item: segment_add_and_persist(
+                    segment_add=_segment_add,
+                    persist_segment_state=_persist_segment_state,
+                    item=item if isinstance(item, dict) else {},
+                ),
+                now_ts=now_rfc3339,
+                thread_id=thread_id,
+            ),
+        )
         last_evidence_rec = evidence_rec
-        append_evidence_window(evidence_window, evidence_rec)
-        segment_add_and_persist(segment_add=_segment_add, persist_segment_state=_persist_segment_state, item=evidence_rec)
 
         hands_last = result.last_agent_message()
         tdb_ctx_batch = _build_decide_context(hands_last_message=hands_last, recent_evidence=evidence_window)

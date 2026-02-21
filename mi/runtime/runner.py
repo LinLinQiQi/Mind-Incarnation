@@ -814,6 +814,83 @@ def run_autopilot(
     if str(task or "").strip():
         _maybe_cross_project_recall(batch_id="b0.recall", reason="run_start", query=task)
 
+    def _mk_check_plan_flow_deps() -> CheckPlanFlowDeps:
+        """Build CheckPlanFlowDeps once per call-site; keeps runner wiring consistent."""
+
+        return CheckPlanFlowDeps(
+            empty_check_plan=_empty_check_plan,
+            evidence_append=evw.append,
+            segment_add=_segment_add,
+            persist_segment_state=_persist_segment_state,
+            now_ts=now_rfc3339,
+            thread_id=thread_id,
+            plan_min_checks_prompt_builder=plan_min_checks_prompt,
+            mind_call=_mind_call,
+        )
+
+    def _mk_testless_strategy_flow_deps() -> TestlessStrategyFlowDeps:
+        """Build TestlessStrategyFlowDeps with shared overlay IO/service hooks."""
+
+        return TestlessStrategyFlowDeps(
+            now_ts=now_rfc3339,
+            thread_id=thread_id,
+            evidence_append=evw.append,
+            find_testless_strategy_claim=lambda ts: _find_testless_strategy_claim(as_of_ts=ts),
+            parse_testless_strategy_from_claim_text=_parse_testless_strategy_from_claim_text,
+            upsert_testless_strategy_claim=_upsert_testless_strategy_claim,
+            write_overlay=lambda obj: write_project_overlay(home_dir=home, project_root=project_path, overlay=obj),
+            refresh_overlay_refs=_refresh_overlay_refs,
+        )
+
+    def _mk_testless_resolution_deps() -> TestlessResolutionDeps:
+        """Build TestlessResolutionDeps for ask-once TLS resolution + replan path."""
+
+        return TestlessResolutionDeps(
+            now_ts=now_rfc3339,
+            thread_id=thread_id,
+            read_user_answer=_read_user_answer,
+            evidence_append=evw.append,
+            segment_add=lambda item: _segment_add(item if isinstance(item, dict) else {}),
+            persist_segment_state=_persist_segment_state,
+            sync_tls_overlay=lambda ts: _sync_tls_overlay_from_thoughtdb(as_of_ts=ts),
+            canonicalize_tls=lambda **kwargs: _canonicalize_tls_and_update_overlay(
+                strategy_text=str(kwargs.get("strategy_text") or ""),
+                source_event_id=str(kwargs.get("source_event_id") or ""),
+                fallback_batch_id=str(kwargs.get("fallback_batch_id") or ""),
+                overlay_rationale=str(kwargs.get("overlay_rationale") or ""),
+                overlay_rationale_default=str(kwargs.get("overlay_rationale_default") or ""),
+                claim_rationale=str(kwargs.get("claim_rationale") or ""),
+                default_rationale=str(kwargs.get("default_rationale") or ""),
+                source=str(kwargs.get("source") or ""),
+            ),
+            build_thought_db_context_obj=lambda hlm, recs: _build_decide_context(
+                hands_last_message=hlm,
+                recent_evidence=recs if isinstance(recs, list) else [],
+            ).to_prompt_obj(),
+            plan_checks_and_record=lambda **kwargs: _plan_checks_and_record(
+                batch_id=str(kwargs.get("batch_id") or ""),
+                tag=str(kwargs.get("tag") or ""),
+                thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
+                repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
+                should_plan=bool(kwargs.get("should_plan")),
+                notes_on_skip=str(kwargs.get("notes_on_skip") or ""),
+                notes_on_skipped=str(kwargs.get("notes_on_skipped") or ""),
+                notes_on_error=str(kwargs.get("notes_on_error") or ""),
+            ),
+            plan_checks_and_record2=lambda **kwargs: _plan_checks_and_record2(
+                batch_id=str(kwargs.get("batch_id") or ""),
+                tag=str(kwargs.get("tag") or ""),
+                thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
+                repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
+                should_plan=bool(kwargs.get("should_plan")),
+                notes_on_skip=str(kwargs.get("notes_on_skip") or ""),
+                notes_on_skipped=str(kwargs.get("notes_on_skipped") or ""),
+                notes_on_error=str(kwargs.get("notes_on_error") or ""),
+                postprocess=kwargs.get("postprocess"),
+            ),
+            empty_check_plan=_empty_check_plan,
+        )
+
     def _append_check_plan_record(*, batch_id: str, checks_obj: Any, mind_transcript_ref: str) -> dict[str, Any]:
         """Append a check_plan record and keep evidence_window/segment in sync (single source of truth)."""
         return append_check_plan_record_with_tracking(
@@ -821,16 +898,7 @@ def run_autopilot(
             checks_obj=checks_obj,
             mind_transcript_ref=mind_transcript_ref,
             evidence_window=evidence_window,
-            deps=CheckPlanFlowDeps(
-                empty_check_plan=_empty_check_plan,
-                evidence_append=evw.append,
-                segment_add=_segment_add,
-                persist_segment_state=_persist_segment_state,
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-                plan_min_checks_prompt_builder=plan_min_checks_prompt,
-                mind_call=_mind_call,
-            ),
+            deps=_mk_check_plan_flow_deps(),
         )
 
     def _get_check_input(checks_obj: dict[str, Any] | None) -> str:
@@ -864,16 +932,7 @@ def run_autopilot(
             repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
             notes_on_skipped=notes_on_skipped,
             notes_on_error=notes_on_error,
-            deps=CheckPlanFlowDeps(
-                empty_check_plan=_empty_check_plan,
-                evidence_append=evw.append,
-                segment_add=_segment_add,
-                persist_segment_state=_persist_segment_state,
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-                plan_min_checks_prompt_builder=plan_min_checks_prompt,
-                mind_call=_mind_call,
-            ),
+            deps=_mk_check_plan_flow_deps(),
         )
 
     def _plan_checks_and_record2(
@@ -910,16 +969,7 @@ def run_autopilot(
             notes_on_error=notes_on_error,
             evidence_window=evidence_window,
             postprocess=postprocess,
-            deps=CheckPlanFlowDeps(
-                empty_check_plan=_empty_check_plan,
-                evidence_append=evw.append,
-                segment_add=_segment_add,
-                persist_segment_state=_persist_segment_state,
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-                plan_min_checks_prompt_builder=plan_min_checks_prompt,
-                mind_call=_mind_call,
-            ),
+            deps=_mk_check_plan_flow_deps(),
         )
 
     def _plan_checks_and_record(
@@ -954,16 +1004,7 @@ def run_autopilot(
         return sync_tls_overlay_from_thoughtdb(
             overlay=overlay if isinstance(overlay, dict) else {},
             as_of_ts=as_of_ts,
-            deps=TestlessStrategyFlowDeps(
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-                evidence_append=evw.append,
-                find_testless_strategy_claim=lambda ts: _find_testless_strategy_claim(as_of_ts=ts),
-                parse_testless_strategy_from_claim_text=_parse_testless_strategy_from_claim_text,
-                upsert_testless_strategy_claim=_upsert_testless_strategy_claim,
-                write_overlay=lambda obj: write_project_overlay(home_dir=home, project_root=project_path, overlay=obj),
-                refresh_overlay_refs=_refresh_overlay_refs,
-            ),
+            deps=_mk_testless_strategy_flow_deps(),
         )
 
     def _canonicalize_tls_and_update_overlay(
@@ -991,16 +1032,7 @@ def run_autopilot(
             claim_rationale=claim_rationale,
             default_rationale=default_rationale,
             source=source,
-            deps=TestlessStrategyFlowDeps(
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-                evidence_append=evw.append,
-                find_testless_strategy_claim=lambda ts: _find_testless_strategy_claim(as_of_ts=ts),
-                parse_testless_strategy_from_claim_text=_parse_testless_strategy_from_claim_text,
-                upsert_testless_strategy_claim=_upsert_testless_strategy_claim,
-                write_overlay=lambda obj: write_project_overlay(home_dir=home, project_root=project_path, overlay=obj),
-                refresh_overlay_refs=_refresh_overlay_refs,
-            ),
+            deps=_mk_testless_strategy_flow_deps(),
         )
 
     def _resolve_tls_for_checks(
@@ -1035,51 +1067,7 @@ def run_autopilot(
             source=source,
             rationale=rationale,
             evidence_window=evidence_window,
-            deps=TestlessResolutionDeps(
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-                read_user_answer=_read_user_answer,
-                evidence_append=evw.append,
-                segment_add=lambda item: _segment_add(item if isinstance(item, dict) else {}),
-                persist_segment_state=_persist_segment_state,
-                sync_tls_overlay=lambda ts: _sync_tls_overlay_from_thoughtdb(as_of_ts=ts),
-                canonicalize_tls=lambda **kwargs: _canonicalize_tls_and_update_overlay(
-                    strategy_text=str(kwargs.get("strategy_text") or ""),
-                    source_event_id=str(kwargs.get("source_event_id") or ""),
-                    fallback_batch_id=str(kwargs.get("fallback_batch_id") or ""),
-                    overlay_rationale=str(kwargs.get("overlay_rationale") or ""),
-                    overlay_rationale_default=str(kwargs.get("overlay_rationale_default") or ""),
-                    claim_rationale=str(kwargs.get("claim_rationale") or ""),
-                    default_rationale=str(kwargs.get("default_rationale") or ""),
-                    source=str(kwargs.get("source") or ""),
-                ),
-                build_thought_db_context_obj=lambda hlm, recs: _build_decide_context(
-                    hands_last_message=hlm,
-                    recent_evidence=recs if isinstance(recs, list) else [],
-                ).to_prompt_obj(),
-                plan_checks_and_record=lambda **kwargs: _plan_checks_and_record(
-                    batch_id=str(kwargs.get("batch_id") or ""),
-                    tag=str(kwargs.get("tag") or ""),
-                    thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
-                    repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
-                    should_plan=bool(kwargs.get("should_plan")),
-                    notes_on_skip=str(kwargs.get("notes_on_skip") or ""),
-                    notes_on_skipped=str(kwargs.get("notes_on_skipped") or ""),
-                    notes_on_error=str(kwargs.get("notes_on_error") or ""),
-                ),
-                plan_checks_and_record2=lambda **kwargs: _plan_checks_and_record2(
-                    batch_id=str(kwargs.get("batch_id") or ""),
-                    tag=str(kwargs.get("tag") or ""),
-                    thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
-                    repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
-                    should_plan=bool(kwargs.get("should_plan")),
-                    notes_on_skip=str(kwargs.get("notes_on_skip") or ""),
-                    notes_on_skipped=str(kwargs.get("notes_on_skipped") or ""),
-                    notes_on_error=str(kwargs.get("notes_on_error") or ""),
-                    postprocess=kwargs.get("postprocess"),
-                ),
-                empty_check_plan=_empty_check_plan,
-            ),
+            deps=_mk_testless_resolution_deps(),
         )
 
     def _apply_set_testless_strategy_overlay_update(
@@ -1101,16 +1089,7 @@ def run_autopilot(
             fallback_batch_id=fallback_batch_id,
             default_rationale=default_rationale,
             source=source,
-            deps=TestlessStrategyFlowDeps(
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-                evidence_append=evw.append,
-                find_testless_strategy_claim=lambda ts: _find_testless_strategy_claim(as_of_ts=ts),
-                parse_testless_strategy_from_claim_text=_parse_testless_strategy_from_claim_text,
-                upsert_testless_strategy_claim=_upsert_testless_strategy_claim,
-                write_overlay=lambda obj: write_project_overlay(home_dir=home, project_root=project_path, overlay=obj),
-                refresh_overlay_refs=_refresh_overlay_refs,
-            ),
+            deps=_mk_testless_strategy_flow_deps(),
         )
 
     def _mine_workflow_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:

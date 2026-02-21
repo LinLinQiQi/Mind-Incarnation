@@ -100,6 +100,8 @@ from .autopilot.node_materialize import (
 from .autopilot.next_input_flow import (
     LoopGuardDeps,
     apply_loop_guard,
+    QueueNextInputDeps,
+    queue_next_input as run_queue_next_input,
 )
 from .autopilot.learn_suggested_flow import (
     LearnSuggestedDeps,
@@ -113,6 +115,10 @@ from .autopilot.mind_call_flow import (
     MindCallDeps,
     MindCallState,
     run_mind_call,
+)
+from .autopilot.recall_flow import (
+    RecallDeps,
+    maybe_cross_project_recall_write_through as run_cross_project_recall_write_through,
 )
 from .autopilot.ask_user_flow import (
     AskUserAutoAnswerAttemptDeps,
@@ -676,17 +682,19 @@ def run_autopilot(
 
         This writes an EvidenceLog record and appends a compact version to evidence_window so Mind prompts can use it.
         """
-        out = mem.maybe_cross_project_recall(batch_id=batch_id, reason=reason, query=query, thread_id=str(thread_id or ""))
-        if not out:
-            return
-        rec = evw.append(out.evidence_event)
-        win = dict(out.window_entry)
-        if isinstance(rec.get("event_id"), str) and rec.get("event_id"):
-            win["event_id"] = rec["event_id"]
-        evidence_window.append(win)
-        evidence_window[:] = evidence_window[-8:]
-        _segment_add(rec)
-        _persist_segment_state()
+        run_cross_project_recall_write_through(
+            batch_id=batch_id,
+            reason=reason,
+            query=query,
+            thread_id=str(thread_id or ""),
+            evidence_window=evidence_window,
+            deps=RecallDeps(
+                mem_recall=mem.maybe_cross_project_recall,
+                evidence_append=evw.append,
+                segment_add=_segment_add,
+                persist_segment_state=_persist_segment_state,
+            ),
+        )
 
     def _parse_testless_strategy_from_claim_text(text: str) -> str:
         return parse_testless_strategy_from_claim_text(text)
@@ -1331,67 +1339,63 @@ def run_autopilot(
 
         nonlocal next_input, status, notes, sent_sigs
 
-        candidate = (nxt or "").strip()
-        if not candidate:
-            status = "blocked"
-            notes = f"{reason}: empty next input"
-            return False
+        def _loop_guard(**kwargs) -> Any:
+            return apply_loop_guard(
+                candidate=str(kwargs.get("candidate") or ""),
+                hands_last_message=str(kwargs.get("hands_last_message") or ""),
+                batch_id=str(kwargs.get("batch_id") or ""),
+                reason=str(kwargs.get("reason") or ""),
+                sent_sigs=kwargs.get("sent_sigs") if isinstance(kwargs.get("sent_sigs"), list) else [],
+                task=task,
+                hands_provider=cur_provider,
+                mindspec_base=_mindspec_base_runtime(),
+                project_overlay=overlay if isinstance(overlay, dict) else {},
+                thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
+                repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+                check_plan=check_plan if isinstance(check_plan, dict) else {},
+                evidence_window=evidence_window,
+                thread_id=str(thread_id or ""),
+                deps=LoopGuardDeps(
+                    loop_sig=_loop_sig,
+                    loop_pattern=_loop_pattern,
+                    now_ts=now_rfc3339,
+                    truncate=_truncate,
+                    evidence_append=evw.append,
+                    append_segment_record=lambda rec: segment_add_and_persist(
+                        segment_add=_segment_add,
+                        persist_segment_state=_persist_segment_state,
+                        item=rec,
+                    ),
+                    resolve_ask_when_uncertain=lambda: bool(
+                        resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain
+                    ),
+                    loop_break_prompt_builder=loop_break_prompt,
+                    mind_call=_mind_call,
+                    loop_break_get_checks_input=_loop_break_get_checks_input,
+                    read_user_answer=_read_user_answer,
+                    append_user_input_record=_append_user_input_record,
+                ),
+            )
 
-        loop = apply_loop_guard(
-            candidate=candidate,
+        out = run_queue_next_input(
+            nxt=nxt,
             hands_last_message=hands_last_message,
             batch_id=batch_id,
             reason=reason,
             sent_sigs=sent_sigs,
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
-            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-            check_plan=check_plan if isinstance(check_plan, dict) else {},
-            evidence_window=evidence_window,
-            thread_id=str(thread_id or ""),
-            deps=LoopGuardDeps(
-                loop_sig=_loop_sig,
-                loop_pattern=_loop_pattern,
-                now_ts=now_rfc3339,
-                truncate=_truncate,
-                evidence_append=evw.append,
-                append_segment_record=lambda rec: segment_add_and_persist(
-                    segment_add=_segment_add,
-                    persist_segment_state=_persist_segment_state,
-                    item=rec,
-                ),
-                resolve_ask_when_uncertain=lambda: bool(
-                    resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain
-                ),
-                loop_break_prompt_builder=loop_break_prompt,
-                mind_call=_mind_call,
-                loop_break_get_checks_input=_loop_break_get_checks_input,
-                read_user_answer=_read_user_answer,
-                append_user_input_record=_append_user_input_record,
+            deps=QueueNextInputDeps(
+                loop_guard=_loop_guard,
+                checkpoint_before_continue=_maybe_checkpoint_and_mine,
             ),
         )
-
-        sent_sigs = list(loop.sent_sigs)
-        if not bool(loop.proceed):
-            status = str(loop.status or "blocked")
-            notes = str(loop.notes or "")
+        sent_sigs = list(out.sent_sigs)
+        if not bool(out.queued):
+            status = str(out.status or "blocked")
+            notes = str(out.notes or "")
             return False
-        candidate = str(loop.candidate or "").strip()
-
-        # Checkpoint after the current batch, before sending the next instruction to Hands.
-        _maybe_checkpoint_and_mine(
-            batch_id=batch_id,
-            planned_next_input=candidate,
-            status_hint="not_done",
-            note="before_continue: " + reason,
-        )
-
-        next_input = candidate
-        status = "not_done"
-        notes = reason
+        next_input = str(out.next_input or "")
+        status = str(out.status or "not_done")
+        notes = str(out.notes or "")
         return True
 
     def _append_user_input_record(*, batch_id: str, question: str, answer: str) -> dict[str, Any]:

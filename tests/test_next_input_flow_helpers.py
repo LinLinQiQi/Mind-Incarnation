@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from mi.runtime.autopilot.next_input_flow import LoopGuardDeps, apply_loop_guard
+from mi.runtime.autopilot.next_input_flow import (
+    LoopGuardDeps,
+    LoopGuardResult,
+    QueueNextInputDeps,
+    apply_loop_guard,
+    queue_next_input,
+)
 
 
 class NextInputFlowHelpersTests(unittest.TestCase):
@@ -148,6 +154,79 @@ class NextInputFlowHelpersTests(unittest.TestCase):
         self.assertEqual(out.candidate, "new instruction")
         self.assertEqual(out.sent_sigs, [])
         self.assertEqual(calls["user_input"], 1)
+
+    def test_queue_next_input_empty_blocks_without_invoking_deps(self) -> None:
+        calls = {"loop_guard": 0, "checkpoint": 0}
+
+        out = queue_next_input(
+            nxt="",
+            hands_last_message="h",
+            batch_id="b1",
+            reason="r",
+            sent_sigs=["x"],
+            deps=QueueNextInputDeps(
+                loop_guard=lambda **_kwargs: calls.__setitem__("loop_guard", calls["loop_guard"] + 1)
+                or LoopGuardResult(proceed=True, candidate="c", sent_sigs=[], status="", notes=""),
+                checkpoint_before_continue=lambda **_kwargs: calls.__setitem__("checkpoint", calls["checkpoint"] + 1),
+            ),
+        )
+
+        self.assertFalse(out.queued)
+        self.assertEqual(out.status, "blocked")
+        self.assertIn("empty next input", out.notes)
+        self.assertEqual(out.sent_sigs, ["x"])
+        self.assertEqual(calls, {"loop_guard": 0, "checkpoint": 0})
+
+    def test_queue_next_input_loop_guard_block_propagates_status(self) -> None:
+        calls = {"checkpoint": 0}
+
+        out = queue_next_input(
+            nxt="next",
+            hands_last_message="h",
+            batch_id="b2",
+            reason="r",
+            sent_sigs=["x"],
+            deps=QueueNextInputDeps(
+                loop_guard=lambda **_kwargs: LoopGuardResult(
+                    proceed=False, candidate="next", sent_sigs=["s1"], status="done", notes="stopped"
+                ),
+                checkpoint_before_continue=lambda **_kwargs: calls.__setitem__("checkpoint", calls["checkpoint"] + 1),
+            ),
+        )
+
+        self.assertFalse(out.queued)
+        self.assertEqual(out.status, "done")
+        self.assertEqual(out.notes, "stopped")
+        self.assertEqual(out.sent_sigs, ["s1"])
+        self.assertEqual(calls["checkpoint"], 0)
+
+    def test_queue_next_input_success_runs_checkpoint_then_queues(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        out = queue_next_input(
+            nxt="next",
+            hands_last_message="h",
+            batch_id="b3",
+            reason="continue",
+            sent_sigs=["x"],
+            deps=QueueNextInputDeps(
+                loop_guard=lambda **_kwargs: LoopGuardResult(
+                    proceed=True, candidate="queued", sent_sigs=["s2"], status="", notes=""
+                ),
+                checkpoint_before_continue=lambda **kwargs: calls.append(dict(kwargs)),
+            ),
+        )
+
+        self.assertTrue(out.queued)
+        self.assertEqual(out.next_input, "queued")
+        self.assertEqual(out.status, "not_done")
+        self.assertEqual(out.notes, "continue")
+        self.assertEqual(out.sent_sigs, ["s2"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].get("batch_id"), "b3")
+        self.assertEqual(calls[0].get("planned_next_input"), "queued")
+        self.assertEqual(calls[0].get("status_hint"), "not_done")
+        self.assertTrue(str(calls[0].get("note") or "").startswith("before_continue:"))
 
 
 if __name__ == "__main__":

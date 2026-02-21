@@ -29,6 +29,81 @@ class LoopGuardResult:
     notes: str
 
 
+@dataclass(frozen=True)
+class QueueNextInputDeps:
+    """Dependencies for queue_next_input orchestration."""
+
+    loop_guard: Callable[..., LoopGuardResult]
+    checkpoint_before_continue: Callable[..., None]
+
+
+@dataclass(frozen=True)
+class QueueNextInputResult:
+    """Normalized results from queue_next_input."""
+
+    queued: bool
+    next_input: str
+    status: str
+    notes: str
+    sent_sigs: list[str]
+
+
+def queue_next_input(
+    *,
+    nxt: str,
+    hands_last_message: str,
+    batch_id: str,
+    reason: str,
+    sent_sigs: list[str],
+    deps: QueueNextInputDeps,
+) -> QueueNextInputResult:
+    """Compute the next Hands input using loop-guard + checkpoint-before-continue policy."""
+
+    candidate = (nxt or "").strip()
+    if not candidate:
+        return QueueNextInputResult(
+            queued=False,
+            next_input="",
+            status="blocked",
+            notes=f"{reason}: empty next input",
+            sent_sigs=list(sent_sigs),
+        )
+
+    loop = deps.loop_guard(
+        candidate=candidate,
+        hands_last_message=hands_last_message,
+        batch_id=batch_id,
+        reason=reason,
+        sent_sigs=list(sent_sigs),
+    )
+    sent_sigs2 = list(loop.sent_sigs)
+    if not bool(loop.proceed):
+        return QueueNextInputResult(
+            queued=False,
+            next_input="",
+            status=str(loop.status or "blocked"),
+            notes=str(loop.notes or ""),
+            sent_sigs=sent_sigs2,
+        )
+
+    candidate = str(loop.candidate or "").strip()
+
+    deps.checkpoint_before_continue(
+        batch_id=batch_id,
+        planned_next_input=candidate,
+        status_hint="not_done",
+        note="before_continue: " + reason,
+    )
+
+    return QueueNextInputResult(
+        queued=True,
+        next_input=candidate,
+        status="not_done",
+        notes=str(reason or ""),
+        sent_sigs=sent_sigs2,
+    )
+
+
 def apply_loop_guard(
     *,
     candidate: str,

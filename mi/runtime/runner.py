@@ -78,6 +78,14 @@ from .autopilot.risk_predecide import (
     query_risk_judge,
     run_risk_predecide,
 )
+from .autopilot.checkpoint_pipeline import (
+    CheckpointPipelineDeps,
+    run_checkpoint_pipeline,
+)
+from .autopilot.node_materialize import (
+    NodeMaterializeDeps,
+    materialize_nodes_from_checkpoint,
+)
 from .autopilot.segment_state import (
     add_segment_record,
     clear_segment_state,
@@ -1666,322 +1674,30 @@ def run_autopilot(
         planned_next_input: str,
         note: str,
     ) -> None:
-        """Materialize Decision/Action/Summary nodes at a checkpoint (deterministic; best-effort).
-
-        This does NOT add any new mind calls. It only uses EvidenceLog-derived records that already exist:
-        - snapshot record (created at checkpoint)
-        - segment evidence (evidence + decide_next + ...)
-        """
-
-        if not bool(tdb_enabled) or not bool(tdb_auto_nodes):
-            return
-
-        # Collect candidate source event ids (EvidenceLog event_id only).
-        src_ids: list[str] = []
-        seen_src: set[str] = set()
-
-        def add_src(eid: str) -> None:
-            s = str(eid or "").strip()
-            if not s or s in seen_src:
-                return
-            seen_src.add(s)
-            src_ids.append(s)
-
-        snap_event_id = ""
-        snap_text = ""
-        snap_task = ""
-        snap_tags: list[str] = []
-        if isinstance(snapshot_rec, dict):
-            snap_event_id = str(snapshot_rec.get("event_id") or "").strip()
-            snap_text = str(snapshot_rec.get("text") or "").strip()
-            snap_task = str(snapshot_rec.get("task_hint") or "").strip()
-            tags = snapshot_rec.get("tags") if isinstance(snapshot_rec.get("tags"), list) else []
-            snap_tags = [str(x).strip() for x in tags if str(x).strip()][:12]
-        if snap_event_id:
-            add_src(snap_event_id)
-
-        # Find the last decide_next in the segment (best-effort).
-        last_decide: dict[str, Any] | None = None
-        last_seq = -1
-        for rec in seg_evidence or []:
-            if not isinstance(rec, dict):
-                continue
-            if str(rec.get("kind") or "").strip() != "decide_next":
-                continue
-            seq = rec.get("seq")
-            try:
-                seq_i = int(seq) if seq is not None else -1
-            except Exception:
-                seq_i = -1
-            if seq_i >= last_seq:
-                last_seq = seq_i
-                last_decide = rec
-        if last_decide is None:
-            # Fallback: last in list order.
-            for rec in reversed(seg_evidence or []):
-                if isinstance(rec, dict) and str(rec.get("kind") or "").strip() == "decide_next":
-                    last_decide = rec
-                    break
-
-        decide_event_id = ""
-        decide_status = ""
-        decide_next_action = ""
-        decide_notes = ""
-        if isinstance(last_decide, dict):
-            decide_event_id = str(last_decide.get("event_id") or "").strip()
-            decide_status = str(last_decide.get("status") or "").strip()
-            decide_next_action = str(last_decide.get("next_action") or "").strip()
-            decide_notes = str(last_decide.get("notes") or "").strip()
-        if decide_event_id:
-            add_src(decide_event_id)
-
-        # Aggregate actions from evidence records in this segment.
-        action_lines: list[str] = []
-        action_src_event_ids: list[str] = []
-        seen_actions: set[str] = set()
-        for rec in seg_evidence or []:
-            if not isinstance(rec, dict):
-                continue
-            if str(rec.get("kind") or "").strip() != "evidence":
-                continue
-            eid = str(rec.get("event_id") or "").strip()
-            acts = rec.get("actions") if isinstance(rec.get("actions"), list) else []
-            for a in acts[:20]:
-                s = str(a or "").strip()
-                if not s or s in seen_actions:
-                    continue
-                seen_actions.add(s)
-                action_lines.append(s)
-                if eid:
-                    action_src_event_ids.append(eid)
-        for eid in action_src_event_ids[:12]:
-            add_src(eid)
-
-        # Create nodes (project scope only for now).
-        written_nodes: list[dict[str, str]] = []
-        written_edges: list[dict[str, str]] = []
-        index_items: list[Any] = []
-        base_node_refs = [{"kind": "evidence_event", "event_id": x} for x in src_ids[:12] if str(x).strip()]
-
-        def write_edge(*, edge_type: str, frm: str, to: str, source_eids: list[str], notes: str) -> None:
-            if not frm or not to:
-                return
-            try:
-                eid = tdb.append_edge(
-                    edge_type=edge_type,
-                    from_id=frm,
-                    to_id=to,
-                    scope="project",
-                    visibility="project",
-                    source_event_ids=[x for x in source_eids if str(x).strip()][:8],
-                    notes=notes,
-                )
-                written_edges.append({"edge_id": eid, "edge_type": edge_type, "from_id": frm, "to_id": to})
-            except Exception:
-                return
-
-        ok = True
-        err = ""
-        try:
-            # Summary node: always when we have a snapshot record.
-            if snap_text:
-                title = f"Summary ({checkpoint_kind or 'checkpoint'}): {snap_task or task}".strip()
-                text = "\n".join(
-                    [
-                        f"checkpoint_kind: {checkpoint_kind or ''}".strip(),
-                        f"status_hint: {status_hint or ''}".strip(),
-                        f"batch_id: {base_batch_id}".strip(),
-                        "",
-                        snap_text.strip(),
-                    ]
-                ).strip()
-                tags = ["auto", "checkpoint", "node:summary"]
-                if checkpoint_kind:
-                    tags.append("checkpoint_kind:" + str(checkpoint_kind))
-                if status_hint:
-                    tags.append("status:" + str(status_hint))
-                tags.extend([f"snapshot_tag:{t}" for t in snap_tags[:6] if t])
-                nid = tdb.append_node_create(
-                    node_type="summary",
-                    title=title,
-                    text=text,
-                    scope="project",
-                    visibility="project",
-                    tags=tags,
-                    source_event_ids=src_ids[:12],
-                    confidence=1.0,
-                    notes="auto materialize (snapshot)",
-                )
-                written_nodes.append({"node_id": nid, "node_type": "summary"})
-                if snap_event_id:
-                    write_edge(
-                        edge_type="derived_from",
-                        frm=nid,
-                        to=snap_event_id,
-                        source_eids=[snap_event_id],
-                        notes="auto derived_from snapshot",
-                    )
-                try:
-                    index_items.append(
-                        thoughtdb_node_item(
-                            node_id=nid,
-                            node_type="summary",
-                            title=title,
-                            text=text,
-                            scope="project",
-                            project_id=project_paths.project_id,
-                            ts=now_rfc3339(),
-                            visibility="project",
-                            tags=tags,
-                            nodes_path=project_paths.thoughtdb_nodes_path,
-                            source_refs=base_node_refs,
-                        )
-                    )
-                except Exception:
-                    pass
-
-            # Decision node: only when we have a decide_next record.
-            if decide_next_action or decide_notes or decide_status:
-                title = f"Decision: {decide_next_action or 'unknown'} ({decide_status or 'unknown'})".strip()
-                text = "\n".join(
-                    [
-                        f"status: {decide_status}".strip(),
-                        f"next_action: {decide_next_action}".strip(),
-                        (f"planned_next_input: {_truncate(planned_next_input or '', 1200)}" if planned_next_input else "").strip(),
-                        (f"notes: {decide_notes}" if decide_notes else "").strip(),
-                    ]
-                ).strip()
-                tags = ["auto", "checkpoint", "node:decision"]
-                if decide_next_action:
-                    tags.append("next_action:" + decide_next_action)
-                if decide_status:
-                    tags.append("status:" + decide_status)
-                nid = tdb.append_node_create(
-                    node_type="decision",
-                    title=title,
-                    text=text,
-                    scope="project",
-                    visibility="project",
-                    tags=tags,
-                    source_event_ids=src_ids[:12],
-                    confidence=1.0,
-                    notes="auto materialize (decide_next)",
-                )
-                written_nodes.append({"node_id": nid, "node_type": "decision"})
-                if decide_event_id:
-                    write_edge(
-                        edge_type="derived_from",
-                        frm=nid,
-                        to=decide_event_id,
-                        source_eids=[decide_event_id],
-                        notes="auto derived_from decide_next",
-                    )
-                try:
-                    index_items.append(
-                        thoughtdb_node_item(
-                            node_id=nid,
-                            node_type="decision",
-                            title=title,
-                            text=text,
-                            scope="project",
-                            project_id=project_paths.project_id,
-                            ts=now_rfc3339(),
-                            visibility="project",
-                            tags=tags,
-                            nodes_path=project_paths.thoughtdb_nodes_path,
-                            source_refs=base_node_refs,
-                        )
-                    )
-                except Exception:
-                    pass
-
-            # Action node: only when evidence recorded non-empty actions.
-            if action_lines:
-                head = action_lines[0] if action_lines else ""
-                title = f"Actions: {_truncate(head, 120)}".strip()
-                body = "\n".join([f"- {a}" for a in action_lines[:24] if str(a).strip()]).strip()
-                text = "\n".join(
-                    [
-                        f"batch_id: {base_batch_id}".strip(),
-                        "",
-                        body,
-                    ]
-                ).strip()
-                tags = ["auto", "checkpoint", "node:action"]
-                nid = tdb.append_node_create(
-                    node_type="action",
-                    title=title,
-                    text=text,
-                    scope="project",
-                    visibility="project",
-                    tags=tags,
-                    source_event_ids=src_ids[:12],
-                    confidence=1.0,
-                    notes="auto materialize (segment actions)",
-                )
-                written_nodes.append({"node_id": nid, "node_type": "action"})
-                # Link to the evidence events that contained actions.
-                for eid in action_src_event_ids[:12]:
-                    if eid:
-                        write_edge(
-                            edge_type="derived_from",
-                            frm=nid,
-                            to=eid,
-                            source_eids=[eid],
-                            notes="auto derived_from evidence(actions)",
-                        )
-                try:
-                    index_items.append(
-                        thoughtdb_node_item(
-                            node_id=nid,
-                            node_type="action",
-                            title=title,
-                            text=text,
-                            scope="project",
-                            project_id=project_paths.project_id,
-                            ts=now_rfc3339(),
-                            visibility="project",
-                            tags=tags,
-                            nodes_path=project_paths.thoughtdb_nodes_path,
-                            source_refs=base_node_refs,
-                        )
-                    )
-                except Exception:
-                    pass
-        except Exception as e:
-            ok = False
-            err = f"{type(e).__name__}: {e}"
-
-        # Index the created nodes for recall (best-effort; derived).
-        if index_items:
-            try:
-                mem.upsert_items([x for x in index_items if x])
-            except Exception:
-                pass
-
-        # Record the materialization attempt in EvidenceLog for audit (best-effort).
-        try:
-            evw.append(
-                {
-                    "kind": "node_materialized",
-                    "batch_id": f"{base_batch_id}.node_materialized",
-                    "ts": now_rfc3339(),
-                    "thread_id": thread_id or "",
-                    "segment_id": str(segment_state.get("segment_id") or "") if isinstance(segment_state, dict) else "",
-                    "checkpoint_kind": str(checkpoint_kind or ""),
-                    "status_hint": str(status_hint or ""),
-                    "note": (note or "").strip(),
-                    "ok": bool(ok),
-                    "error": _truncate(err, 400),
-                    "snapshot_event_id": snap_event_id,
-                    "decide_next_event_id": decide_event_id,
-                    "source_event_ids": src_ids[:20],
-                    "written_nodes": written_nodes,
-                    "written_edges": written_edges,
-                }
-            )
-        except Exception:
-            return
+        materialize_nodes_from_checkpoint(
+            enabled=bool(tdb_enabled) and bool(tdb_auto_nodes),
+            seg_evidence=seg_evidence,
+            snapshot_rec=snapshot_rec,
+            base_batch_id=base_batch_id,
+            checkpoint_kind=checkpoint_kind,
+            status_hint=status_hint,
+            planned_next_input=planned_next_input,
+            note=note,
+            deps=NodeMaterializeDeps(
+                append_node_create=tdb.append_node_create,
+                append_edge=tdb.append_edge,
+                upsert_memory_items=mem.upsert_items,
+                build_index_item=thoughtdb_node_item,
+                evidence_append=evw.append,
+                now_ts=now_rfc3339,
+                truncate=_truncate,
+                project_id=project_paths.project_id,
+                nodes_path=project_paths.thoughtdb_nodes_path,
+                task=task,
+                thread_id=str(thread_id or ""),
+                segment_id=str(segment_state.get("segment_id") or "") if isinstance(segment_state, dict) else "",
+            ),
+        )
 
     _last_checkpoint_key = ""
 
@@ -1990,116 +1706,42 @@ def run_autopilot(
 
         nonlocal segment_state, segment_records, _last_checkpoint_key
 
-        if not checkpoint_enabled:
-            return
-        if not isinstance(segment_records, list):
-            return
-        base_bid = str(batch_id or "").split(".", 1)[0].strip()
-        if not base_bid:
-            return
-        # Guard: avoid duplicate checkpoint calls for the same base batch in the same run phase.
-        key = base_bid + ":" + str(status_hint or "").strip()
-        if key == _last_checkpoint_key:
-            return
-        _last_checkpoint_key = key
-
-        # Keep thread affinity updated best-effort.
-        if isinstance(segment_state, dict):
-            cur_tid = str(thread_id or "").strip()
-            if cur_tid and cur_tid != "unknown":
-                segment_state["thread_id"] = cur_tid
-            segment_state["task_hint"] = _truncate(task.strip(), 200)
-
-        tdb_ctx = _build_decide_context(hands_last_message="", recent_evidence=segment_records[-8:])
-        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
-        prompt = checkpoint_decide_prompt(
+        res = run_checkpoint_pipeline(
+            checkpoint_enabled=bool(checkpoint_enabled),
+            segment_state=segment_state if isinstance(segment_state, dict) else {},
+            segment_records=segment_records if isinstance(segment_records, list) else [],
+            last_checkpoint_key=str(_last_checkpoint_key or ""),
+            batch_id=batch_id,
+            planned_next_input=planned_next_input,
+            status_hint=status_hint,
+            note=note,
+            thread_id=str(thread_id or ""),
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx_obj,
-            segment_evidence=segment_records,
-            current_batch_id=base_bid,
-            planned_next_input=_truncate(planned_next_input or "", 2000),
-            status_hint=str(status_hint or ""),
-            notes=(note or "").strip(),
-        )
-        out, mind_ref, state = _mind_call(
-            schema_filename="checkpoint_decide.json",
-            prompt=prompt,
-            tag=f"checkpoint:{base_bid}",
-            batch_id=f"{base_bid}.checkpoint",
-        )
-
-        evw.append(
-            {
-                "kind": "checkpoint",
-                "batch_id": f"{base_bid}.checkpoint",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "segment_id": str(segment_state.get("segment_id") or "") if isinstance(segment_state, dict) else "",
-                "state": state,
-                "mind_transcript_ref": mind_ref,
-                "planned_next_input": _truncate(planned_next_input or "", 800),
-                "status_hint": str(status_hint or ""),
-                "note": (note or "").strip(),
-                "output": out if isinstance(out, dict) else {},
-            }
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            evidence_window=evidence_window,
+            deps=CheckpointPipelineDeps(
+                build_decide_context=_build_decide_context,
+                checkpoint_decide_prompt_builder=checkpoint_decide_prompt,
+                mind_call=_mind_call,
+                evidence_append=evw.append,
+                mine_workflow_from_segment=_mine_workflow_from_segment,
+                mine_preferences_from_segment=_mine_preferences_from_segment,
+                mine_claims_from_segment=_mine_claims_from_segment,
+                materialize_snapshot=mem.materialize_snapshot,
+                materialize_nodes_from_checkpoint=_materialize_nodes_from_checkpoint,
+                new_segment_state=_new_segment_state,
+                now_ts=now_rfc3339,
+                truncate=_truncate,
+            ),
         )
 
-        if not isinstance(out, dict):
+        segment_state = res.segment_state if isinstance(res.segment_state, dict) else {}
+        segment_records = res.segment_records if isinstance(res.segment_records, list) else []
+        _last_checkpoint_key = str(res.last_checkpoint_key or "")
+        if bool(res.persist_segment_state):
             _persist_segment_state()
-            return
-
-        should_cp = bool(out.get("should_checkpoint", False))
-        if not should_cp:
-            _persist_segment_state()
-            return
-
-        # Mine before resetting segment.
-        if bool(out.get("should_mine_workflow", False)):
-            _mine_workflow_from_segment(seg_evidence=segment_records, base_batch_id=base_bid, source="checkpoint")
-        if bool(out.get("should_mine_preferences", False)):
-            _mine_preferences_from_segment(seg_evidence=segment_records, base_batch_id=base_bid, source="checkpoint")
-        _mine_claims_from_segment(seg_evidence=segment_records, base_batch_id=base_bid, source="checkpoint")
-
-        # Materialize a compact snapshot for cross-project recall (append-only; traceable to segment records).
-        snap = mem.materialize_snapshot(
-            segment_state=segment_state if isinstance(segment_state, dict) else {},
-            segment_records=segment_records,
-            batch_id=f"{base_bid}.snapshot",
-            thread_id=str(thread_id or ""),
-            task_fallback=task,
-            checkpoint_kind=str(out.get("checkpoint_kind") or ""),
-            status_hint=str(status_hint or ""),
-            checkpoint_notes=str(out.get("notes") or ""),
-        )
-        snap_rec: dict[str, Any] | None = None
-        if snap:
-            rec = evw.append(snap.evidence_event)
-            snap_rec = rec if isinstance(rec, dict) else None
-            win = dict(snap.window_entry)
-            if isinstance(rec.get("event_id"), str) and rec.get("event_id"):
-                win["event_id"] = rec["event_id"]
-            evidence_window.append(win)
-            evidence_window[:] = evidence_window[-8:]
-
-        # Deterministic Thought DB nodes: Decision/Action/Summary (no extra mind calls).
-        _materialize_nodes_from_checkpoint(
-            seg_evidence=segment_records,
-            snapshot_rec=snap_rec,
-            base_batch_id=base_bid,
-            checkpoint_kind=str(out.get("checkpoint_kind") or ""),
-            status_hint=str(status_hint or ""),
-            planned_next_input=str(planned_next_input or ""),
-            note=(note or "").strip(),
-        )
-
-        # Reset segment buffer for the next phase.
-        segment_state = _new_segment_state(reason=f"checkpoint:{out.get('checkpoint_kind')}", thread_hint=str(thread_id or ""))
-        segment_records = segment_state.get("records") if isinstance(segment_state.get("records"), list) else []
-        segment_state["records"] = segment_records
-        _persist_segment_state()
 
     def _loop_break_get_checks_input(
         *,

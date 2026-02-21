@@ -68,6 +68,23 @@ from .autopilot.services import (
     parse_testless_strategy_from_claim_text,
     upsert_testless_strategy_claim,
 )
+from .autopilot.decide_actions import (
+    handle_decide_next_missing,
+    route_decide_next_action,
+)
+from .autopilot.risk_predecide import (
+    RiskPredecideDeps,
+    maybe_prompt_risk_continue,
+    query_risk_judge,
+    run_risk_predecide,
+)
+from .autopilot.segment_state import (
+    add_segment_record,
+    clear_segment_state,
+    load_segment_state,
+    new_segment_state,
+    persist_segment_state,
+)
 from .prompts import (
     checkpoint_decide_prompt,
     decide_next_prompt,
@@ -393,63 +410,35 @@ def run_autopilot(
     pref_sigs_counted_in_run: set[str] = set()
 
     def _new_segment_state(*, reason: str, thread_hint: str) -> dict[str, Any]:
-        seg_id = f"seg_{time.time_ns()}_{secrets.token_hex(4)}"
-        now = now_rfc3339()
-        return {
-            "version": "v1",
-            "open": True,
-            "segment_id": seg_id,
-            "created_ts": now,
-            "updated_ts": now,
-            "thread_id": (thread_hint or "").strip(),
-            "task_hint": _truncate(task.strip(), 200),
-            "reason": str(reason or "").strip(),
-            "records": [],
-        }
+        return new_segment_state(
+            reason=reason,
+            thread_hint=thread_hint,
+            task=task,
+            now_ts=now_rfc3339,
+            truncate=_truncate,
+            id_factory=lambda: f"seg_{time.time_ns()}_{secrets.token_hex(4)}",
+        )
 
     def _load_segment_state(*, thread_hint: str) -> dict[str, Any] | None:
-        obj = read_json_best_effort(
-            project_paths.segment_state_path,
-            default=None,
-            label="segment_state",
-            warnings=state_warnings,
+        return load_segment_state(
+            path=project_paths.segment_state_path,
+            read_json_best_effort=read_json_best_effort,
+            state_warnings=state_warnings,
+            thread_hint=thread_hint,
         )
-        if not isinstance(obj, dict):
-            return None
-        if str(obj.get("version") or "") != "v1":
-            return None
-        if not bool(obj.get("open", False)):
-            return None
-        recs = obj.get("records")
-        if not isinstance(recs, list):
-            obj["records"] = []
-        # Basic thread affinity: only reuse when continuing the same Hands session (best-effort).
-        th = (thread_hint or "").strip()
-        st = str(obj.get("thread_id") or "").strip()
-        if th and st and th != st:
-            return None
-        return obj
 
     def _persist_segment_state() -> None:
-        if not checkpoint_enabled:
-            return
-        try:
-            segment_state["updated_ts"] = now_rfc3339()
-            # Keep a bounded buffer on disk.
-            recs2 = segment_state.get("records")
-            if isinstance(recs2, list) and len(recs2) > segment_max_records:
-                segment_state["records"] = recs2[-segment_max_records:]
-            write_json_atomic(project_paths.segment_state_path, segment_state)
-        except Exception:
-            return
+        persist_segment_state(
+            enabled=checkpoint_enabled,
+            path=project_paths.segment_state_path,
+            segment_state=segment_state,
+            segment_max_records=segment_max_records,
+            now_ts=now_rfc3339,
+            write_json_atomic=write_json_atomic,
+        )
 
     def _clear_segment_state() -> None:
-        try:
-            project_paths.segment_state_path.unlink()
-        except FileNotFoundError:
-            return
-        except Exception:
-            return
+        clear_segment_state(path=project_paths.segment_state_path)
 
     if checkpoint_enabled:
         # When NOT continuing a Hands session, do not carry over an open segment buffer.
@@ -762,123 +751,13 @@ def run_autopilot(
             return None, mind_ref, "error"
 
     def _segment_add(obj: dict[str, Any]) -> None:
-        if not checkpoint_enabled:
-            return
-        if not isinstance(obj, dict):
-            return
-        # Keep segment records compact and bounded; they are only used for checkpoint/mine prompts.
-        seg: dict[str, Any] = {}
-        kind = obj.get("kind")
-        if isinstance(kind, str) and kind.strip():
-            seg["kind"] = kind.strip()
-        bid = obj.get("batch_id")
-        if isinstance(bid, str) and bid.strip():
-            seg["batch_id"] = bid.strip()
-        eid = obj.get("event_id")
-        if isinstance(eid, str) and eid.strip():
-            seg["event_id"] = eid.strip()
-        seq = obj.get("seq")
-        if isinstance(seq, int):
-            seg["seq"] = int(seq)
-
-        # Common compact fields.
-        for k in ("workflow_id", "workflow_name", "trigger_mode", "trigger_pattern"):
-            v = obj.get(k)
-            if isinstance(v, str) and v.strip():
-                seg[k] = _truncate(v.strip(), 200)
-
-        if seg:
-            # Allow small records as-is.
-            pass
-
-        # Evidence records.
-        if obj.get("kind") == "evidence":
-            seg["kind"] = "evidence"
-            for k in ("facts", "actions", "results", "unknowns", "risk_signals"):
-                v = obj.get(k)
-                if isinstance(v, list):
-                    seg[k] = [str(x)[:300] for x in v[:12] if str(x).strip()]
-                else:
-                    seg[k] = []
-            # A small subset of repo/transcript observations (bounded).
-            repo = obj.get("repo_observation") if isinstance(obj.get("repo_observation"), dict) else {}
-            if isinstance(repo, dict) and repo:
-                seg["repo_observation"] = {
-                    "stack_hints": repo.get("stack_hints") if isinstance(repo.get("stack_hints"), list) else [],
-                    "has_tests": bool(repo.get("has_tests", False)),
-                    "git_is_repo": bool(repo.get("git_is_repo", False)),
-                    "git_head": _truncate(str(repo.get("git_head") or ""), 120),
-                    "git_diff_stat": _truncate(str(repo.get("git_diff_stat") or ""), 600),
-                    "git_diff_cached_stat": _truncate(str(repo.get("git_diff_cached_stat") or ""), 600),
-                }
-            obs = obj.get("transcript_observation") if isinstance(obj.get("transcript_observation"), dict) else {}
-            if isinstance(obs, dict) and obs:
-                seg["transcript_observation"] = {
-                    "file_paths": (obs.get("file_paths") if isinstance(obs.get("file_paths"), list) else [])[:20],
-                    "errors": (obs.get("errors") if isinstance(obs.get("errors"), list) else [])[:10],
-                }
-
-        if obj.get("kind") == "risk_event":
-            seg["kind"] = "risk_event"
-            seg["category"] = _truncate(str(obj.get("category") or ""), 60)
-            seg["severity"] = _truncate(str(obj.get("severity") or ""), 60)
-            rs = obj.get("risk_signals") if isinstance(obj.get("risk_signals"), list) else []
-            seg["risk_signals"] = [str(x)[:200] for x in rs[:8] if str(x).strip()]
-
-        if obj.get("kind") == "check_plan":
-            seg["kind"] = "check_plan"
-            seg["should_run_checks"] = bool(obj.get("should_run_checks", False))
-            seg["needs_testless_strategy"] = bool(obj.get("needs_testless_strategy", False))
-            seg["notes"] = _truncate(str(obj.get("notes") or ""), 200)
-
-        if obj.get("kind") == "auto_answer":
-            seg["kind"] = "auto_answer"
-            seg["should_answer"] = bool(obj.get("should_answer", False))
-            seg["needs_user_input"] = bool(obj.get("needs_user_input", False))
-            seg["ask_user_question"] = _truncate(str(obj.get("ask_user_question") or ""), 200)
-
-        if obj.get("kind") == "decide_next":
-            seg["kind"] = "decide_next"
-            seg["next_action"] = _truncate(str(obj.get("next_action") or ""), 40)
-            seg["status"] = _truncate(str(obj.get("status") or ""), 40)
-            seg["notes"] = _truncate(str(obj.get("notes") or ""), 200)
-
-        if obj.get("kind") == "user_input":
-            seg["kind"] = "user_input"
-            seg["question"] = _truncate(str(obj.get("question") or ""), 200)
-            seg["answer"] = _truncate(str(obj.get("answer") or ""), 200)
-
-        if obj.get("kind") == "cross_project_recall":
-            seg["kind"] = "cross_project_recall"
-            seg["reason"] = _truncate(str(obj.get("reason") or ""), 60)
-            seg["query"] = _truncate(str(obj.get("query") or ""), 200)
-            items = obj.get("items") if isinstance(obj.get("items"), list) else []
-            names: list[str] = []
-            for it in items:
-                if len(names) >= 6:
-                    break
-                if isinstance(it, dict):
-                    k = str(it.get("kind") or "").strip()
-                    sc = str(it.get("scope") or "").strip()
-                    title = str(it.get("title") or "").strip()
-                    head = (f"{k}/{sc} {title}").strip()
-                    if head:
-                        names.append(_truncate(head, 120))
-                elif isinstance(it, str) and it.strip():
-                    names.append(_truncate(it.strip(), 120))
-            if names:
-                seg["items"] = names
-
-        if obj.get("kind") == "snapshot":
-            seg["kind"] = "snapshot"
-            seg["checkpoint_kind"] = _truncate(str(obj.get("checkpoint_kind") or ""), 60)
-            seg["status_hint"] = _truncate(str(obj.get("status_hint") or ""), 40)
-            tags = obj.get("tags") if isinstance(obj.get("tags"), list) else []
-            seg["tags"] = [str(x)[:60] for x in tags[:8] if str(x).strip()]
-
-        if seg:
-            segment_records.append(seg)
-            segment_records[:] = segment_records[-segment_max_records:]
+        add_segment_record(
+            enabled=checkpoint_enabled,
+            obj=obj,
+            segment_records=segment_records,
+            segment_max_records=segment_max_records,
+            truncate=_truncate,
+        )
 
     def _maybe_cross_project_recall(*, batch_id: str, reason: str, query: str) -> None:
         """On-demand cross-project recall (best-effort).
@@ -2540,41 +2419,23 @@ def run_autopilot(
 
         nonlocal status, notes
         ask_when_uncertain = bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain)
-        if ask_when_uncertain:
-            if decision_state == "skipped":
-                if _looks_like_user_question(hands_last):
-                    q = hands_last.strip()
-                else:
-                    q = "MI Mind circuit is OPEN (repeated failures). Provide the next instruction to send to Hands, or type 'stop' to end:"
-            else:
-                q = "MI Mind failed to decide next action. Provide next instruction to send to Hands, or type 'stop' to end:"
-            override = _read_user_answer(q)
-            _append_user_input_record(batch_id=f"b{batch_idx}", question=q, answer=override)
-
-            ov = (override or "").strip()
-            if not ov or ov.lower() in ("stop", "quit", "q"):
-                status = "blocked"
-                notes = "stopped after mind_circuit_open(decide_next)" if decision_state == "skipped" else "stopped after mind_error(decide_next)"
-                return False
-            if not _queue_next_input(
-                nxt=ov,
-                hands_last_message=hands_last,
-                batch_id=f"b{batch_idx}",
-                reason="mind_circuit_open(decide_next): user override" if decision_state == "skipped" else "mind_error(decide_next): user override",
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                thought_db_context=tdb_ctx_obj,
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-            ):
-                return False
-            return True
-
-        status = "blocked"
-        notes = (
-            "mind_circuit_open(decide_next): could not proceed (ask_when_uncertain=false)"
-            if decision_state == "skipped"
-            else "mind_error(decide_next): could not proceed (ask_when_uncertain=false)"
+        cont, blocked_note = handle_decide_next_missing(
+            batch_idx=batch_idx,
+            decision_state=str(decision_state or ""),
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_obj=tdb_ctx_obj if isinstance(tdb_ctx_obj, dict) else {},
+            ask_when_uncertain=ask_when_uncertain,
+            looks_like_user_question=_looks_like_user_question,
+            read_user_answer=_read_user_answer,
+            append_user_input_record=_append_user_input_record,
+            queue_next_input=_queue_next_input,
         )
-        return False
+        if not cont and blocked_note:
+            status = "blocked"
+            notes = blocked_note
+        return bool(cont)
 
     def _ask_user_auto_answer_attempt(
         *,
@@ -2968,41 +2829,21 @@ def run_autopilot(
         """Route and apply next_action from decide_next."""
 
         nonlocal status, notes
-
-        if next_action == "stop":
-            return False
-
-        if next_action == "ask_user":
-            return _handle_decide_next_ask_user(
-                batch_idx=batch_idx,
-                hands_last=hands_last,
-                repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-                checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-                tdb_ctx_obj=tdb_ctx_obj,
-                decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
-            )
-
-        if next_action == "send_to_hands":
-            nxt = str(decision_obj.get("next_hands_input") or "").strip()
-            if not nxt:
-                status = "blocked"
-                notes = "decide_next returned send_to_hands without next_hands_input"
-                return False
-            if not _queue_next_input(
-                nxt=nxt,
-                hands_last_message=hands_last,
-                batch_id=f"b{batch_idx}",
-                reason="send_to_hands",
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                thought_db_context=tdb_ctx_obj,
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-            ):
-                return False
-            return True
-
-        status = "blocked"
-        notes = f"unknown next_action={next_action}"
-        return False
+        cont, blocked_note = route_decide_next_action(
+            batch_idx=batch_idx,
+            next_action=str(next_action or ""),
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_obj=tdb_ctx_obj if isinstance(tdb_ctx_obj, dict) else {},
+            decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
+            handle_ask_user=_handle_decide_next_ask_user,
+            queue_next_input=_queue_next_input,
+        )
+        if not cont and blocked_note:
+            status = "blocked"
+            notes = blocked_note
+        return bool(cont)
 
     def _phase_decide_next(
         *,
@@ -3506,30 +3347,21 @@ def run_autopilot(
         tdb_ctx_batch_obj: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
         """Run recall + risk_judge and normalize fallback output."""
-
-        _maybe_cross_project_recall(
-            batch_id=f"{batch_id}.risk_recall",
-            reason="risk_signal",
-            query=(" ".join([str(x) for x in risk_signals if str(x).strip()]) + "\n" + task).strip(),
-        )
-        risk_prompt = risk_judge_prompt(
+        return query_risk_judge(
+            batch_idx=batch_idx,
+            batch_id=batch_id,
+            risk_signals=risk_signals,
+            hands_last=hands_last,
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx_batch_obj,
-            risk_signals=risk_signals,
-            hands_last_message=hands_last,
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            maybe_cross_project_recall=_maybe_cross_project_recall,
+            risk_judge_prompt_builder=risk_judge_prompt,
+            mind_call=_mind_call,
+            build_risk_fallback=build_risk_fallback,
         )
-        risk_obj, risk_mind_ref, risk_state = _mind_call(
-            schema_filename="risk_judge.json",
-            prompt=risk_prompt,
-            tag=f"risk_b{batch_idx}",
-            batch_id=batch_id,
-        )
-        if risk_obj is None or not isinstance(risk_obj, dict):
-            risk_obj = build_risk_fallback(risk_signals, state=str(risk_state or ""))
-        return risk_obj if isinstance(risk_obj, dict) else {}, str(risk_mind_ref or "")
 
     def _predecide_record_risk_event(
         *,
@@ -3599,24 +3431,17 @@ def run_autopilot(
         nonlocal status, notes
 
         vr = runtime_cfg.get("violation_response") if isinstance(runtime_cfg.get("violation_response"), dict) else {}
-        severity = str((risk_obj if isinstance(risk_obj, dict) else {}).get("severity") or "low")
-        cat = str((risk_obj if isinstance(risk_obj, dict) else {}).get("category") or "other")
-        should_prompt = should_prompt_risk_user(
+        out = maybe_prompt_risk_continue(
             risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
-            violation_response_cfg=vr,
+            should_prompt_risk_user=should_prompt_risk_user,
+            violation_response_cfg=vr if isinstance(vr, dict) else {},
+            read_user_answer=_read_user_answer,
         )
-        if not should_prompt:
-            return None
-
-        mitig = (risk_obj if isinstance(risk_obj, dict) else {}).get("mitigation") or []
-        mitig_s = "; ".join([str(x) for x in mitig if str(x).strip()][:3])
-        q = f"Risk action detected (category={cat}, severity={severity}). Continue? (y/N)\nMitigation: {mitig_s}"
-        answer = _read_user_answer(q)
-        if answer.strip().lower() not in ("y", "yes"):
+        if out is False:
             status = "blocked"
             notes = "stopped after risk event"
             return False
-        return None
+        return out
 
     def _predecide_judge_and_handle_risk(
         *,
@@ -3627,27 +3452,19 @@ def run_autopilot(
         tdb_ctx_batch_obj: dict[str, Any],
     ) -> bool | None:
         """Run risk_judge, record evidence, and enforce runtime violation policy."""
-
-        risk_obj, risk_mind_ref = _predecide_query_risk_judge(
+        return run_risk_predecide(
             batch_idx=batch_idx,
             batch_id=batch_id,
-            risk_signals=[str(x) for x in risk_signals if str(x).strip()],
+            risk_signals=risk_signals,
             hands_last=hands_last,
             tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            deps=RiskPredecideDeps(
+                query_risk=_predecide_query_risk_judge,
+                record_risk=_predecide_record_risk_event,
+                apply_learn_suggested=_predecide_apply_risk_learn_suggested,
+                maybe_prompt_continue=_predecide_maybe_prompt_risk_continue,
+            ),
         )
-        risk_rec = _predecide_record_risk_event(
-            batch_idx=batch_idx,
-            risk_signals=[str(x) for x in risk_signals if str(x).strip()],
-            risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
-            risk_mind_ref=risk_mind_ref,
-        )
-        _predecide_apply_risk_learn_suggested(
-            batch_idx=batch_idx,
-            risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
-            risk_mind_ref=risk_mind_ref,
-            risk_event_id=str((risk_rec or {}).get("event_id") or "").strip(),
-        )
-        return _predecide_maybe_prompt_risk_continue(risk_obj=risk_obj if isinstance(risk_obj, dict) else {})
 
     def _predecide_apply_workflow_and_risk(
         *,

@@ -19,7 +19,14 @@ from .run_deps import RunDeps
 from .hands_flow import HandsFlowDeps, run_hands_batch
 from .run_context import RunContext, RunMutableState
 from .run_engine import RunEngineDeps, run_autopilot_engine
-from .contracts import AutopilotState, StateMachineState, TransitionResult
+from .contracts import (
+    AutopilotState,
+    StateMachineState,
+    TransitionResult,
+    BatchRunRequest,
+    BatchRunResult,
+    CheckpointRequest,
+)
 from .state_machine import StateMachineTrace, run_state_machine_loop, compact_transition_trace
 from .decide_flow import DecidePhaseDeps, run_decide_next_phase
 from .checks_flow import PlanChecksAutoAnswerDeps, run_plan_checks_and_auto_answer
@@ -35,6 +42,9 @@ from .services import (
     MemoryRecallService,
     DecideService,
     EvidenceService,
+    PipelineService,
+    DecideBatchService,
+    CheckpointService,
 )
 
 __all__ = [
@@ -84,6 +94,9 @@ __all__ = [
     "AutopilotState",
     "StateMachineState",
     "TransitionResult",
+    "BatchRunRequest",
+    "BatchRunResult",
+    "CheckpointRequest",
     "StateMachineTrace",
     "run_state_machine_loop",
     "compact_transition_trace",
@@ -94,6 +107,9 @@ __all__ = [
     "MemoryRecallService",
     "DecideService",
     "EvidenceService",
+    "PipelineService",
+    "DecideBatchService",
+    "CheckpointService",
     "DecidePhaseDeps",
     "run_decide_next_phase",
     "PlanChecksAutoAnswerDeps",

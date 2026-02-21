@@ -57,6 +57,11 @@ from .autopilot import (
     RunMutableState,
     RunEngineDeps,
     run_autopilot_engine,
+    BatchRunRequest,
+    CheckpointRequest,
+    PipelineService,
+    DecideBatchService,
+    CheckpointService,
     ExtractEvidenceDeps,
     PreactionPhaseDeps,
     BatchPredecideDeps,
@@ -3896,10 +3901,10 @@ def run_autopilot(
     executed_batches = 0
     last_batch_id = ""
     max_batches_exhausted = False
-    def _phase_batch_predecide(batch_idx: int, batch_id: str) -> bool | PreactionDecision:
+    def _run_predecide_via_service(req: BatchRunRequest) -> bool | PreactionDecision:
         nonlocal last_batch_id
         out = run_batch_predecide(
-            batch_idx=batch_idx,
+            batch_idx=int(req.batch_idx),
             deps=BatchPredecideDeps(
                 build_context=_build_batch_execution_context,
                 run_hands=_predecide_run_hands,
@@ -3921,28 +3926,45 @@ def run_autopilot(
                 ),
             ),
         )
-        last_batch_id = str(out.batch_id or f"b{batch_idx}")
+        last_batch_id = str(out.batch_id or f"b{int(req.batch_idx)}")
         return out.out
 
-    def _run_single_batch(batch_idx: int, batch_id: str) -> bool:
-        """Run one batch pipeline: pre-decide phases, then decide_next when needed."""
-
-        nonlocal status, notes
-        out = _phase_batch_predecide(batch_idx, batch_id)
-        if isinstance(out, bool):
-            return out
-        if not isinstance(out, PreactionDecision):
-            status = "blocked"
-            notes = "invalid pre-decide pipeline output"
-            return False
+    def _run_decide_via_service(req: BatchRunRequest, preaction: PreactionDecision) -> bool:
         return _phase_decide_next(
-            batch_idx=batch_idx,
-            batch_id=f"b{batch_idx}",
-            hands_last=str(out.hands_last or ""),
-            repo_obs=out.repo_obs if isinstance(out.repo_obs, dict) else {},
-            checks_obj=out.checks_obj if isinstance(out.checks_obj, dict) else {},
-            auto_answer_obj=out.auto_answer_obj if isinstance(out.auto_answer_obj, dict) else _empty_auto_answer(),
+            batch_idx=int(req.batch_idx),
+            batch_id=str(req.batch_id or f"b{int(req.batch_idx)}"),
+            hands_last=str(preaction.hands_last or ""),
+            repo_obs=preaction.repo_obs if isinstance(preaction.repo_obs, dict) else {},
+            checks_obj=preaction.checks_obj if isinstance(preaction.checks_obj, dict) else {},
+            auto_answer_obj=preaction.auto_answer_obj if isinstance(preaction.auto_answer_obj, dict) else _empty_auto_answer(),
         )
+
+    decide_batch_service = DecideBatchService(run_decide_phase=_run_decide_via_service)
+    pipeline_service = PipelineService(
+        run_predecide_phase=_run_predecide_via_service,
+        decide_service=decide_batch_service,
+    )
+
+    def _run_single_batch(batch_idx: int, batch_id: str) -> bool:
+        """Run one batch via pipeline service (predecide + decide)."""
+
+        nonlocal status, notes, last_batch_id
+        req = BatchRunRequest(
+            batch_idx=int(batch_idx),
+            batch_id=str(batch_id or f"b{int(batch_idx)}"),
+            next_input=str(next_input or ""),
+            thread_id=(thread_id or ""),
+        )
+        out = pipeline_service.run_batch(req=req)
+        last_batch_id = str(out.last_batch_id or last_batch_id or req.batch_id)
+        if not bool(out.continue_loop):
+            st = str(out.status_hint or "").strip()
+            if st:
+                status = st
+            msg = str(out.notes or "").strip()
+            if msg:
+                notes = msg
+        return bool(out.continue_loop)
 
     def _run_learn_update() -> None:
         maybe_run_learn_update_on_run_end(
@@ -3990,6 +4012,25 @@ def run_autopilot(
         last_batch_id = str(engine_state.last_batch_id or last_batch_id)
         max_batches_exhausted = bool(engine_state.max_batches_exhausted)
 
+    checkpoint_service = CheckpointService(
+        run_checkpoint=lambda request: _maybe_checkpoint_and_mine(
+            batch_id=str(request.batch_id or ""),
+            planned_next_input=str(request.planned_next_input or ""),
+            status_hint=str(request.status_hint or ""),
+            note=str(request.note or ""),
+        )
+    )
+
+    def _run_checkpoint_request(**kwargs: Any) -> None:
+        checkpoint_service.run(
+            request=CheckpointRequest(
+                batch_id=str(kwargs.get("batch_id") or ""),
+                planned_next_input=str(kwargs.get("planned_next_input") or ""),
+                status_hint=str(kwargs.get("status_hint") or ""),
+                note=str(kwargs.get("note") or ""),
+            )
+        )
+
     engine_state = run_autopilot_engine(
         max_batches=max_batches,
         state=RunMutableState(
@@ -4002,7 +4043,7 @@ def run_autopilot(
             run_single_batch=_run_single_batch,
             executed_batches_getter=lambda: int(executed_batches),
             checkpoint_enabled=bool(checkpoint_enabled),
-            checkpoint_runner=_maybe_checkpoint_and_mine,
+            checkpoint_runner=_run_checkpoint_request,
             learn_runner=_run_learn_update,
             why_runner=_run_why_trace,
             snapshot_flusher=tdb.flush_snapshots_best_effort,

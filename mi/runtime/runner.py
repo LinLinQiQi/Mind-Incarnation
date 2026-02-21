@@ -93,6 +93,10 @@ from .autopilot.checkpoint_mining import (
     mine_workflow_from_segment as run_workflow_mining,
     mine_preferences_from_segment as run_preference_mining,
 )
+from .autopilot.claim_mining_flow import (
+    ClaimMiningDeps,
+    mine_claims_from_segment as run_claim_mining,
+)
 from .autopilot.node_materialize import (
     NodeMaterializeDeps,
     materialize_nodes_from_checkpoint,
@@ -1132,77 +1136,30 @@ def run_autopilot(
     def _mine_claims_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
         """Mine high-signal atomic Claims into Thought DB (checkpoint-only; best-effort)."""
 
-        if not bool(tdb_auto_mine):
-            return
-        if executed_batches <= 0:
-            return
-        if tdb_max_claims <= 0:
-            return
-
-        # Allowed citations for source_refs: EvidenceLog event_id only.
-        allowed: list[str] = []
-        seen: set[str] = set()
-        for rec in seg_evidence or []:
-            if not isinstance(rec, dict):
-                continue
-            eid = rec.get("event_id")
-            if not isinstance(eid, str):
-                continue
-            e = eid.strip()
-            if not e or e in seen:
-                continue
-            seen.add(e)
-            allowed.append(e)
-        allowed_set = set(allowed)
-
-        mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
-        tdb_ctx = _build_decide_context(hands_last_message="", recent_evidence=seg_evidence[-8:])
-        tdb_ctx_obj = tdb_ctx.to_prompt_obj()
-        prompt = mine_claims_prompt(
+        run_claim_mining(
+            enabled=bool(tdb_auto_mine),
+            executed_batches=int(executed_batches),
+            max_claims=int(tdb_max_claims),
+            min_confidence=float(tdb_min_conf),
+            seg_evidence=seg_evidence if isinstance(seg_evidence, list) else [],
+            base_batch_id=str(base_batch_id or ""),
+            source=str(source or ""),
+            status=str(status or ""),
+            notes=str(notes or ""),
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx_obj,
-            segment_evidence=seg_evidence,
-            allowed_event_ids=allowed,
-            min_confidence=tdb_min_conf,
-            max_claims=tdb_max_claims,
-            notes=mine_notes,
-        )
-        out, mind_ref, state = _mind_call(
-            schema_filename="mine_claims.json",
-            prompt=prompt,
-            tag=f"mine_claims:{base_batch_id}",
-            batch_id=f"{base_batch_id}.claim_mining",
-        )
-
-        applied: dict[str, Any] = {"written": [], "skipped": []}
-        if isinstance(out, dict):
-            applied = tdb.apply_mined_output(
-                output=out,
-                allowed_event_ids=allowed_set,
-                min_confidence=tdb_min_conf,
-                max_claims=tdb_max_claims,
-            )
-
-        evw.append(
-            {
-                "kind": "claim_mining",
-                "batch_id": f"{base_batch_id}.claim_mining",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "segment_id": str(segment_state.get("segment_id") or "") if isinstance(segment_state, dict) else "",
-                "state": state,
-                "mind_transcript_ref": mind_ref,
-                "notes": mine_notes,
-                "config": {
-                    "min_confidence": tdb_min_conf,
-                    "max_claims_per_checkpoint": tdb_max_claims,
-                },
-                "output": out if isinstance(out, dict) else {},
-                "applied": applied,
-            }
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            thread_id=str(thread_id or ""),
+            segment_id=str(segment_state.get("segment_id") or "") if isinstance(segment_state, dict) else "",
+            deps=ClaimMiningDeps(
+                build_decide_context=_build_decide_context,
+                mine_claims_prompt_builder=mine_claims_prompt,
+                mind_call=_mind_call,
+                apply_mined_output=tdb.apply_mined_output,
+                evidence_append=evw.append,
+                now_ts=now_rfc3339,
+            ),
         )
 
     def _materialize_nodes_from_checkpoint(

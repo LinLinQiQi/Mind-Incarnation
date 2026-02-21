@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from ..core.paths import GlobalPaths, ProjectPaths
-from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339
+from ..core.paths import ProjectPaths
+from ..core.storage import now_rfc3339
 from ..memory.service import MemoryService
 from ..providers.provider_factory import make_mind_provider
 from ..runtime.evidence import EvidenceWriter, new_run_id
@@ -15,17 +15,6 @@ from ..runtime.inspect import load_last_batch_bundle
 from ..thoughtdb import ThoughtDbStore
 from ..thoughtdb.app_service import ThoughtDbApplicationService
 from ..thoughtdb.why import default_as_of_ts
-from ..project.overlay_store import load_project_overlay, write_project_overlay
-from ..workflows import (
-    WorkflowStore,
-    GlobalWorkflowStore,
-    WorkflowRegistry,
-    apply_global_overrides,
-    new_workflow_id,
-    normalize_workflow,
-    render_workflow_markdown,
-)
-from ..workflows.hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
 
 def handle_why_commands(
     *,

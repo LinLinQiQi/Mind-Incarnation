@@ -6,31 +6,15 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from ..core.paths import GlobalPaths, ProjectPaths
-from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339
+from ..core.paths import ProjectPaths
+from ..core.storage import iter_jsonl, now_rfc3339
 from ..providers.provider_factory import make_mind_provider
 from ..runtime.evidence import EvidenceWriter, new_run_id
+from ..runtime.inspect import tail_json_objects
+from ..runtime.prompts import mine_claims_prompt
 from ..thoughtdb import ThoughtDbStore, claim_signature
 from ..thoughtdb.app_service import ThoughtDbApplicationService
-from ..thoughtdb.why import (
-    collect_candidate_claims,
-    collect_candidate_claims_for_target,
-    default_as_of_ts,
-    find_evidence_event,
-    query_from_evidence_event,
-    run_why_trace,
-)
-from ..project.overlay_store import load_project_overlay, write_project_overlay
-from ..workflows import (
-    WorkflowStore,
-    GlobalWorkflowStore,
-    WorkflowRegistry,
-    apply_global_overrides,
-    new_workflow_id,
-    normalize_workflow,
-    render_workflow_markdown,
-)
-from ..workflows.hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
+from ..project.overlay_store import load_project_overlay
 
 def handle_claim_commands(
     *,
@@ -49,12 +33,6 @@ def handle_claim_commands(
 
         tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
         tdb_app = ThoughtDbApplicationService(tdb=tdb, project_paths=pp)
-
-        def _view_for_scope(scope: str) -> object:
-            sc = str(scope or "project").strip()
-            if sc not in ("project", "global"):
-                sc = "project"
-            return tdb.load_view(scope=sc)
 
         def _iter_effective_claims(
             *,

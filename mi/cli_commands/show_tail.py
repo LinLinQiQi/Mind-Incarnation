@@ -332,6 +332,95 @@ def _render_last_bundle(
     return 0
 
 
+def _show_evidence_ref(
+    *,
+    eid: str,
+    args: argparse.Namespace,
+    home_dir: Path,
+    tdb_app: ThoughtDbApplicationService,
+    print_json: Callable[[object], None],
+) -> int:
+    scope, obj = tdb_app.find_evidence_event_prefer_project(
+        home_dir=home_dir,
+        event_id=eid,
+        global_only=bool(getattr(args, "show_global", False)),
+    )
+    if obj is None:
+        print(f"evidence event not found: {eid}", file=sys.stderr)
+        return 2
+    print_json({"scope": scope, "event": obj})
+    return 0
+
+
+def _show_claim_ref(
+    *,
+    cid: str,
+    tdb_app: ThoughtDbApplicationService,
+    print_json: Callable[[object], None],
+) -> int:
+    found_scope, cobj = tdb_app.find_claim_effective(cid)
+    if not cobj:
+        print(f"claim not found: {cid}", file=sys.stderr)
+        return 2
+    print_json({"scope": found_scope, "claim": cobj})
+    return 0
+
+
+def _show_node_ref(
+    *,
+    nid: str,
+    tdb_app: ThoughtDbApplicationService,
+    print_json: Callable[[object], None],
+) -> int:
+    found_scope, nobj = tdb_app.find_node_effective(nid)
+    if not nobj:
+        print(f"node not found: {nid}", file=sys.stderr)
+        return 2
+    print_json({"scope": found_scope, "node": nobj})
+    return 0
+
+
+def _show_edge_ref(
+    *,
+    eid: str,
+    tdb: ThoughtDbStore,
+    print_json: Callable[[object], None],
+) -> int:
+    found_scope = ""
+    eobj: dict[str, Any] | None = None
+    for sc in ("project", "global"):
+        v = tdb.load_view(scope=sc)
+        for e in v.edges:
+            if isinstance(e, dict) and str(e.get("edge_id") or "").strip() == eid:
+                found_scope = sc
+                eobj = e
+                break
+        if eobj:
+            break
+    if not eobj:
+        print(f"edge not found: {eid}", file=sys.stderr)
+        return 2
+    print_json({"scope": found_scope, "edge": eobj})
+    return 0
+
+
+def _show_workflow_ref(
+    *,
+    wid: str,
+    args: argparse.Namespace,
+    home_dir: Path,
+    cfg: dict[str, Any],
+    dispatch_fn: Callable[[argparse.Namespace, Path, dict[str, Any]], int],
+) -> int:
+    args2 = argparse.Namespace(**vars(args))
+    args2.cmd = "workflow"
+    args2.wf_cmd = "show"
+    args2.id = wid
+    args2.scope = "effective"
+    args2.markdown = not bool(getattr(args, "json", False))
+    return dispatch_fn(args2, home_dir, cfg)
+
+
 def handle_show(
     *,
     args: argparse.Namespace,
@@ -388,60 +477,19 @@ def handle_show(
         print(redact_text(s) if bool(getattr(args, "redact", False)) else s)
 
     if ref.startswith("ev_"):
-        eid = ref
-        global_only = bool(getattr(args, "show_global", False))
-        scope, obj = tdb_app.find_evidence_event_prefer_project(home_dir=home_dir, event_id=eid, global_only=global_only)
-        if obj is None:
-            print(f"evidence event not found: {eid}", file=sys.stderr)
-            return 2
-        _print_json({"scope": scope, "event": obj})
-        return 0
+        return _show_evidence_ref(eid=ref, args=args, home_dir=home_dir, tdb_app=tdb_app, print_json=_print_json)
 
     if ref.startswith("cl_"):
-        cid = ref
-        found_scope, cobj = tdb_app.find_claim_effective(cid)
-        if not cobj:
-            print(f"claim not found: {cid}", file=sys.stderr)
-            return 2
-        _print_json({"scope": found_scope, "claim": cobj})
-        return 0
+        return _show_claim_ref(cid=ref, tdb_app=tdb_app, print_json=_print_json)
 
     if ref.startswith("nd_"):
-        nid = ref
-        found_scope, nobj = tdb_app.find_node_effective(nid)
-        if not nobj:
-            print(f"node not found: {nid}", file=sys.stderr)
-            return 2
-        _print_json({"scope": found_scope, "node": nobj})
-        return 0
+        return _show_node_ref(nid=ref, tdb_app=tdb_app, print_json=_print_json)
 
     if ref.startswith("ed_"):
-        eid = ref
-        found_scope = ""
-        eobj: dict[str, Any] | None = None
-        for sc in ("project", "global"):
-            v = tdb.load_view(scope=sc)
-            for e in v.edges:
-                if isinstance(e, dict) and str(e.get("edge_id") or "").strip() == eid:
-                    found_scope = sc
-                    eobj = e
-                    break
-            if eobj:
-                break
-        if not eobj:
-            print(f"edge not found: {eid}", file=sys.stderr)
-            return 2
-        _print_json({"scope": found_scope, "edge": eobj})
-        return 0
+        return _show_edge_ref(eid=ref, tdb=tdb, print_json=_print_json)
 
     if ref.startswith("wf_"):
-        args2 = argparse.Namespace(**vars(args))
-        args2.cmd = "workflow"
-        args2.wf_cmd = "show"
-        args2.id = ref
-        args2.scope = "effective"
-        args2.markdown = not bool(getattr(args, "json", False))
-        return dispatch_fn(args2, home_dir, cfg)
+        return _show_workflow_ref(wid=ref, args=args, home_dir=home_dir, cfg=cfg, dispatch_fn=dispatch_fn)
 
     print(
         f"unknown ref: {ref} (expected ev_/cl_/nd_/wf_/ed_, a transcript .jsonl path, or one of: last/project/hands/mind)",

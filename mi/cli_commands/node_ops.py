@@ -7,30 +7,19 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..core.paths import GlobalPaths, ProjectPaths
-from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339
-from ..providers.provider_factory import make_mind_provider
+from ..core.storage import now_rfc3339
+from ..memory.ingest import thoughtdb_node_item
+from ..memory.service import MemoryService
 from ..runtime.evidence import EvidenceWriter, new_run_id
-from ..thoughtdb import ThoughtDbStore, claim_signature
+from ..thoughtdb import ThoughtDbStore
 from ..thoughtdb.app_service import ThoughtDbApplicationService
-from ..thoughtdb.why import (
-    collect_candidate_claims,
-    collect_candidate_claims_for_target,
-    default_as_of_ts,
-    find_evidence_event,
-    query_from_evidence_event,
-    run_why_trace,
-)
-from ..project.overlay_store import load_project_overlay, write_project_overlay
-from ..workflows import (
-    WorkflowStore,
-    GlobalWorkflowStore,
-    WorkflowRegistry,
-    apply_global_overrides,
-    new_workflow_id,
-    normalize_workflow,
-    render_workflow_markdown,
-)
-from ..workflows.hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
+
+
+def _read_stdin_text() -> str:
+    try:
+        return sys.stdin.read()
+    except Exception:
+        return ""
 
 def handle_node_commands(
     *,

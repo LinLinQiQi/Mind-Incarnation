@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..core.paths import GlobalPaths, ProjectPaths
-from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339
+from ..core.storage import now_rfc3339
 from ..providers.provider_factory import make_mind_provider
-from ..runtime.evidence import EvidenceWriter, new_run_id
+from ..runtime.prompts import edit_workflow_prompt
 from ..thoughtdb import ThoughtDbStore
 from ..thoughtdb.app_service import ThoughtDbApplicationService
 from ..project.overlay_store import load_project_overlay, write_project_overlay
@@ -22,7 +22,74 @@ from ..workflows import (
     normalize_workflow,
     render_workflow_markdown,
 )
-from ..workflows.hosts import parse_host_bindings, sync_host_binding, sync_hosts_from_overlay
+from ..workflows.hosts import sync_hosts_from_overlay
+
+
+def _print_workflow_edit_feedback(*, diff: str, out: dict[str, Any]) -> None:
+    if diff:
+        print(diff, end="")
+
+    change_summary = out.get("change_summary") if isinstance(out.get("change_summary"), list) else []
+    conflicts = out.get("conflicts") if isinstance(out.get("conflicts"), list) else []
+    notes = str(out.get("notes") or "").strip()
+    if change_summary:
+        print("\nchange_summary:")
+        for x in change_summary[:20]:
+            xs = str(x).strip()
+            if xs:
+                print(f"- {xs}")
+    if conflicts:
+        print("\nconflicts:")
+        for x in conflicts[:20]:
+            xs = str(x).strip()
+            if xs:
+                print(f"- {xs}")
+    if notes:
+        print("\nnotes:\n" + notes)
+
+
+def _build_global_override_patch(*, base: dict[str, Any], desired: dict[str, Any]) -> dict[str, Any]:
+    patch: dict[str, Any] = {}
+    if bool(desired.get("enabled", False)) != bool(base.get("enabled", False)):
+        patch["enabled"] = bool(desired.get("enabled", False))
+    name1 = str(desired.get("name") or "").strip()
+    name0 = str(base.get("name") or "").strip()
+    if name1 and name1 != name0:
+        patch["name"] = name1
+    if str(desired.get("mermaid") or "") != str(base.get("mermaid") or ""):
+        patch["mermaid"] = str(desired.get("mermaid") or "")
+
+    trig0 = base.get("trigger") if isinstance(base.get("trigger"), dict) else {}
+    trig1 = desired.get("trigger") if isinstance(desired.get("trigger"), dict) else {}
+    if trig1 != trig0:
+        patch["trigger"] = trig1
+
+    steps0 = base.get("steps") if isinstance(base.get("steps"), list) else []
+    steps1 = desired.get("steps") if isinstance(desired.get("steps"), list) else []
+    ids0 = [str(s.get("id") or "") for s in steps0 if isinstance(s, dict) and str(s.get("id") or "").strip()]
+    ids1 = [str(s.get("id") or "") for s in steps1 if isinstance(s, dict) and str(s.get("id") or "").strip()]
+    if ids0 != ids1:
+        patch["steps_replace"] = [s for s in steps1 if isinstance(s, dict)]
+        return patch
+
+    allowed = ("kind", "title", "hands_input", "check_input", "risk_category", "policy", "notes")
+    patches: dict[str, Any] = {}
+    for s0, s1 in zip(steps0, steps1):
+        if not (isinstance(s0, dict) and isinstance(s1, dict)):
+            continue
+        sid = str(s0.get("id") or "").strip()
+        if not sid:
+            continue
+        one: dict[str, Any] = {}
+        for k in allowed:
+            if s1.get(k) != s0.get(k):
+                one[k] = s1.get(k)
+        if one:
+            patches[sid] = one
+    if patches:
+        patch["step_patches"] = patches
+    return patch
+
 
 def handle_workflow_commands(
     *,
@@ -279,26 +346,7 @@ def handle_workflow_commands(
                 before = json.dumps(w0n, indent=2, sort_keys=True) + "\n"
                 after = json.dumps(w1n, indent=2, sort_keys=True) + "\n"
                 diff = unified_diff(before, after, fromfile="before", tofile="after")
-                if diff:
-                    print(diff, end="")
-
-                change_summary = out.get("change_summary") if isinstance(out.get("change_summary"), list) else []
-                conflicts = out.get("conflicts") if isinstance(out.get("conflicts"), list) else []
-                notes = str(out.get("notes") or "").strip()
-                if change_summary:
-                    print("\nchange_summary:")
-                    for x in change_summary[:20]:
-                        xs = str(x).strip()
-                        if xs:
-                            print(f"- {xs}")
-                if conflicts:
-                    print("\nconflicts:")
-                    for x in conflicts[:20]:
-                        xs = str(x).strip()
-                        if xs:
-                            print(f"- {xs}")
-                if notes:
-                    print("\nnotes:\n" + notes)
+                _print_workflow_edit_feedback(diff=diff, out=out)
 
                 if bool(args.dry_run):
                     return 0
@@ -308,44 +356,7 @@ def handle_workflow_commands(
                     desired = w1n
 
                     # Compute an override patch relative to the global source of truth.
-                    patch: dict[str, Any] = {}
-                    if bool(desired.get("enabled", False)) != bool(base.get("enabled", False)):
-                        patch["enabled"] = bool(desired.get("enabled", False))
-                    name1 = str(desired.get("name") or "").strip()
-                    name0 = str(base.get("name") or "").strip()
-                    if name1 and name1 != name0:
-                        patch["name"] = name1
-                    if str(desired.get("mermaid") or "") != str(base.get("mermaid") or ""):
-                        patch["mermaid"] = str(desired.get("mermaid") or "")
-
-                    trig0 = base.get("trigger") if isinstance(base.get("trigger"), dict) else {}
-                    trig1 = desired.get("trigger") if isinstance(desired.get("trigger"), dict) else {}
-                    if trig1 != trig0:
-                        patch["trigger"] = trig1
-
-                    steps0 = base.get("steps") if isinstance(base.get("steps"), list) else []
-                    steps1 = desired.get("steps") if isinstance(desired.get("steps"), list) else []
-                    ids0 = [str(s.get("id") or "") for s in steps0 if isinstance(s, dict) and str(s.get("id") or "").strip()]
-                    ids1 = [str(s.get("id") or "") for s in steps1 if isinstance(s, dict) and str(s.get("id") or "").strip()]
-                    if ids0 != ids1:
-                        patch["steps_replace"] = [s for s in steps1 if isinstance(s, dict)]
-                    else:
-                        allowed = ("kind", "title", "hands_input", "check_input", "risk_category", "policy", "notes")
-                        patches: dict[str, Any] = {}
-                        for s0, s1 in zip(steps0, steps1):
-                            if not (isinstance(s0, dict) and isinstance(s1, dict)):
-                                continue
-                            sid = str(s0.get("id") or "").strip()
-                            if not sid:
-                                continue
-                            one: dict[str, Any] = {}
-                            for k in allowed:
-                                if s1.get(k) != s0.get(k):
-                                    one[k] = s1.get(k)
-                            if one:
-                                patches[sid] = one
-                        if patches:
-                            patch["step_patches"] = patches
+                    patch = _build_global_override_patch(base=base, desired=desired)
 
                     overlay2.setdefault("global_workflow_overrides", {})
                     ov = overlay2.get("global_workflow_overrides")

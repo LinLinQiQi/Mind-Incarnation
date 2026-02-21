@@ -1467,6 +1467,7 @@ Doc sections to keep aligned:
 - Runtime loop / constraints (if execution contract changes)
 - Prompt pack (if new prompts are added or semantics change)
 - Data models (if schemas/config change)
+- CLI contract surface (commands/flags/output meaning). Internal handler refactors are allowed when behavior stays the same.
 
 ## Implementation Plan (V1)
 

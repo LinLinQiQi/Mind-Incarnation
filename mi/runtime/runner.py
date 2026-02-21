@@ -104,6 +104,12 @@ from .autopilot.auto_answer_flow import (
     AutoAnswerQueryDeps,
     query_auto_answer_to_hands,
 )
+from .autopilot.ask_user_flow import (
+    AskUserAutoAnswerAttemptDeps,
+    DecideAskUserFlowDeps,
+    ask_user_auto_answer_attempt as run_ask_user_auto_answer_attempt,
+    handle_decide_next_ask_user as run_handle_decide_next_ask_user,
+)
 from .autopilot.check_plan_flow import (
     CheckPlanFlowDeps,
     append_check_plan_record_with_tracking,
@@ -1542,68 +1548,37 @@ def run_autopilot(
         - (None, q): no immediate queue; caller may continue and possibly ask user
         """
 
-        nonlocal evidence_window
-
-        if not q:
-            return None, q
-
-        tdb_ctx_aa = _build_decide_context(hands_last_message=q, recent_evidence=evidence_window)
-        tdb_ctx_aa_obj = tdb_ctx_aa.to_prompt_obj()
-        aa_prompt = auto_answer_to_hands_prompt(
+        return run_ask_user_auto_answer_attempt(
+            batch_idx=batch_idx,
+            q=q,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_obj=tdb_ctx_obj if isinstance(tdb_ctx_obj, dict) else {},
+            batch_suffix=batch_suffix,
+            tag_suffix=tag_suffix,
+            queue_reason=queue_reason,
+            note_skipped=note_skipped,
+            note_error=note_error,
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx_aa_obj,
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+            project_overlay=overlay if isinstance(overlay, dict) else {},
             recent_evidence=evidence_window,
-            hands_last_message=q,
+            deps=AskUserAutoAnswerAttemptDeps(
+                empty_auto_answer=_empty_auto_answer,
+                build_thought_db_context_obj=lambda hlm, recs: _build_decide_context(
+                    hands_last_message=hlm,
+                    recent_evidence=recs if isinstance(recs, list) else [],
+                ).to_prompt_obj(),
+                auto_answer_prompt_builder=auto_answer_to_hands_prompt,
+                mind_call=_mind_call,
+                append_auto_answer_record=_append_auto_answer_record,
+                get_check_input=_get_check_input,
+                join_hands_inputs=join_hands_inputs,
+                queue_next_input=_queue_next_input,
+            ),
         )
-        aa_obj, aa_ref, aa_state = _mind_call(
-            schema_filename="auto_answer_to_hands.json",
-            prompt=aa_prompt,
-            tag=f"{tag_suffix}_b{batch_idx}",
-            batch_id=f"b{batch_idx}.{batch_suffix}",
-        )
-
-        aa_out = _empty_auto_answer()
-        if aa_obj is None:
-            if aa_state == "skipped":
-                aa_out["notes"] = note_skipped
-            else:
-                aa_out["notes"] = note_error
-        else:
-            aa_out = aa_obj
-
-        _append_auto_answer_record(
-            batch_id=f"b{batch_idx}.{batch_suffix}",
-            mind_transcript_ref=aa_ref,
-            auto_answer=aa_out if isinstance(aa_out, dict) else {},
-        )
-
-        aa_text = ""
-        if isinstance(aa_out, dict) and bool(aa_out.get("should_answer", False)):
-            aa_text = str(aa_out.get("hands_answer_input") or "").strip()
-        chk_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
-        combined = join_hands_inputs(aa_text, chk_text)
-        if combined:
-            queued = _queue_next_input(
-                nxt=combined,
-                hands_last_message=hands_last,
-                batch_id=f"b{batch_idx}.{batch_suffix}",
-                reason=queue_reason,
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                thought_db_context=tdb_ctx_obj,
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-            )
-            return (True if queued else False), q
-
-        if isinstance(aa_out, dict) and bool(aa_out.get("needs_user_input", False)):
-            q2 = str(aa_out.get("ask_user_question") or "").strip()
-            if q2:
-                q = q2
-        return None, q
 
     def _ask_user_redecide_with_input(
         *,
@@ -1730,60 +1705,25 @@ def run_autopilot(
         """Handle decide_next(next_action=ask_user) path with auto-answer retries and re-decide."""
 
         nonlocal status, notes
-
-        q = str(decision_obj.get("ask_user_question") or "Need more information:").strip()
-
-        r1, q = _ask_user_auto_answer_attempt(
+        return run_handle_decide_next_ask_user(
             batch_idx=batch_idx,
-            q=q,
+            task=task,
             hands_last=hands_last,
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            tdb_ctx_obj=tdb_ctx_obj,
-            batch_suffix="from_decide",
-            tag_suffix="autoanswer_from_decide",
-            queue_reason="auto-answered instead of prompting user",
-            note_skipped="skipped: mind_circuit_open (auto_answer_to_hands from decide_next)",
-            note_error="mind_error: auto_answer_to_hands(from decide_next) failed; see EvidenceLog kind=mind_error",
-        )
-        if isinstance(r1, bool):
-            return r1
-
-        # Before asking the user, do a conservative cross-project recall and retry auto_answer once.
-        _maybe_cross_project_recall(
-            batch_id=f"b{batch_idx}.from_decide.before_user_recall",
-            reason="before_ask_user",
-            query=(q + "\n" + task).strip(),
-        )
-        r2, q = _ask_user_auto_answer_attempt(
-            batch_idx=batch_idx,
-            q=q,
-            hands_last=hands_last,
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            tdb_ctx_obj=tdb_ctx_obj,
-            batch_suffix="from_decide.after_recall",
-            tag_suffix="autoanswer_from_decide_after_recall",
-            queue_reason="auto-answered (after recall) instead of prompting user",
-            note_skipped="skipped: mind_circuit_open (auto_answer_to_hands from decide_next after recall)",
-            note_error="mind_error: auto_answer_to_hands(from decide_next after recall) failed; see EvidenceLog kind=mind_error",
-        )
-        if isinstance(r2, bool):
-            return r2
-
-        answer = _read_user_answer(q or "Need more information:")
-        if not answer:
-            status = "blocked"
-            notes = "user did not provide required input"
-            return False
-        _append_user_input_record(batch_id=f"b{batch_idx}", question=q, answer=answer)
-
-        return _ask_user_redecide_with_input(
-            batch_idx=batch_idx,
-            hands_last=hands_last,
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            answer=answer,
+            tdb_ctx_obj=tdb_ctx_obj if isinstance(tdb_ctx_obj, dict) else {},
+            decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
+            deps=DecideAskUserFlowDeps(
+                run_auto_answer_attempt=_ask_user_auto_answer_attempt,
+                maybe_cross_project_recall=_maybe_cross_project_recall,
+                read_user_answer=_read_user_answer,
+                append_user_input_record=_append_user_input_record,
+                redecide_with_input=_ask_user_redecide_with_input,
+                set_blocked=lambda blocked_note: (
+                    _set_status("blocked"),
+                    _set_notes(str(blocked_note or "").strip()),
+                ),
+            ),
         )
 
     def _decide_next_query(

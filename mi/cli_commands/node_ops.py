@@ -11,8 +11,7 @@ from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339
 from ..providers.provider_factory import make_mind_provider
 from ..runtime.evidence import EvidenceWriter, new_run_id
 from ..thoughtdb import ThoughtDbStore, claim_signature
-from ..thoughtdb.context import build_decide_next_thoughtdb_context
-from ..thoughtdb.graph import build_subgraph_for_id
+from ..thoughtdb.app_service import ThoughtDbApplicationService
 from ..thoughtdb.why import (
     collect_candidate_claims,
     collect_candidate_claims_for_target,
@@ -45,52 +44,17 @@ def handle_node_commands(
         project_root = resolve_project_root_from_args(home_dir, effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
         pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
         tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+        tdb_app = ThoughtDbApplicationService(tdb=tdb, project_paths=pp)
 
         def _iter_effective_nodes(*, include_inactive: bool, include_aliases: bool) -> list[dict[str, Any]]:
-            proj = tdb.load_view(scope="project")
-            glob = tdb.load_view(scope="global")
-            out: list[dict[str, Any]] = []
-            seen: set[str] = set()
-
-            for n in proj.iter_nodes(include_inactive=include_inactive, include_aliases=include_aliases):
-                if not isinstance(n, dict):
-                    continue
-                nid = str(n.get("node_id") or "").strip()
-                if nid:
-                    seen.add(nid)
-                out.append(n)
-
-            for n in glob.iter_nodes(include_inactive=include_inactive, include_aliases=include_aliases):
-                if not isinstance(n, dict):
-                    continue
-                nid = str(n.get("node_id") or "").strip()
-                if nid and nid in seen:
-                    continue
-                out.append(n)
-
-            out.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
-            return out
+            return tdb_app.list_effective_nodes(
+                include_inactive=include_inactive,
+                include_aliases=include_aliases,
+            )
 
         def _find_node_effective(nid: str) -> tuple[str, dict[str, Any] | None]:
             """Return (scope, node) searching project then global."""
-            n = (nid or "").strip()
-            if not n:
-                return "", None
-            for sc in ("project", "global"):
-                v = tdb.load_view(scope=sc)
-                if n in v.nodes_by_id:
-                    obj = dict(v.nodes_by_id[n])
-                    obj["status"] = v.node_status(n)
-                    obj["canonical_id"] = v.resolve_id(n)
-                    return sc, obj
-                canon = v.resolve_id(n)
-                if canon and canon in v.nodes_by_id:
-                    obj = dict(v.nodes_by_id[canon])
-                    obj["status"] = v.node_status(canon)
-                    obj["canonical_id"] = v.resolve_id(canon)
-                    obj["requested_id"] = n
-                    return sc, obj
-            return "", None
+            return tdb_app.find_node_effective(nid)
 
         if args.node_cmd == "list":
             scope = str(getattr(args, "scope", "project") or "project").strip()
@@ -173,39 +137,11 @@ def handle_node_commands(
             if scope == "effective":
                 found_scope, obj = _find_node_effective(nid)
                 if found_scope:
-                    v = tdb.load_view(scope=found_scope)
-                    canon = v.resolve_id(nid)
-                    for e in v.edges:
-                        if not isinstance(e, dict):
-                            continue
-                        frm = str(e.get("from_id") or "").strip()
-                        to = str(e.get("to_id") or "").strip()
-                        if nid in (frm, to) or (canon and canon in (frm, to)):
-                            edges.append(e)
+                    edges = tdb_app.related_edges_for_id(scope=found_scope, item_id=nid)
             else:
-                v = tdb.load_view(scope=scope)
-                if nid in v.nodes_by_id:
-                    obj = dict(v.nodes_by_id[nid])
-                    obj["status"] = v.node_status(nid)
-                    obj["canonical_id"] = v.resolve_id(nid)
-                    found_scope = scope
-                else:
-                    canon = v.resolve_id(nid)
-                    if canon and canon in v.nodes_by_id:
-                        obj = dict(v.nodes_by_id[canon])
-                        obj["status"] = v.node_status(canon)
-                        obj["canonical_id"] = v.resolve_id(canon)
-                        obj["requested_id"] = nid
-                        found_scope = scope
+                found_scope, obj = tdb_app.find_node(scope=scope, node_id=nid)
                 if found_scope:
-                    canon = v.resolve_id(nid)
-                    for e in v.edges:
-                        if not isinstance(e, dict):
-                            continue
-                        frm = str(e.get("from_id") or "").strip()
-                        to = str(e.get("to_id") or "").strip()
-                        if nid in (frm, to) or (canon and canon in (frm, to)):
-                            edges.append(e)
+                    edges = tdb_app.related_edges_for_id(scope=found_scope, item_id=nid)
 
             if not obj:
                 print(f"node not found: {nid}", file=sys.stderr)
@@ -216,8 +152,7 @@ def handle_node_commands(
                 edge_types_raw = getattr(args, "edge_types", None) or []
                 etypes = {str(x).strip() for x in edge_types_raw if str(x).strip()}
                 graph_scope = scope if scope == "effective" else found_scope
-                payload["graph"] = build_subgraph_for_id(
-                    tdb=tdb,
+                payload["graph"] = tdb_app.build_subgraph(
                     scope=graph_scope,
                     root_id=str(obj.get("node_id") or nid).strip() or nid,
                     depth=int(getattr(args, "depth", 1) or 1),

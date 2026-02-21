@@ -5,8 +5,8 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class RunContext:
-    """Execution context container for future engine extraction."""
+class RunSession:
+    """Static run wiring shared by orchestration and phase helpers."""
 
     home: Any | None = None
     project_path: Any | None = None

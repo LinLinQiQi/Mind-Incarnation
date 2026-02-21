@@ -11,7 +11,7 @@ from ..core.redact import redact_text
 from ..runtime.inspect import load_last_batch_bundle, summarize_evidence_record, tail_json_objects, tail_raw_lines
 from ..runtime.transcript import last_agent_message_from_transcript, resolve_transcript_path, tail_transcript_lines
 from ..thoughtdb import ThoughtDbStore
-from ..thoughtdb.why import find_evidence_event
+from ..thoughtdb.app_service import ThoughtDbApplicationService
 
 
 def _latest_transcript_path(pp: ProjectPaths, *, mind: bool) -> Path:
@@ -380,6 +380,8 @@ def handle_show(
 
     project_root = resolve_project_root_from_args(home_dir, effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
     pp = ProjectPaths(home_dir=home_dir, project_root=project_root)
+    tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+    tdb_app = ThoughtDbApplicationService(tdb=tdb, project_paths=pp)
 
     def _print_json(obj: object) -> None:
         s = json.dumps(obj, indent=2, sort_keys=True)
@@ -388,15 +390,7 @@ def handle_show(
     if ref.startswith("ev_"):
         eid = ref
         global_only = bool(getattr(args, "show_global", False))
-        if global_only:
-            obj = find_evidence_event(evidence_log_path=GlobalPaths(home_dir=home_dir).global_evidence_log_path, event_id=eid)
-            scope = "global" if obj is not None else ""
-        else:
-            obj = find_evidence_event(evidence_log_path=pp.evidence_log_path, event_id=eid)
-            scope = "project"
-            if obj is None:
-                obj = find_evidence_event(evidence_log_path=GlobalPaths(home_dir=home_dir).global_evidence_log_path, event_id=eid)
-                scope = "global" if obj is not None else ""
+        scope, obj = tdb_app.find_evidence_event_prefer_project(home_dir=home_dir, event_id=eid, global_only=global_only)
         if obj is None:
             print(f"evidence event not found: {eid}", file=sys.stderr)
             return 2
@@ -404,26 +398,8 @@ def handle_show(
         return 0
 
     if ref.startswith("cl_"):
-        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
         cid = ref
-        found_scope = ""
-        cobj: dict[str, Any] | None = None
-        for sc in ("project", "global"):
-            v = tdb.load_view(scope=sc)
-            if cid in v.claims_by_id:
-                cobj = dict(v.claims_by_id[cid])
-                cobj["status"] = v.claim_status(cid)
-                cobj["canonical_id"] = v.resolve_id(cid)
-                found_scope = sc
-                break
-            canon = v.resolve_id(cid)
-            if canon and canon in v.claims_by_id:
-                cobj = dict(v.claims_by_id[canon])
-                cobj["status"] = v.claim_status(canon)
-                cobj["canonical_id"] = v.resolve_id(canon)
-                cobj["requested_id"] = cid
-                found_scope = sc
-                break
+        found_scope, cobj = tdb_app.find_claim_effective(cid)
         if not cobj:
             print(f"claim not found: {cid}", file=sys.stderr)
             return 2
@@ -431,26 +407,8 @@ def handle_show(
         return 0
 
     if ref.startswith("nd_"):
-        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
         nid = ref
-        found_scope = ""
-        nobj: dict[str, Any] | None = None
-        for sc in ("project", "global"):
-            v = tdb.load_view(scope=sc)
-            if nid in v.nodes_by_id:
-                nobj = dict(v.nodes_by_id[nid])
-                nobj["status"] = v.node_status(nid)
-                nobj["canonical_id"] = v.resolve_id(nid)
-                found_scope = sc
-                break
-            canon = v.resolve_id(nid)
-            if canon and canon in v.nodes_by_id:
-                nobj = dict(v.nodes_by_id[canon])
-                nobj["status"] = v.node_status(canon)
-                nobj["canonical_id"] = v.resolve_id(canon)
-                nobj["requested_id"] = nid
-                found_scope = sc
-                break
+        found_scope, nobj = tdb_app.find_node_effective(nid)
         if not nobj:
             print(f"node not found: {nid}", file=sys.stderr)
             return 2
@@ -458,7 +416,6 @@ def handle_show(
         return 0
 
     if ref.startswith("ed_"):
-        tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
         eid = ref
         found_scope = ""
         eobj: dict[str, Any] | None = None

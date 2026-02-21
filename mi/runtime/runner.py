@@ -54,14 +54,10 @@ from .autopilot import (
     run_plan_checks_and_auto_answer,
     WorkflowRiskPhaseDeps,
     run_workflow_and_risk_phase,
-    RunMutableState,
-    RunEngineDeps,
-    run_autopilot_engine,
+    RunSession,
+    RunLoopOrchestrator,
+    RunLoopOrchestratorDeps,
     BatchRunRequest,
-    CheckpointRequest,
-    PipelineService,
-    DecideBatchService,
-    CheckpointService,
     ExtractEvidenceDeps,
     PreactionPhaseDeps,
     BatchPredecideDeps,
@@ -99,9 +95,9 @@ from ..workflows.hosts import sync_hosts_from_overlay
 from ..memory.facade import MemoryFacade
 from ..memory.ingest import thoughtdb_node_item
 from .evidence import EvidenceWriter, new_run_id
-from ..thoughtdb.context import build_decide_next_thoughtdb_context
 from .injection import build_light_injection
 from ..thoughtdb import ThoughtDbStore, claim_signature
+from ..thoughtdb.app_service import ThoughtDbApplicationService
 from ..thoughtdb.operational_defaults import ensure_operational_defaults_claims_current, resolve_operational_defaults
 from ..project.overlay_store import load_project_overlay, write_project_overlay
 
@@ -193,6 +189,7 @@ def run_autopilot(
     mem = MemoryFacade(home_dir=home, project_paths=project_paths, runtime_cfg=runtime_cfg)
     mem.ensure_structured_ingested()
     tdb = ThoughtDbStore(home_dir=home, project_paths=project_paths)
+    tdb_app = ThoughtDbApplicationService(tdb=tdb, project_paths=project_paths, mem=mem.service)
     evw = EvidenceWriter(path=project_paths.evidence_log_path, run_id=new_run_id("run"))
 
     if llm is None:
@@ -217,6 +214,23 @@ def run_autopilot(
             else:
                 print(prefix, flush=True)
 
+    run_session = RunSession(
+        home=home,
+        project_path=project_path,
+        project_paths=project_paths,
+        runtime_cfg=(runtime_cfg if isinstance(runtime_cfg, dict) else {}),
+        llm=llm,
+        hands_exec=hands_exec,
+        hands_resume=hands_resume,
+        evw=evw,
+        tdb=tdb,
+        mem=mem,
+        wf_registry=wf_registry,
+        emit=_emit_prefixed,
+        read_user_answer=_read_user_answer,
+        now_ts=now_rfc3339,
+    )
+
     evidence_window: list[dict[str, Any]] = []
     thread_id: str | None = None
     resumed_from_overlay = False
@@ -236,6 +250,14 @@ def run_autopilot(
 
     status = "not_done"
     notes = ""
+
+    def _build_decide_context(*, hands_last_message: str, recent_evidence: list[dict[str, Any]]) -> Any:
+        return tdb_app.build_decide_context(
+            as_of_ts=now_rfc3339(),
+            task=task,
+            hands_last_message=hands_last_message,
+            recent_evidence=recent_evidence,
+        )
 
     # Workflow trigger routing (effective): if an enabled workflow (project or global) matches the task,
     # inject it into the very first batch input (lightweight; no step slicing).
@@ -1235,14 +1257,7 @@ def run_autopilot(
             )
 
             # Re-plan checks now that the project has a strategy to follow.
-            tdb_ctx2 = build_decide_next_thoughtdb_context(
-                tdb=tdb,
-                as_of_ts=now_rfc3339(),
-                task=task,
-                hands_last_message=hands_last_message,
-                recent_evidence=evidence_window,
-                mem=mem.service,
-            )
+            tdb_ctx2 = _build_decide_context(hands_last_message=hands_last_message, recent_evidence=evidence_window)
             tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
             checks_obj2, checks_ref2, _ = _plan_checks_and_record(
                 batch_id=batch_id_after_testless,
@@ -1262,14 +1277,7 @@ def run_autopilot(
         # still requested it, re-plan once (best-effort) to avoid blocking.
         needs_tls2 = bool(checks_obj.get("needs_testless_strategy", False)) if isinstance(checks_obj, dict) else False
         if needs_tls2 and tls_claim_strategy:
-            tdb_ctx_tls = build_decide_next_thoughtdb_context(
-                tdb=tdb,
-                as_of_ts=now_rfc3339(),
-                task=task,
-                hands_last_message=hands_last_message,
-                recent_evidence=evidence_window,
-                mem=mem.service,
-            )
+            tdb_ctx_tls = _build_decide_context(hands_last_message=hands_last_message, recent_evidence=evidence_window)
             tdb_ctx_tls_obj = tdb_ctx_tls.to_prompt_obj()
             notes_on_skipped = f"skipped: mind_circuit_open (plan_min_checks {_notes_label('after_tls_claim')})"
             notes_on_error = f"mind_error: plan_min_checks({_notes_label('after_tls_claim')}) failed; using Thought DB strategy"
@@ -1348,14 +1356,7 @@ def run_autopilot(
             min_occ = 1
 
         mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
-        tdb_ctx = build_decide_next_thoughtdb_context(
-            tdb=tdb,
-            as_of_ts=now_rfc3339(),
-            task=task,
-            hands_last_message="",
-            recent_evidence=seg_evidence[-8:],
-            mem=mem.service,
-        )
+        tdb_ctx = _build_decide_context(hands_last_message="", recent_evidence=seg_evidence[-8:])
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = suggest_workflow_prompt(
             task=task,
@@ -1542,14 +1543,7 @@ def run_autopilot(
             return
 
         mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
-        tdb_ctx = build_decide_next_thoughtdb_context(
-            tdb=tdb,
-            as_of_ts=now_rfc3339(),
-            task=task,
-            hands_last_message="",
-            recent_evidence=seg_evidence[-8:],
-            mem=mem.service,
-        )
+        tdb_ctx = _build_decide_context(hands_last_message="", recent_evidence=seg_evidence[-8:])
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = mine_preferences_prompt(
             task=task,
@@ -1734,14 +1728,7 @@ def run_autopilot(
         allowed_set = set(allowed)
 
         mine_notes = f"source={source} status={status} batches={executed_batches} notes={notes}"
-        tdb_ctx = build_decide_next_thoughtdb_context(
-            tdb=tdb,
-            as_of_ts=now_rfc3339(),
-            task=task,
-            hands_last_message="",
-            recent_evidence=seg_evidence[-8:],
-            mem=mem.service,
-        )
+        tdb_ctx = _build_decide_context(hands_last_message="", recent_evidence=seg_evidence[-8:])
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = mine_claims_prompt(
             task=task,
@@ -2144,14 +2131,7 @@ def run_autopilot(
                 segment_state["thread_id"] = cur_tid
             segment_state["task_hint"] = _truncate(task.strip(), 200)
 
-        tdb_ctx = build_decide_next_thoughtdb_context(
-            tdb=tdb,
-            as_of_ts=now_rfc3339(),
-            task=task,
-            hands_last_message="",
-            recent_evidence=segment_records[-8:],
-            mem=mem.service,
-        )
+        tdb_ctx = _build_decide_context(hands_last_message="", recent_evidence=segment_records[-8:])
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         prompt = checkpoint_decide_prompt(
             task=task,
@@ -2622,14 +2602,7 @@ def run_autopilot(
         if not q:
             return None, q
 
-        tdb_ctx_aa = build_decide_next_thoughtdb_context(
-            tdb=tdb,
-            as_of_ts=now_rfc3339(),
-            task=task,
-            hands_last_message=q,
-            recent_evidence=evidence_window,
-            mem=mem.service,
-        )
+        tdb_ctx_aa = _build_decide_context(hands_last_message=q, recent_evidence=evidence_window)
         tdb_ctx_aa_obj = tdb_ctx_aa.to_prompt_obj()
         aa_prompt = auto_answer_to_hands_prompt(
             task=task,
@@ -2699,14 +2672,7 @@ def run_autopilot(
 
         nonlocal status, notes, last_decide_next_rec, evidence_window
 
-        tdb_ctx2 = build_decide_next_thoughtdb_context(
-            tdb=tdb,
-            as_of_ts=now_rfc3339(),
-            task=task,
-            hands_last_message=hands_last,
-            recent_evidence=evidence_window,
-            mem=mem.service,
-        )
+        tdb_ctx2 = _build_decide_context(hands_last_message=hands_last, recent_evidence=evidence_window)
         tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
         tdb_ctx2_summary = summarize_thought_db_context(tdb_ctx2)
         decision_prompt2 = decide_next_prompt(
@@ -2888,14 +2854,7 @@ def run_autopilot(
 
         nonlocal evidence_window
 
-        tdb_ctx = build_decide_next_thoughtdb_context(
-            tdb=tdb,
-            as_of_ts=now_rfc3339(),
-            task=task,
-            hands_last_message=hands_last,
-            recent_evidence=evidence_window,
-            mem=mem.service,
-        )
+        tdb_ctx = _build_decide_context(hands_last_message=hands_last, recent_evidence=evidence_window)
         tdb_ctx_obj = tdb_ctx.to_prompt_obj()
         tdb_ctx_summary = summarize_thought_db_context(tdb_ctx)
         decision_prompt = decide_next_prompt(
@@ -3377,14 +3336,7 @@ def run_autopilot(
         segment_add_and_persist(segment_add=_segment_add, persist_segment_state=_persist_segment_state, item=evidence_rec)
 
         hands_last = result.last_agent_message()
-        tdb_ctx_batch = build_decide_next_thoughtdb_context(
-            tdb=tdb,
-            as_of_ts=now_rfc3339(),
-            task=task,
-            hands_last_message=hands_last,
-            recent_evidence=evidence_window,
-            mem=mem.service,
-        )
+        tdb_ctx_batch = _build_decide_context(hands_last_message=hands_last, recent_evidence=evidence_window)
         tdb_ctx_batch_obj = tdb_ctx_batch.to_prompt_obj()
         return (
             summary if isinstance(summary, dict) else {},
@@ -3900,7 +3852,6 @@ def run_autopilot(
 
     executed_batches = 0
     last_batch_id = ""
-    max_batches_exhausted = False
     def _run_predecide_via_service(req: BatchRunRequest) -> bool | PreactionDecision:
         nonlocal last_batch_id
         out = run_batch_predecide(
@@ -3938,33 +3889,6 @@ def run_autopilot(
             checks_obj=preaction.checks_obj if isinstance(preaction.checks_obj, dict) else {},
             auto_answer_obj=preaction.auto_answer_obj if isinstance(preaction.auto_answer_obj, dict) else _empty_auto_answer(),
         )
-
-    decide_batch_service = DecideBatchService(run_decide_phase=_run_decide_via_service)
-    pipeline_service = PipelineService(
-        run_predecide_phase=_run_predecide_via_service,
-        decide_service=decide_batch_service,
-    )
-
-    def _run_single_batch(batch_idx: int, batch_id: str) -> bool:
-        """Run one batch via pipeline service (predecide + decide)."""
-
-        nonlocal status, notes, last_batch_id
-        req = BatchRunRequest(
-            batch_idx=int(batch_idx),
-            batch_id=str(batch_id or f"b{int(batch_idx)}"),
-            next_input=str(next_input or ""),
-            thread_id=(thread_id or ""),
-        )
-        out = pipeline_service.run_batch(req=req)
-        last_batch_id = str(out.last_batch_id or last_batch_id or req.batch_id)
-        if not bool(out.continue_loop):
-            st = str(out.status_hint or "").strip()
-            if st:
-                status = st
-            msg = str(out.notes or "").strip()
-            if msg:
-                notes = msg
-        return bool(out.continue_loop)
 
     def _run_learn_update() -> None:
         maybe_run_learn_update_on_run_end(
@@ -4004,43 +3928,39 @@ def run_autopilot(
             thread_id=(thread_id or ""),
         )
 
-    def _apply_engine_state_outcome(*, engine_state: RunMutableState) -> None:
-        nonlocal status, notes, last_batch_id, max_batches_exhausted
-        if bool(engine_state.max_batches_exhausted):
-            status = str(engine_state.status or status)
-            notes = str(engine_state.notes or notes)
-        last_batch_id = str(engine_state.last_batch_id or last_batch_id)
-        max_batches_exhausted = bool(engine_state.max_batches_exhausted)
+    def _set_status(value: str) -> None:
+        nonlocal status
+        status = str(value or "")
 
-    checkpoint_service = CheckpointService(
-        run_checkpoint=lambda request: _maybe_checkpoint_and_mine(
+    def _set_notes(value: str) -> None:
+        nonlocal notes
+        notes = str(value or "")
+
+    def _set_last_batch_id(value: str) -> None:
+        nonlocal last_batch_id
+        last_batch_id = str(value or "")
+
+    def _run_checkpoint_request(request: Any) -> None:
+        _maybe_checkpoint_and_mine(
             batch_id=str(request.batch_id or ""),
             planned_next_input=str(request.planned_next_input or ""),
             status_hint=str(request.status_hint or ""),
             note=str(request.note or ""),
         )
-    )
 
-    def _run_checkpoint_request(**kwargs: Any) -> None:
-        checkpoint_service.run(
-            request=CheckpointRequest(
-                batch_id=str(kwargs.get("batch_id") or ""),
-                planned_next_input=str(kwargs.get("planned_next_input") or ""),
-                status_hint=str(kwargs.get("status_hint") or ""),
-                note=str(kwargs.get("note") or ""),
-            )
-        )
-
-    engine_state = run_autopilot_engine(
-        max_batches=max_batches,
-        state=RunMutableState(
-            status=str(status or ""),
-            notes=str(notes or ""),
-            last_batch_id=str(last_batch_id or ""),
-            max_batches_exhausted=False,
-        ),
-        deps=RunEngineDeps(
-            run_single_batch=_run_single_batch,
+    orchestrator = RunLoopOrchestrator(
+        deps=RunLoopOrchestratorDeps(
+            max_batches=int(max_batches),
+            run_predecide_phase=_run_predecide_via_service,
+            run_decide_phase=_run_decide_via_service,
+            next_input_getter=lambda: str(next_input or ""),
+            thread_id_getter=lambda: str(thread_id or ""),
+            status_getter=lambda: str(status or ""),
+            status_setter=_set_status,
+            notes_getter=lambda: str(notes or ""),
+            notes_setter=_set_notes,
+            last_batch_id_getter=lambda: str(last_batch_id or ""),
+            last_batch_id_setter=_set_last_batch_id,
             executed_batches_getter=lambda: int(executed_batches),
             checkpoint_enabled=bool(checkpoint_enabled),
             checkpoint_runner=_run_checkpoint_request,
@@ -4048,16 +3968,16 @@ def run_autopilot(
             why_runner=_run_why_trace,
             snapshot_flusher=tdb.flush_snapshots_best_effort,
             state_warning_flusher=_flush_state_warnings,
-        ),
+        )
     )
-    _apply_engine_state_outcome(engine_state=engine_state)
+    orchestrator.run()
 
     return AutopilotResult(
         status=status,
         thread_id=thread_id or "unknown",
-        project_dir=project_paths.project_dir,
-        evidence_log_path=project_paths.evidence_log_path,
-        transcripts_dir=project_paths.transcripts_dir,
+        project_dir=run_session.project_paths.project_dir,
+        evidence_log_path=run_session.project_paths.evidence_log_path,
+        transcripts_dir=run_session.project_paths.transcripts_dir,
         batches=executed_batches,
         notes=notes,
     )

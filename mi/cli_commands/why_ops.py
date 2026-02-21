@@ -8,19 +8,13 @@ from typing import Any, Callable
 
 from ..core.paths import GlobalPaths, ProjectPaths
 from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339
+from ..memory.service import MemoryService
 from ..providers.provider_factory import make_mind_provider
 from ..runtime.evidence import EvidenceWriter, new_run_id
-from ..thoughtdb import ThoughtDbStore, claim_signature
-from ..thoughtdb.context import build_decide_next_thoughtdb_context
-from ..thoughtdb.graph import build_subgraph_for_id
-from ..thoughtdb.why import (
-    collect_candidate_claims,
-    collect_candidate_claims_for_target,
-    default_as_of_ts,
-    find_evidence_event,
-    query_from_evidence_event,
-    run_why_trace,
-)
+from ..runtime.inspect import load_last_batch_bundle
+from ..thoughtdb import ThoughtDbStore
+from ..thoughtdb.app_service import ThoughtDbApplicationService
+from ..thoughtdb.why import default_as_of_ts
 from ..project.overlay_store import load_project_overlay, write_project_overlay
 from ..workflows import (
     WorkflowStore,
@@ -49,6 +43,7 @@ def handle_why_commands(
         tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
         mem = MemoryService(home_dir)
         mind = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
+        tdb_app = ThoughtDbApplicationService(tdb=tdb, project_paths=pp, mem=mem, mind=mind)
 
         top_k = int(getattr(args, "top_k", 12) or 12)
         as_of_ts = str(getattr(args, "as_of", "") or "").strip() or default_as_of_ts()
@@ -72,16 +67,13 @@ def handle_why_commands(
                 event_id = str(target_obj.get("event_id") or "").strip()
             else:
                 event_id = str(getattr(args, "event_id", "") or "").strip()
-                target_obj = find_evidence_event(evidence_log_path=pp.evidence_log_path, event_id=event_id)
+                target_obj = tdb_app.find_evidence_event(evidence_log_path=pp.evidence_log_path, event_id=event_id)
                 if not isinstance(target_obj, dict):
                     print(f"event_id not found in EvidenceLog: {event_id}", file=sys.stderr)
                     return 2
 
-            query = query_from_evidence_event(target_obj)
-            candidates = collect_candidate_claims_for_target(
-                tdb=tdb,
-                mem=mem,
-                project_paths=pp,
+            query = tdb_app.query_from_evidence_event(target_obj)
+            candidates = tdb_app.collect_why_candidates_for_target(
                 target_obj=target_obj,
                 query=query,
                 top_k=top_k,
@@ -117,11 +109,7 @@ def handle_why_commands(
                 "evidence_kind": str(target_obj.get("kind") or "").strip(),
                 "batch_id": str(target_obj.get("batch_id") or "").strip(),
             }
-            outcome = run_why_trace(
-                mind=mind,
-                tdb=tdb,
-                mem=mem,
-                project_paths=pp,
+            outcome = tdb_app.run_why_trace_for_target(
                 target=target,
                 candidate_claims=candidates,
                 as_of_ts=as_of_ts,
@@ -169,39 +157,16 @@ def handle_why_commands(
             claim_obj: dict[str, Any] | None = None
 
             if scope == "effective":
-                for sc in ("project", "global"):
-                    v = tdb.load_view(scope=sc)
-                    if claim_id in v.claims_by_id:
-                        claim_obj = dict(v.claims_by_id[claim_id])
-                        claim_obj["status"] = v.claim_status(claim_id)
-                        claim_obj["canonical_id"] = v.resolve_id(claim_id)
-                        found_scope = sc
-                        break
-                    canon = v.resolve_id(claim_id)
-                    if canon and canon in v.claims_by_id:
-                        claim_obj = dict(v.claims_by_id[canon])
-                        claim_obj["status"] = v.claim_status(canon)
-                        claim_obj["canonical_id"] = v.resolve_id(canon)
-                        claim_obj["requested_id"] = claim_id
-                        found_scope = sc
-                        break
+                found_scope, claim_obj = tdb_app.find_claim_effective(claim_id)
             else:
-                v = tdb.load_view(scope=scope)
-                if claim_id in v.claims_by_id:
-                    claim_obj = dict(v.claims_by_id[claim_id])
-                    claim_obj["status"] = v.claim_status(claim_id)
-                    claim_obj["canonical_id"] = v.resolve_id(claim_id)
-                    found_scope = scope
+                found_scope, claim_obj = tdb_app.find_claim(scope=scope, claim_id=claim_id)
 
             if not claim_obj:
                 print(f"claim not found: {claim_id}", file=sys.stderr)
                 return 2
 
             query = str(claim_obj.get("text") or "").strip()
-            candidates = collect_candidate_claims(
-                tdb=tdb,
-                mem=mem,
-                project_paths=pp,
+            candidates = tdb_app.collect_why_candidates(
                 query=query,
                 top_k=top_k,
                 target_event_id="",
@@ -215,11 +180,7 @@ def handle_why_commands(
                 "status": str(claim_obj.get("status") or "").strip(),
                 "text": str(claim_obj.get("text") or "").strip(),
             }
-            outcome = run_why_trace(
-                mind=mind,
-                tdb=tdb,
-                mem=mem,
-                project_paths=pp,
+            outcome = tdb_app.run_why_trace_for_target(
                 target=target,
                 candidate_claims=candidates,
                 as_of_ts=as_of_ts,

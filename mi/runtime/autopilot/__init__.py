@@ -17,8 +17,9 @@ from .batch_pipeline import PreactionDecision, join_hands_inputs, compose_check_
 from .run_state import RunState
 from .run_deps import RunDeps
 from .hands_flow import HandsFlowDeps, run_hands_batch
-from .run_context import RunContext, RunMutableState
+from .run_context import RunSession, RunMutableState
 from .run_engine import RunEngineDeps, run_autopilot_engine
+from .orchestrator import RunLoopOrchestrator, RunLoopOrchestratorDeps
 from .contracts import (
     AutopilotState,
     StateMachineState,
@@ -87,10 +88,12 @@ __all__ = [
     "RunDeps",
     "HandsFlowDeps",
     "run_hands_batch",
-    "RunContext",
+    "RunSession",
     "RunMutableState",
     "RunEngineDeps",
     "run_autopilot_engine",
+    "RunLoopOrchestrator",
+    "RunLoopOrchestratorDeps",
     "AutopilotState",
     "StateMachineState",
     "TransitionResult",

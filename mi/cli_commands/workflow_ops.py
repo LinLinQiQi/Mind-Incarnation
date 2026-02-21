@@ -10,17 +10,8 @@ from ..core.paths import GlobalPaths, ProjectPaths
 from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339
 from ..providers.provider_factory import make_mind_provider
 from ..runtime.evidence import EvidenceWriter, new_run_id
-from ..thoughtdb import ThoughtDbStore, claim_signature
-from ..thoughtdb.context import build_decide_next_thoughtdb_context
-from ..thoughtdb.graph import build_subgraph_for_id
-from ..thoughtdb.why import (
-    collect_candidate_claims,
-    collect_candidate_claims_for_target,
-    default_as_of_ts,
-    find_evidence_event,
-    query_from_evidence_event,
-    run_why_trace,
-)
+from ..thoughtdb import ThoughtDbStore
+from ..thoughtdb.app_service import ThoughtDbApplicationService
 from ..project.overlay_store import load_project_overlay, write_project_overlay
 from ..workflows import (
     WorkflowStore,
@@ -54,6 +45,7 @@ def handle_workflow_commands(
         wf_global = GlobalWorkflowStore(GlobalPaths(home_dir=home_dir))
         wf_reg = WorkflowRegistry(project_store=wf_store, global_store=wf_global)
         tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+        tdb_app = ThoughtDbApplicationService(tdb=tdb, project_paths=pp)
 
         runtime_cfg = cfg.get("runtime") if isinstance(cfg.get("runtime"), dict) else {}
         wf_cfg = runtime_cfg.get("workflows") if isinstance(runtime_cfg.get("workflows"), dict) else {}
@@ -251,11 +243,9 @@ def handle_workflow_commands(
                 else:
                     w0 = wf_global.load(wid) if scope == "global" else wf_store.load(wid)
                 llm = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
-                tdb_ctx = build_decide_next_thoughtdb_context(
-                    tdb=tdb,
+                tdb_ctx = tdb_app.build_workflow_edit_context(
                     as_of_ts=now_rfc3339(),
                     task=req,
-                    hands_last_message="",
                     recent_evidence=[],
                 )
                 tdb_ctx_obj = tdb_ctx.to_prompt_obj()

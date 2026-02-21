@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from ...core.storage import now_rfc3339
 from ...runtime.prompts import why_trace_prompt
-from ...thoughtdb.why import collect_candidate_claims_for_target, query_from_evidence_event
+from ...thoughtdb.app_service import ThoughtDbApplicationService
 
 
 def maybe_run_why_trace_on_run_end(
@@ -35,16 +35,16 @@ def maybe_run_why_trace_on_run_end(
         return
 
     as_of_ts = now_rfc3339()
-    query = query_from_evidence_event(target_obj)
-    candidates = collect_candidate_claims_for_target(
+    tdb_app = ThoughtDbApplicationService(
         tdb=tdb,
-        mem=mem_service,
         project_paths=project_paths,
+        mem=mem_service,
+    )
+    query, candidates, cand_ids0 = tdb_app.run_end_why_candidates(
         target_obj=target_obj,
-        query=query,
-        top_k=why_top_k,
-        as_of_ts=as_of_ts,
         target_event_id=ev_id,
+        top_k=int(why_top_k),
+        as_of_ts=as_of_ts,
     )
 
     kind = str(target_obj.get("kind") or "").strip()
@@ -79,7 +79,7 @@ def maybe_run_why_trace_on_run_end(
                 "notes": ("skipped: mind_circuit_open (why_trace)" if why_state == "skipped" else "mind_error: why_trace failed; see EvidenceLog kind=mind_error"),
             }
 
-    cand_ids = {str(c.get("claim_id") or "").strip() for c in candidates if isinstance(c, dict) and str(c.get("claim_id") or "").strip()}
+    cand_ids = {x for x in cand_ids0 if str(x or "").strip()}
     raw_chosen = out.get("chosen_claim_ids") if isinstance(out.get("chosen_claim_ids"), list) else []
     chosen2: list[str] = []
     seen: set[str] = set()

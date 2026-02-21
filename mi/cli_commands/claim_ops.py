@@ -11,8 +11,7 @@ from ..core.storage import append_jsonl, iter_jsonl, now_rfc3339
 from ..providers.provider_factory import make_mind_provider
 from ..runtime.evidence import EvidenceWriter, new_run_id
 from ..thoughtdb import ThoughtDbStore, claim_signature
-from ..thoughtdb.context import build_decide_next_thoughtdb_context
-from ..thoughtdb.graph import build_subgraph_for_id
+from ..thoughtdb.app_service import ThoughtDbApplicationService
 from ..thoughtdb.why import (
     collect_candidate_claims,
     collect_candidate_claims_for_target,
@@ -49,6 +48,7 @@ def handle_claim_commands(
             overlay2 = {}
 
         tdb = ThoughtDbStore(home_dir=home_dir, project_paths=pp)
+        tdb_app = ThoughtDbApplicationService(tdb=tdb, project_paths=pp)
 
         def _view_for_scope(scope: str) -> object:
             sc = str(scope or "project").strip()
@@ -63,60 +63,16 @@ def handle_claim_commands(
             as_of_ts: str,
             filter_fn: Any,
         ) -> list[dict]:
-            proj = tdb.load_view(scope="project")
-            glob = tdb.load_view(scope="global")
-            out: list[dict] = []
-            seen: set[str] = set()
-
-            def sig_for(c: dict) -> str:
-                ct = str(c.get("claim_type") or "").strip()
-                text = str(c.get("text") or "").strip()
-                return claim_signature(claim_type=ct, scope="effective", project_id="", text=text)
-
-            for c in proj.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases, as_of_ts=as_of_ts):
-                if not isinstance(c, dict):
-                    continue
-                if not filter_fn(c):
-                    continue
-                s = sig_for(c)
-                if s:
-                    seen.add(s)
-                out.append(c)
-
-            for c in glob.iter_claims(include_inactive=include_inactive, include_aliases=include_aliases, as_of_ts=as_of_ts):
-                if not isinstance(c, dict):
-                    continue
-                if not filter_fn(c):
-                    continue
-                s = sig_for(c)
-                if s and s in seen:
-                    continue
-                out.append(c)
-
-            # Sort newest first when possible.
-            out.sort(key=lambda x: str(x.get("asserted_ts") or ""), reverse=True)
-            return out
+            return tdb_app.list_effective_claims(
+                include_inactive=include_inactive,
+                include_aliases=include_aliases,
+                as_of_ts=as_of_ts,
+                filter_fn=filter_fn,
+            )
 
         def _find_claim_effective(cid: str) -> tuple[str, dict[str, Any] | None]:
             """Return (scope, claim) searching project then global."""
-            c = (cid or "").strip()
-            if not c:
-                return "", None
-            for sc in ("project", "global"):
-                v = tdb.load_view(scope=sc)
-                if c in v.claims_by_id:
-                    obj = dict(v.claims_by_id[c])
-                    obj["status"] = v.claim_status(c)
-                    obj["canonical_id"] = v.resolve_id(c)
-                    return sc, obj
-                canon = v.resolve_id(c)
-                if canon and canon in v.claims_by_id:
-                    obj = dict(v.claims_by_id[canon])
-                    obj["status"] = v.claim_status(canon)
-                    obj["canonical_id"] = v.resolve_id(canon)
-                    obj["requested_id"] = c
-                    return sc, obj
-            return "", None
+            return tdb_app.find_claim_effective(cid)
 
         if args.claim_cmd == "list":
             scope = str(getattr(args, "scope", "project") or "project").strip()
@@ -206,39 +162,11 @@ def handle_claim_commands(
             if scope == "effective":
                 found_scope, obj = _find_claim_effective(cid)
                 if found_scope:
-                    v = tdb.load_view(scope=found_scope)
-                    canon = v.resolve_id(cid)
-                    for e in v.edges:
-                        if not isinstance(e, dict):
-                            continue
-                        frm = str(e.get("from_id") or "").strip()
-                        to = str(e.get("to_id") or "").strip()
-                        if cid in (frm, to) or (canon and canon in (frm, to)):
-                            edges.append(e)
+                    edges = tdb_app.related_edges_for_id(scope=found_scope, item_id=cid)
             else:
-                v = tdb.load_view(scope=scope)
-                if cid in v.claims_by_id:
-                    obj = dict(v.claims_by_id[cid])
-                    obj["status"] = v.claim_status(cid)
-                    obj["canonical_id"] = v.resolve_id(cid)
-                    found_scope = scope
-                else:
-                    canon = v.resolve_id(cid)
-                    if canon and canon in v.claims_by_id:
-                        obj = dict(v.claims_by_id[canon])
-                        obj["status"] = v.claim_status(canon)
-                        obj["canonical_id"] = v.resolve_id(canon)
-                        obj["requested_id"] = cid
-                        found_scope = scope
+                found_scope, obj = tdb_app.find_claim(scope=scope, claim_id=cid)
                 if found_scope:
-                    canon = v.resolve_id(cid)
-                    for e in v.edges:
-                        if not isinstance(e, dict):
-                            continue
-                        frm = str(e.get("from_id") or "").strip()
-                        to = str(e.get("to_id") or "").strip()
-                        if cid in (frm, to) or (canon and canon in (frm, to)):
-                            edges.append(e)
+                    edges = tdb_app.related_edges_for_id(scope=found_scope, item_id=cid)
 
             if not obj:
                 print(f"claim not found: {cid}", file=sys.stderr)
@@ -249,8 +177,7 @@ def handle_claim_commands(
                 edge_types_raw = getattr(args, "edge_types", None) or []
                 etypes = {str(x).strip() for x in edge_types_raw if str(x).strip()}
                 graph_scope = scope if scope == "effective" else found_scope
-                payload["graph"] = build_subgraph_for_id(
-                    tdb=tdb,
+                payload["graph"] = tdb_app.build_subgraph(
                     scope=graph_scope,
                     root_id=str(obj.get("claim_id") or cid).strip() or cid,
                     depth=int(getattr(args, "depth", 1) or 1),
@@ -596,8 +523,7 @@ def handle_claim_commands(
 
             pp.transcripts_dir.mkdir(parents=True, exist_ok=True)
             mind = make_mind_provider(cfg, project_root=project_root, transcripts_dir=pp.transcripts_dir)
-            tdb_ctx = build_decide_next_thoughtdb_context(
-                tdb=tdb,
+            tdb_ctx = tdb_app.build_decide_context(
                 as_of_ts=now_rfc3339(),
                 task=str("(manual claim mine) " + (seg.get("task_hint") if isinstance(seg, dict) else "")).strip(),
                 hands_last_message="",

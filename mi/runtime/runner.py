@@ -112,7 +112,9 @@ from .autopilot.auto_answer_flow import (
 )
 from .autopilot.ask_user_flow import (
     AskUserAutoAnswerAttemptDeps,
+    AskUserRedecideDeps,
     DecideAskUserFlowDeps,
+    ask_user_redecide_with_input as run_ask_user_redecide_with_input,
     ask_user_auto_answer_attempt as run_ask_user_auto_answer_attempt,
     handle_decide_next_ask_user as run_handle_decide_next_ask_user,
 )
@@ -1606,108 +1608,46 @@ def run_autopilot(
     ) -> bool:
         """Re-decide after collecting user input (no extra Hands run before decision)."""
 
-        nonlocal status, notes, last_decide_next_rec, evidence_window
+        nonlocal last_decide_next_rec
 
-        tdb_ctx2 = _build_decide_context(hands_last_message=hands_last, recent_evidence=evidence_window)
-        tdb_ctx2_obj = tdb_ctx2.to_prompt_obj()
-        tdb_ctx2_summary = summarize_thought_db_context(tdb_ctx2)
-        decision_prompt2 = decide_next_prompt(
+        cont, decide_rec2 = run_ask_user_redecide_with_input(
+            batch_idx=batch_idx,
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx2_obj,
-            active_workflow=load_active_workflow(workflow_run=workflow_run, load_effective=wf_registry.load_effective),
+            project_overlay=overlay if isinstance(overlay, dict) else {},
             workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-            recent_evidence=evidence_window,
-            hands_last_message=hands_last,
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-            auto_answer=_empty_auto_answer(),
-        )
-        decision_obj2, decision2_mind_ref, decision2_state = _mind_call(
-            schema_filename="decide_next.json",
-            prompt=decision_prompt2,
-            tag=f"decide_after_user_b{batch_idx}",
-            batch_id=f"b{batch_idx}.after_user",
-        )
-        if decision_obj2 is None:
-            chk_text2 = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
-            combined_user2 = join_hands_inputs(answer.strip(), chk_text2)
-            if not _queue_next_input(
-                nxt=combined_user2,
-                hands_last_message=hands_last,
-                batch_id=f"b{batch_idx}.after_user",
-                reason=(
-                    "mind_circuit_open(decide_next after user): send user answer"
-                    if decision2_state == "skipped"
-                    else "mind_error(decide_next after user): send user answer"
+            workflow_load_effective=wf_registry.load_effective,
+            recent_evidence=evidence_window if isinstance(evidence_window, list) else [],
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            answer=answer,
+            deps=AskUserRedecideDeps(
+                empty_auto_answer=_empty_auto_answer,
+                build_decide_context=_build_decide_context,
+                summarize_thought_db_context=summarize_thought_db_context,
+                decide_next_prompt_builder=decide_next_prompt,
+                load_active_workflow=load_active_workflow,
+                mind_call=_mind_call,
+                log_decide_next=_log_decide_next,
+                append_decide_record=lambda rec: segment_add_and_persist(
+                    segment_add=_segment_add,
+                    persist_segment_state=_persist_segment_state,
+                    item=rec,
                 ),
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                thought_db_context=tdb_ctx2_obj,
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-            ):
-                return False
-            return True
-
-        decision_obj_after_user = decision_obj2
-        decide_rec2 = _log_decide_next(
-            decision_obj=decision_obj_after_user,
-            batch_id=f"b{batch_idx}",
-            phase="after_user",
-            mind_transcript_ref=decision2_mind_ref,
-            thought_db_context_summary=tdb_ctx2_summary,
+                apply_set_testless_strategy_overlay_update=_apply_set_testless_strategy_overlay_update,
+                handle_learn_suggested=_handle_learn_suggested,
+                get_check_input=_get_check_input,
+                join_hands_inputs=join_hands_inputs,
+                queue_next_input=_queue_next_input,
+                set_status=_set_status,
+                set_notes=_set_notes,
+            ),
         )
         if isinstance(decide_rec2, dict) and str(decide_rec2.get("event_id") or "").strip():
             last_decide_next_rec = decide_rec2
-        if decide_rec2:
-            segment_add_and_persist(segment_add=_segment_add, persist_segment_state=_persist_segment_state, item=decide_rec2)
-
-        overlay_update = decision_obj_after_user.get("update_project_overlay") or {}
-        if isinstance(overlay_update, dict):
-            _apply_set_testless_strategy_overlay_update(
-                set_tls=overlay_update.get("set_testless_strategy"),
-                decide_event_id=str((decide_rec2 or {}).get("event_id") or ""),
-                fallback_batch_id=f"b{batch_idx}.after_user.set_testless",
-                default_rationale="decide_next(after_user) overlay update",
-                source="decide_next.after_user:set_testless_strategy",
-            )
-
-        _handle_learn_suggested(
-            learn_suggested=decision_obj_after_user.get("learn_suggested"),
-            batch_id=f"b{batch_idx}.after_user",
-            source="decide_next.after_user",
-            mind_transcript_ref=decision2_mind_ref,
-            source_event_ids=[str((decide_rec2 or {}).get("event_id") or "").strip()],
-        )
-
-        next_action = str(decision_obj_after_user.get("next_action") or "stop")
-        status = str(decision_obj_after_user.get("status") or "not_done")
-        notes = str(decision_obj_after_user.get("notes") or "")
-
-        if next_action == "stop":
-            return False
-        if next_action == "send_to_hands":
-            nxt = str(decision_obj_after_user.get("next_hands_input") or "").strip()
-            if not nxt:
-                status = "blocked"
-                notes = "decide_next returned send_to_hands without next_hands_input (after user input)"
-                return False
-            if not _queue_next_input(
-                nxt=nxt,
-                hands_last_message=hands_last,
-                batch_id=f"b{batch_idx}.after_user",
-                reason="send_to_hands after user input",
-                repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-                thought_db_context=tdb_ctx2_obj,
-                check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-            ):
-                return False
-            return True
-
-        status = "blocked"
-        notes = f"unexpected next_action={next_action} after user input"
-        return False
+        return bool(cont)
 
     def _handle_decide_next_ask_user(
         *,

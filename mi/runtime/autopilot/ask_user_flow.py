@@ -30,6 +30,153 @@ class DecideAskUserFlowDeps:
     set_blocked: Callable[[str], None]
 
 
+@dataclass(frozen=True)
+class AskUserRedecideDeps:
+    """Dependencies for re-deciding after collecting user input."""
+
+    empty_auto_answer: Callable[[], dict[str, Any]]
+    build_decide_context: Callable[..., Any]
+    summarize_thought_db_context: Callable[[Any], dict[str, Any]]
+    decide_next_prompt_builder: Callable[..., str]
+    load_active_workflow: Callable[..., Any]
+    mind_call: Callable[..., tuple[Any, str, str]]
+    log_decide_next: Callable[..., dict[str, Any] | None]
+    append_decide_record: Callable[[dict[str, Any]], None]
+    apply_set_testless_strategy_overlay_update: Callable[..., None]
+    handle_learn_suggested: Callable[..., None]
+    get_check_input: Callable[[dict[str, Any] | None], str]
+    join_hands_inputs: Callable[[str, str], str]
+    queue_next_input: Callable[..., bool]
+    set_status: Callable[[str], None]
+    set_notes: Callable[[str], None]
+
+
+def ask_user_redecide_with_input(
+    *,
+    batch_idx: int,
+    task: str,
+    hands_provider: str,
+    mindspec_base: dict[str, Any],
+    project_overlay: dict[str, Any],
+    workflow_run: dict[str, Any],
+    workflow_load_effective: Callable[[], list[dict[str, Any]]],
+    recent_evidence: list[dict[str, Any]],
+    hands_last: str,
+    repo_obs: dict[str, Any],
+    checks_obj: dict[str, Any],
+    answer: str,
+    deps: AskUserRedecideDeps,
+) -> tuple[bool, dict[str, Any] | None]:
+    """Re-decide after user input, with queue fallback when Mind cannot answer."""
+
+    tdb_ctx2 = deps.build_decide_context(
+        hands_last_message=str(hands_last or ""),
+        recent_evidence=recent_evidence if isinstance(recent_evidence, list) else [],
+    )
+    tdb_ctx2_obj = tdb_ctx2.to_prompt_obj() if hasattr(tdb_ctx2, "to_prompt_obj") else {}
+    if not isinstance(tdb_ctx2_obj, dict):
+        tdb_ctx2_obj = {}
+    tdb_ctx2_summary = deps.summarize_thought_db_context(tdb_ctx2)
+    decision_prompt2 = deps.decide_next_prompt_builder(
+        task=task,
+        hands_provider=hands_provider,
+        mindspec_base=mindspec_base if isinstance(mindspec_base, dict) else {},
+        project_overlay=project_overlay if isinstance(project_overlay, dict) else {},
+        thought_db_context=tdb_ctx2_obj,
+        active_workflow=deps.load_active_workflow(
+            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+            load_effective=workflow_load_effective,
+        ),
+        workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+        recent_evidence=recent_evidence if isinstance(recent_evidence, list) else [],
+        hands_last_message=str(hands_last or ""),
+        repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+        check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+        auto_answer=deps.empty_auto_answer(),
+    )
+    decision_obj2, decision2_mind_ref, decision2_state = deps.mind_call(
+        schema_filename="decide_next.json",
+        prompt=decision_prompt2,
+        tag=f"decide_after_user_b{batch_idx}",
+        batch_id=f"b{batch_idx}.after_user",
+    )
+    if decision_obj2 is None:
+        chk_text2 = deps.get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
+        combined_user2 = deps.join_hands_inputs(str(answer or "").strip(), chk_text2)
+        if not deps.queue_next_input(
+            nxt=combined_user2,
+            hands_last_message=str(hands_last or ""),
+            batch_id=f"b{batch_idx}.after_user",
+            reason=(
+                "mind_circuit_open(decide_next after user): send user answer"
+                if str(decision2_state or "") == "skipped"
+                else "mind_error(decide_next after user): send user answer"
+            ),
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            thought_db_context=tdb_ctx2_obj,
+            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+        ):
+            return False, None
+        return True, None
+
+    decision_obj_after_user = decision_obj2 if isinstance(decision_obj2, dict) else {}
+    decide_rec2 = deps.log_decide_next(
+        decision_obj=decision_obj_after_user,
+        batch_id=f"b{batch_idx}",
+        phase="after_user",
+        mind_transcript_ref=str(decision2_mind_ref or ""),
+        thought_db_context_summary=tdb_ctx2_summary if isinstance(tdb_ctx2_summary, dict) else {},
+    )
+    if decide_rec2:
+        deps.append_decide_record(decide_rec2 if isinstance(decide_rec2, dict) else {})
+
+    overlay_update = decision_obj_after_user.get("update_project_overlay") or {}
+    if isinstance(overlay_update, dict):
+        deps.apply_set_testless_strategy_overlay_update(
+            set_tls=overlay_update.get("set_testless_strategy"),
+            decide_event_id=str((decide_rec2 or {}).get("event_id") or ""),
+            fallback_batch_id=f"b{batch_idx}.after_user.set_testless",
+            default_rationale="decide_next(after_user) overlay update",
+            source="decide_next.after_user:set_testless_strategy",
+        )
+
+    deps.handle_learn_suggested(
+        learn_suggested=decision_obj_after_user.get("learn_suggested"),
+        batch_id=f"b{batch_idx}.after_user",
+        source="decide_next.after_user",
+        mind_transcript_ref=str(decision2_mind_ref or ""),
+        source_event_ids=[str((decide_rec2 or {}).get("event_id") or "").strip()],
+    )
+
+    next_action = str(decision_obj_after_user.get("next_action") or "stop")
+    deps.set_status(str(decision_obj_after_user.get("status") or "not_done"))
+    deps.set_notes(str(decision_obj_after_user.get("notes") or ""))
+
+    if next_action == "stop":
+        return False, decide_rec2 if isinstance(decide_rec2, dict) else None
+    if next_action == "send_to_hands":
+        nxt = str(decision_obj_after_user.get("next_hands_input") or "").strip()
+        if not nxt:
+            deps.set_status("blocked")
+            deps.set_notes("decide_next returned send_to_hands without next_hands_input (after user input)")
+            return False, decide_rec2 if isinstance(decide_rec2, dict) else None
+        if not deps.queue_next_input(
+            nxt=nxt,
+            hands_last_message=str(hands_last or ""),
+            batch_id=f"b{batch_idx}.after_user",
+            reason="send_to_hands after user input",
+            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
+            thought_db_context=tdb_ctx2_obj,
+            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+        ):
+            return False, decide_rec2 if isinstance(decide_rec2, dict) else None
+        return True, decide_rec2 if isinstance(decide_rec2, dict) else None
+
+    deps.set_status("blocked")
+    deps.set_notes(f"unexpected next_action={next_action} after user input")
+    return False, decide_rec2 if isinstance(decide_rec2, dict) else None
+
+
 def ask_user_auto_answer_attempt(
     *,
     batch_idx: int,

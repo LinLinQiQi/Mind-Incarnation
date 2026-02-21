@@ -96,6 +96,17 @@ from .autopilot.next_input_flow import (
     LoopGuardDeps,
     apply_loop_guard,
 )
+from .autopilot.learn_suggested_flow import (
+    LearnSuggestedDeps,
+    apply_learn_suggested,
+)
+from .autopilot.workflow_progress_flow import (
+    WorkflowProgressQueryDeps,
+    apply_workflow_progress_and_persist,
+    append_workflow_progress_event,
+    build_workflow_progress_latest_evidence,
+    query_workflow_progress,
+)
 from .autopilot.segment_state import (
     add_segment_record,
     clear_segment_state,
@@ -534,120 +545,27 @@ def run_autopilot(
         mind_transcript_ref: str,
         source_event_ids: list[str],
     ) -> list[str]:
-        """Apply or record suggested preference/goal changes (strict Thought DB mode).
-
-        MI no longer treats free-form learned text as canonical. Instead, any auto-learning is
-        materialized as Thought DB Claims (append-only) so later decisions can use canonical
-        preference/goal claims.
-
-        - When runtime.violation_response.auto_learn is true (default), MI will append preference Claims.
-        - When false, MI will NOT write claims; it only records suggestions into EvidenceLog.
-
-        Returns: list of applied claim_ids (empty if none applied).
-        """
-
-        vr = runtime_cfg.get("violation_response") if isinstance(runtime_cfg.get("violation_response"), dict) else {}
-        auto_learn = bool(vr.get("auto_learn", True))
-
-        # Normalize to a stable, minimal shape (keep severity if present for audit).
-        norm: list[dict[str, Any]] = []
-        if isinstance(learn_suggested, list):
-            for ch in learn_suggested:
-                if not isinstance(ch, dict):
-                    continue
-                scope = str(ch.get("scope") or "").strip()
-                text = str(ch.get("text") or "").strip()
-                if scope not in ("global", "project") or not text:
-                    continue
-                item: dict[str, Any] = {
-                    "scope": scope,
-                    "text": text,
-                    "rationale": str(ch.get("rationale") or "").strip(),
-                }
-                sev = str(ch.get("severity") or "").strip()
-                if sev:
-                    item["severity"] = sev
-                norm.append(item)
-
-        if not norm:
-            return []
-
-        suggestion_id = f"ls_{time.time_ns()}_{secrets.token_hex(4)}"
-        applied_claim_ids: list[str] = []
-
-        ev_ids = [str(x).strip() for x in (source_event_ids or []) if str(x).strip()][:8]
-
-        # Dedup against existing active canonical preference claims (best-effort).
-        # Signature is stable across runs for identical text.
-        sig_to_id = {
-            "project": tdb.existing_signature_map(scope="project"),
-            "global": tdb.existing_signature_map(scope="global"),
-        }
-
-        for item in norm:
-            scope0 = str(item.get("scope") or "").strip()
-            text = str(item.get("text") or "").strip()
-            rationale = str(item.get("rationale") or "").strip()
-            sev = str(item.get("severity") or "").strip()
-            if scope0 not in ("global", "project") or not text:
-                continue
-
-            sc = "global" if scope0 == "global" else "project"
-            pid = project_paths.project_id if sc == "project" else ""
-            sig = claim_signature(claim_type="preference", scope=sc, project_id=pid, text=text)
-            existing = sig_to_id.get(sc, {}).get(sig)
-            if existing:
-                applied_claim_ids.append(str(existing))
-                continue
-
-            if not auto_learn:
-                continue
-
-            tags: list[str] = ["mi:learned", "mi:pref", f"mi:source:{source}"]
-            if sev:
-                tags.append(f"severity:{sev}")
-
-            base_r = rationale or source
-            notes = f"{base_r} (source={source} suggestion={suggestion_id})"
-            try:
-                cid = tdb.append_claim_create(
-                    claim_type="preference",
-                    text=text,
-                    scope=sc,
-                    visibility=("global" if sc == "global" else "project"),
-                    valid_from=None,
-                    valid_to=None,
-                    tags=tags,
-                    source_event_ids=ev_ids,
-                    confidence=1.0,
-                    notes=notes,
-                )
-            except Exception:
-                continue
-
-            sig_to_id.setdefault(sc, {})[sig] = cid
-            applied_claim_ids.append(cid)
-
-        rec = evw.append(
-            {
-                "kind": "learn_suggested",
-                "id": suggestion_id,
-                "batch_id": batch_id,
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "source": source,
-                "auto_learn": auto_learn,
-                "mind_transcript_ref": str(mind_transcript_ref or ""),
-                "learn_suggested": norm,
-                # Strict Thought DB mode: canonical preference claims.
-                "applied_claim_ids": applied_claim_ids,
-                "source_event_ids": ev_ids,
-            }
+        applied_claim_ids, rec = apply_learn_suggested(
+            learn_suggested=learn_suggested,
+            batch_id=batch_id,
+            source=source,
+            mind_transcript_ref=mind_transcript_ref,
+            source_event_ids=source_event_ids,
+            runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
+            deps=LearnSuggestedDeps(
+                claim_signature_fn=claim_signature,
+                existing_signature_map=lambda scope: tdb.existing_signature_map(scope=scope),
+                append_claim_create=tdb.append_claim_create,
+                evidence_append=evw.append,
+                now_ts=now_rfc3339,
+                new_suggestion_id=lambda: f"ls_{time.time_ns()}_{secrets.token_hex(4)}",
+                project_id=project_paths.project_id,
+                thread_id=str(thread_id or ""),
+            ),
         )
         if isinstance(rec, dict):
             learn_suggested_records_this_run.append(rec)
-
-        return applied_claim_ids
+        return list(applied_claim_ids)
 
     def _log_mind_error(
         *,
@@ -2414,105 +2332,6 @@ def run_autopilot(
             tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
         )
 
-    def _workflow_progress_build_latest_evidence(
-        *,
-        batch_id: str,
-        summary: dict[str, Any],
-        evidence_obj: dict[str, Any],
-        repo_obs: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Build workflow_progress latest_evidence payload."""
-
-        return {
-            "batch_id": batch_id,
-            "facts": evidence_obj.get("facts") if isinstance(evidence_obj, dict) else [],
-            "actions": evidence_obj.get("actions") if isinstance(evidence_obj, dict) else [],
-            "results": evidence_obj.get("results") if isinstance(evidence_obj, dict) else [],
-            "unknowns": evidence_obj.get("unknowns") if isinstance(evidence_obj, dict) else [],
-            "risk_signals": evidence_obj.get("risk_signals") if isinstance(evidence_obj, dict) else [],
-            "repo_observation": repo_obs if isinstance(repo_obs, dict) else {},
-            "transcript_observation": (summary if isinstance(summary, dict) else {}).get("transcript_observation") or {},
-        }
-
-    def _workflow_progress_query(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        active_wf: dict[str, Any],
-        latest_evidence: dict[str, Any],
-        hands_last: str,
-        tdb_ctx_batch_obj: dict[str, Any],
-        ctx: BatchExecutionContext,
-    ) -> tuple[dict[str, Any], str, str]:
-        """Query Mind for workflow progress state."""
-
-        wf_prog_prompt = workflow_progress_prompt(
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx_batch_obj,
-            workflow=active_wf if isinstance(active_wf, dict) else {},
-            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-            latest_evidence=latest_evidence if isinstance(latest_evidence, dict) else {},
-            last_batch_input=ctx.batch_input,
-            hands_last_message=hands_last,
-        )
-        wf_prog_obj, wf_prog_ref, wf_prog_state = _mind_call(
-            schema_filename="workflow_progress.json",
-            prompt=wf_prog_prompt,
-            tag=f"wf_progress_b{batch_idx}",
-            batch_id=f"{batch_id}.workflow_progress",
-        )
-        return (
-            wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
-            str(wf_prog_ref or ""),
-            str(wf_prog_state or ""),
-        )
-
-    def _workflow_progress_record_event(
-        *,
-        batch_id: str,
-        active_wf: dict[str, Any],
-        wf_prog_obj: dict[str, Any],
-        wf_prog_ref: str,
-        wf_prog_state: str,
-    ) -> None:
-        """Record workflow_progress event in evidence log."""
-
-        evw.append(
-            {
-                "kind": "workflow_progress",
-                "batch_id": f"{batch_id}.workflow_progress",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "workflow_id": str((active_wf if isinstance(active_wf, dict) else {}).get("id") or ""),
-                "workflow_name": str((active_wf if isinstance(active_wf, dict) else {}).get("name") or ""),
-                "state": str(wf_prog_state or ""),
-                "mind_transcript_ref": str(wf_prog_ref or ""),
-                "output": wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
-            }
-        )
-
-    def _workflow_progress_apply_overlay_if_changed(
-        *,
-        batch_id: str,
-        active_wf: dict[str, Any],
-        wf_prog_obj: dict[str, Any],
-    ) -> None:
-        """Apply workflow progress output and persist overlay only when changed."""
-
-        if apply_workflow_progress_output(
-            active_workflow=active_wf if isinstance(active_wf, dict) else {},
-            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-            wf_progress_output=wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
-            batch_id=batch_id,
-            thread_id=str(thread_id or ""),
-            now_ts=now_rfc3339,
-        ):
-            overlay["workflow_run"] = workflow_run
-            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-
     def _predecide_apply_workflow_progress(
         *,
         batch_idx: int,
@@ -2530,32 +2349,54 @@ def run_autopilot(
         if not (isinstance(active_wf, dict) and active_wf):
             return
 
-        latest_evidence = _workflow_progress_build_latest_evidence(
+        latest_evidence = build_workflow_progress_latest_evidence(
             batch_id=batch_id,
             summary=summary if isinstance(summary, dict) else {},
             evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
         )
-        wf_prog_obj, wf_prog_ref, wf_prog_state = _workflow_progress_query(
+        wf_prog_obj, wf_prog_ref, wf_prog_state = query_workflow_progress(
             batch_idx=batch_idx,
             batch_id=batch_id,
-            active_wf=active_wf,
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            active_workflow=active_wf,
+            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
             latest_evidence=latest_evidence,
-            hands_last=hands_last,
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            ctx=ctx,
+            last_batch_input=ctx.batch_input,
+            hands_last_message=hands_last,
+            thought_db_context=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            deps=WorkflowProgressQueryDeps(
+                workflow_progress_prompt_builder=workflow_progress_prompt,
+                mind_call=_mind_call,
+            ),
         )
-        _workflow_progress_record_event(
+        append_workflow_progress_event(
             batch_id=batch_id,
-            active_wf=active_wf,
+            thread_id=thread_id,
+            active_workflow=active_wf,
             wf_prog_obj=wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
             wf_prog_ref=wf_prog_ref,
             wf_prog_state=wf_prog_state,
+            evidence_append=evw.append,
+            now_ts=now_rfc3339,
         )
-        _workflow_progress_apply_overlay_if_changed(
+
+        def _persist_workflow_overlay() -> None:
+            overlay["workflow_run"] = workflow_run
+            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
+
+        apply_workflow_progress_and_persist(
             batch_id=batch_id,
-            active_wf=active_wf,
+            thread_id=str(thread_id or ""),
+            active_workflow=active_wf,
+            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
             wf_prog_obj=wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
+            apply_workflow_progress_output_fn=apply_workflow_progress_output,
+            persist_overlay=_persist_workflow_overlay,
+            now_ts=now_rfc3339,
         )
 
     def _predecide_detect_risk_signals(*, result: Any, ctx: BatchExecutionContext) -> list[str]:

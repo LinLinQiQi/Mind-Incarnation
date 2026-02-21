@@ -104,6 +104,12 @@ from .autopilot.auto_answer_flow import (
     AutoAnswerQueryDeps,
     query_auto_answer_to_hands,
 )
+from .autopilot.check_plan_flow import (
+    CheckPlanFlowDeps,
+    append_check_plan_record_with_tracking,
+    call_plan_min_checks,
+    plan_checks_and_record,
+)
 from .autopilot.evidence_flow import (
     EvidenceAppendDeps,
     append_evidence_with_tracking,
@@ -802,23 +808,22 @@ def run_autopilot(
 
     def _append_check_plan_record(*, batch_id: str, checks_obj: Any, mind_transcript_ref: str) -> dict[str, Any]:
         """Append a check_plan record and keep evidence_window/segment in sync (single source of truth)."""
-
-        obj = checks_obj if isinstance(checks_obj, dict) else _empty_check_plan()
-        rec = evw.append(
-            {
-                "kind": "check_plan",
-                "batch_id": str(batch_id),
-                "ts": now_rfc3339(),
-                "thread_id": thread_id,
-                "mind_transcript_ref": str(mind_transcript_ref or ""),
-                "checks": obj,
-            }
+        return append_check_plan_record_with_tracking(
+            batch_id=batch_id,
+            checks_obj=checks_obj,
+            mind_transcript_ref=mind_transcript_ref,
+            evidence_window=evidence_window,
+            deps=CheckPlanFlowDeps(
+                empty_check_plan=_empty_check_plan,
+                evidence_append=evw.append,
+                segment_add=_segment_add,
+                persist_segment_state=_persist_segment_state,
+                now_ts=now_rfc3339,
+                thread_id=thread_id,
+                plan_min_checks_prompt_builder=plan_min_checks_prompt,
+                mind_call=_mind_call,
+            ),
         )
-        evidence_window.append({"kind": "check_plan", "batch_id": str(batch_id), "event_id": rec.get("event_id"), **obj})
-        evidence_window[:] = evidence_window[-8:]
-        _segment_add({"kind": "check_plan", "batch_id": str(batch_id), "event_id": rec.get("event_id"), **obj})
-        _persist_segment_state()
-        return rec
 
     def _get_check_input(checks_obj: dict[str, Any] | None) -> str:
         """Return hands_check_input when should_run_checks=true (best-effort)."""
@@ -839,26 +844,29 @@ def run_autopilot(
         notes_on_error: str,
     ) -> tuple[dict[str, Any], str, str]:
         """Call plan_min_checks and normalize failure into an empty plan with notes."""
-
-        checks_prompt = plan_min_checks_prompt(
+        return call_plan_min_checks(
+            batch_id=batch_id,
+            tag=tag,
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=thought_db_context,
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
             recent_evidence=evidence_window,
             repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            notes_on_skipped=notes_on_skipped,
+            notes_on_error=notes_on_error,
+            deps=CheckPlanFlowDeps(
+                empty_check_plan=_empty_check_plan,
+                evidence_append=evw.append,
+                segment_add=_segment_add,
+                persist_segment_state=_persist_segment_state,
+                now_ts=now_rfc3339,
+                thread_id=thread_id,
+                plan_min_checks_prompt_builder=plan_min_checks_prompt,
+                mind_call=_mind_call,
+            ),
         )
-        checks_obj, mind_ref, state = _mind_call(
-            schema_filename="plan_min_checks.json",
-            prompt=checks_prompt,
-            tag=str(tag or ""),
-            batch_id=str(batch_id or ""),
-        )
-        if checks_obj is None:
-            checks_obj = _empty_check_plan()
-            checks_obj["notes"] = notes_on_skipped if state == "skipped" else notes_on_error
-        return (checks_obj if isinstance(checks_obj, dict) else _empty_check_plan()), str(mind_ref or ""), str(state or "")
 
     def _plan_checks_and_record2(
         *,
@@ -878,31 +886,33 @@ def run_autopilot(
         (e.g., avoid re-prompting for testless strategy when Thought DB already has one).
         """
 
-        if not should_plan:
-            checks_obj = _empty_check_plan()
-            checks_obj["notes"] = str(notes_on_skip or "").strip()
-            checks_ref = ""
-            state = "skipped"
-        else:
-            checks_obj, checks_ref, state = _call_plan_min_checks(
-                batch_id=batch_id,
-                tag=tag,
-                thought_db_context=thought_db_context,
-                repo_observation=repo_observation,
-                notes_on_skipped=notes_on_skipped,
-                notes_on_error=notes_on_error,
-            )
-
-        if postprocess and callable(postprocess):
-            try:
-                out = postprocess(checks_obj, state)
-                if isinstance(out, dict):
-                    checks_obj = out
-            except Exception:
-                pass
-
-        _append_check_plan_record(batch_id=batch_id, checks_obj=checks_obj, mind_transcript_ref=checks_ref)
-        return checks_obj, checks_ref, state
+        return plan_checks_and_record(
+            batch_id=batch_id,
+            tag=tag,
+            task=task,
+            hands_provider=cur_provider,
+            mindspec_base=_mindspec_base_runtime(),
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
+            recent_evidence=evidence_window,
+            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            should_plan=bool(should_plan),
+            notes_on_skip=notes_on_skip,
+            notes_on_skipped=notes_on_skipped,
+            notes_on_error=notes_on_error,
+            evidence_window=evidence_window,
+            postprocess=postprocess,
+            deps=CheckPlanFlowDeps(
+                empty_check_plan=_empty_check_plan,
+                evidence_append=evw.append,
+                segment_add=_segment_add,
+                persist_segment_state=_persist_segment_state,
+                now_ts=now_rfc3339,
+                thread_id=thread_id,
+                plan_min_checks_prompt_builder=plan_min_checks_prompt,
+                mind_call=_mind_call,
+            ),
+        )
 
     def _plan_checks_and_record(
         *,

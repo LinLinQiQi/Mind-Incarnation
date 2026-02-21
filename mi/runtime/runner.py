@@ -110,6 +110,16 @@ from .autopilot.ask_user_flow import (
     ask_user_auto_answer_attempt as run_ask_user_auto_answer_attempt,
     handle_decide_next_ask_user as run_handle_decide_next_ask_user,
 )
+from .autopilot.predecide_user_flow import (
+    PredecideNeedsUserDeps,
+    PredecidePromptUserDeps,
+    PredecideQueueWithChecksDeps,
+    PredecideRetryAutoAnswerDeps,
+    handle_auto_answer_needs_user as run_predecide_handle_auto_answer_needs_user,
+    prompt_user_then_queue as run_predecide_prompt_user_then_queue,
+    retry_auto_answer_after_recall as run_predecide_retry_auto_answer_after_recall,
+    try_queue_answer_with_checks as run_predecide_try_queue_answer_with_checks,
+)
 from .autopilot.check_plan_flow import (
     CheckPlanFlowDeps,
     append_check_plan_record_with_tracking,
@@ -1931,50 +1941,25 @@ def run_autopilot(
         tdb_ctx_batch_obj: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
         """Retry auto_answer after conservative cross-project recall."""
-
-        nonlocal evidence_window
-
-        q = str(question or "").strip()
-        _maybe_cross_project_recall(
-            batch_id=f"b{batch_idx}.before_user_recall",
-            reason="before_ask_user",
-            query=(q + "\n" + task).strip(),
-        )
-        aa_prompt_retry = auto_answer_to_hands_prompt(
+        return run_predecide_retry_auto_answer_after_recall(
+            batch_idx=batch_idx,
+            question=question,
             task=task,
             hands_provider=cur_provider,
             mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay,
-            thought_db_context=tdb_ctx_batch_obj,
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
+            project_overlay=overlay if isinstance(overlay, dict) else {},
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
             recent_evidence=evidence_window,
-            hands_last_message=q,
+            deps=PredecideRetryAutoAnswerDeps(
+                empty_auto_answer=_empty_auto_answer,
+                maybe_cross_project_recall=_maybe_cross_project_recall,
+                auto_answer_prompt_builder=auto_answer_to_hands_prompt,
+                mind_call=_mind_call,
+                append_auto_answer_record=_append_auto_answer_record,
+            ),
         )
-        aa_obj_r, aa_r_ref, aa_r_state = _mind_call(
-            schema_filename="auto_answer_to_hands.json",
-            prompt=aa_prompt_retry,
-            tag=f"autoanswer_retry_after_recall_b{batch_idx}",
-            batch_id=f"b{batch_idx}.after_recall",
-        )
-        if aa_obj_r is None:
-            aa_retry = _empty_auto_answer()
-            if aa_r_state == "skipped":
-                aa_retry["notes"] = "skipped: mind_circuit_open (auto_answer_to_hands retry after recall)"
-            else:
-                aa_retry["notes"] = "mind_error: auto_answer_to_hands retry failed; see EvidenceLog kind=mind_error"
-        else:
-            aa_retry = aa_obj_r if isinstance(aa_obj_r, dict) else _empty_auto_answer()
-        _append_auto_answer_record(
-            batch_id=f"b{batch_idx}.after_recall",
-            mind_transcript_ref=aa_r_ref,
-            auto_answer=aa_retry if isinstance(aa_retry, dict) else {},
-        )
-        if isinstance(aa_retry, dict) and bool(aa_retry.get("needs_user_input", False)):
-            q2 = str(aa_retry.get("ask_user_question") or "").strip()
-            if q2:
-                q = q2
-        return aa_retry if isinstance(aa_retry, dict) else _empty_auto_answer(), q
 
     def _predecide_try_queue_answer_with_checks(
         *,
@@ -1988,22 +1973,20 @@ def run_autopilot(
         tdb_ctx_batch_obj: dict[str, Any],
     ) -> bool | None:
         """Queue answer + checks when either side has content."""
-
-        check_text = _get_check_input(checks_obj if isinstance(checks_obj, dict) else None)
-        combined = join_hands_inputs(str(answer_text or "").strip(), check_text)
-        if not combined:
-            return None
-        if not _queue_next_input(
-            nxt=combined,
-            hands_last_message=hands_last,
+        return run_predecide_try_queue_answer_with_checks(
             batch_id=batch_id,
-            reason=queue_reason,
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            thought_db_context=tdb_ctx_batch_obj,
-            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-        ):
-            return False
-        return True
+            queue_reason=queue_reason,
+            answer_text=answer_text,
+            hands_last=hands_last,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            deps=PredecideQueueWithChecksDeps(
+                get_check_input=_get_check_input,
+                join_hands_inputs=join_hands_inputs,
+                queue_next_input=_queue_next_input,
+            ),
+        )
 
     def _predecide_prompt_user_then_queue(
         *,
@@ -2015,27 +1998,32 @@ def run_autopilot(
         tdb_ctx_batch_obj: dict[str, Any],
     ) -> bool:
         """Ask the user and queue answer (+ checks)."""
-
-        nonlocal status, notes
-
-        answer = _read_user_answer(question)
-        if not answer:
-            status = "blocked"
-            notes = "user did not provide required input"
-            return False
-        _append_user_input_record(batch_id=f"b{batch_idx}", question=question, answer=answer)
-
-        queued = _predecide_try_queue_answer_with_checks(
+        return run_predecide_prompt_user_then_queue(
             batch_idx=batch_idx,
-            batch_id=f"b{batch_idx}",
-            queue_reason="answered after user input",
-            answer_text=answer,
+            question=question,
             hands_last=hands_last,
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            deps=PredecidePromptUserDeps(
+                read_user_answer=_read_user_answer,
+                append_user_input_record=_append_user_input_record,
+                set_blocked=lambda blocked_note: (
+                    _set_status("blocked"),
+                    _set_notes(str(blocked_note or "").strip()),
+                ),
+                try_queue_answer_with_checks=lambda **kwargs: _predecide_try_queue_answer_with_checks(
+                    batch_idx=batch_idx,
+                    batch_id=str(kwargs.get("batch_id") or ""),
+                    queue_reason=str(kwargs.get("queue_reason") or ""),
+                    answer_text=str(kwargs.get("answer_text") or ""),
+                    hands_last=str(kwargs.get("hands_last") or ""),
+                    repo_obs=(kwargs.get("repo_obs") if isinstance(kwargs.get("repo_obs"), dict) else {}),
+                    checks_obj=(kwargs.get("checks_obj") if isinstance(kwargs.get("checks_obj"), dict) else {}),
+                    tdb_ctx_batch_obj=(kwargs.get("tdb_ctx_batch_obj") if isinstance(kwargs.get("tdb_ctx_batch_obj"), dict) else {}),
+                ),
+            ),
         )
-        return bool(queued)
 
     def _predecide_handle_auto_answer_needs_user(
         *,
@@ -2047,41 +2035,41 @@ def run_autopilot(
         auto_answer_obj: dict[str, Any],
     ) -> tuple[bool, dict[str, Any]]:
         """Handle pre-decide branch where initial auto_answer requests user input."""
-
-        q = str(auto_answer_obj.get("ask_user_question") or "").strip() or hands_last.strip() or "Need more information:"
-        aa_retry, q = _predecide_retry_auto_answer_after_recall(
+        return run_predecide_handle_auto_answer_needs_user(
             batch_idx=batch_idx,
-            question=q,
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
-        )
-
-        aa_text = ""
-        if isinstance(aa_retry, dict) and bool(aa_retry.get("should_answer", False)):
-            aa_text = str(aa_retry.get("hands_answer_input") or "").strip()
-        queued_retry = _predecide_try_queue_answer_with_checks(
-            batch_idx=batch_idx,
-            batch_id=f"b{batch_idx}.after_recall",
-            queue_reason="auto-answered after cross-project recall",
-            answer_text=aa_text,
             hands_last=hands_last,
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
+            auto_answer_obj=auto_answer_obj if isinstance(auto_answer_obj, dict) else {},
+            deps=PredecideNeedsUserDeps(
+                retry_auto_answer_after_recall=lambda **kwargs: _predecide_retry_auto_answer_after_recall(
+                    batch_idx=batch_idx,
+                    question=str(kwargs.get("question") or ""),
+                    repo_obs=(kwargs.get("repo_obs") if isinstance(kwargs.get("repo_obs"), dict) else {}),
+                    checks_obj=(kwargs.get("checks_obj") if isinstance(kwargs.get("checks_obj"), dict) else {}),
+                    tdb_ctx_batch_obj=(kwargs.get("tdb_ctx_batch_obj") if isinstance(kwargs.get("tdb_ctx_batch_obj"), dict) else {}),
+                ),
+                try_queue_answer_with_checks=lambda **kwargs: _predecide_try_queue_answer_with_checks(
+                    batch_idx=batch_idx,
+                    batch_id=str(kwargs.get("batch_id") or ""),
+                    queue_reason=str(kwargs.get("queue_reason") or ""),
+                    answer_text=str(kwargs.get("answer_text") or ""),
+                    hands_last=str(kwargs.get("hands_last") or ""),
+                    repo_obs=(kwargs.get("repo_obs") if isinstance(kwargs.get("repo_obs"), dict) else {}),
+                    checks_obj=(kwargs.get("checks_obj") if isinstance(kwargs.get("checks_obj"), dict) else {}),
+                    tdb_ctx_batch_obj=(kwargs.get("tdb_ctx_batch_obj") if isinstance(kwargs.get("tdb_ctx_batch_obj"), dict) else {}),
+                ),
+                prompt_user_then_queue=lambda **kwargs: _predecide_prompt_user_then_queue(
+                    batch_idx=batch_idx,
+                    question=str(kwargs.get("question") or ""),
+                    hands_last=str(kwargs.get("hands_last") or ""),
+                    repo_obs=(kwargs.get("repo_obs") if isinstance(kwargs.get("repo_obs"), dict) else {}),
+                    checks_obj=(kwargs.get("checks_obj") if isinstance(kwargs.get("checks_obj"), dict) else {}),
+                    tdb_ctx_batch_obj=(kwargs.get("tdb_ctx_batch_obj") if isinstance(kwargs.get("tdb_ctx_batch_obj"), dict) else {}),
+                ),
+            ),
         )
-        if isinstance(queued_retry, bool):
-            return queued_retry, checks_obj if isinstance(checks_obj, dict) else {}
-
-        asked = _predecide_prompt_user_then_queue(
-            batch_idx=batch_idx,
-            question=q,
-            hands_last=hands_last,
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
-        )
-        return asked, checks_obj if isinstance(checks_obj, dict) else {}
 
     def _predecide_apply_preactions(
         *,

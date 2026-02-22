@@ -5,6 +5,7 @@ centralizing bootstrap/config parsing code in testable modules.
 """
 
 from .bootstrap import BootstrappedAutopilotRun, bootstrap_autopilot_run
+from .checkpoints import CheckpointWiringDeps, run_checkpoint_pipeline_wired
 from .mind_call import MindCaller
 from .runtime_cfg import ParsedRuntimeFeatures, parse_runtime_features
 from .segments import SegmentStateIO
@@ -13,6 +14,8 @@ from .state_warnings import StateWarningsFlusher
 __all__ = [
     "BootstrappedAutopilotRun",
     "bootstrap_autopilot_run",
+    "CheckpointWiringDeps",
+    "run_checkpoint_pipeline_wired",
     "MindCaller",
     "ParsedRuntimeFeatures",
     "parse_runtime_features",

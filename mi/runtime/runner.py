@@ -6,7 +6,15 @@ import secrets
 import time
 from typing import Any
 
-from .wiring import MindCaller, SegmentStateIO, StateWarningsFlusher, bootstrap_autopilot_run, parse_runtime_features
+from .wiring import (
+    CheckpointWiringDeps,
+    MindCaller,
+    SegmentStateIO,
+    StateWarningsFlusher,
+    bootstrap_autopilot_run,
+    parse_runtime_features,
+    run_checkpoint_pipeline_wired,
+)
 from .autopilot import (
     AutopilotResult,
     _batch_summary,
@@ -75,10 +83,6 @@ from .autopilot.risk_predecide import (
     maybe_prompt_risk_continue,
     query_risk_judge,
     run_risk_predecide,
-)
-from .autopilot.checkpoint_pipeline import (
-    CheckpointPipelineDeps,
-    run_checkpoint_pipeline,
 )
 from .autopilot.checkpoint_mining import (
     WorkflowMiningDeps,
@@ -923,14 +927,34 @@ def run_autopilot(
         )
 
     _last_checkpoint_key = ""
+    checkpoint_wiring = CheckpointWiringDeps(
+        checkpoint_enabled=bool(checkpoint_enabled),
+        task=task,
+        hands_provider=cur_provider,
+        mindspec_base=_mindspec_base_runtime,
+        project_overlay=overlay if isinstance(overlay, dict) else {},
+        evidence_window=evidence_window,
+        thread_id_getter=_cur_thread_id,
+        build_decide_context=_build_decide_context,
+        checkpoint_decide_prompt_builder=checkpoint_decide_prompt,
+        mind_call=_mind_call,
+        evidence_append=evw.append,
+        mine_workflow_from_segment=_mine_workflow_from_segment,
+        mine_preferences_from_segment=_mine_preferences_from_segment,
+        mine_claims_from_segment=_mine_claims_from_segment,
+        materialize_snapshot=mem.materialize_snapshot,
+        materialize_nodes_from_checkpoint=_materialize_nodes_from_checkpoint,
+        new_segment_state=_new_segment_state,
+        now_ts=now_rfc3339,
+        truncate=_truncate,
+    )
 
     def _maybe_checkpoint_and_mine(*, batch_id: str, planned_next_input: str, status_hint: str, note: str) -> None:
         """LLM-judged checkpoint: may mine workflows/preferences and reset segment buffer."""
 
         nonlocal segment_state, segment_records, _last_checkpoint_key
 
-        res = run_checkpoint_pipeline(
-            checkpoint_enabled=bool(checkpoint_enabled),
+        res = run_checkpoint_pipeline_wired(
             segment_state=segment_state if isinstance(segment_state, dict) else {},
             segment_records=segment_records if isinstance(segment_records, list) else [],
             last_checkpoint_key=str(_last_checkpoint_key or ""),
@@ -938,26 +962,7 @@ def run_autopilot(
             planned_next_input=planned_next_input,
             status_hint=status_hint,
             note=note,
-            thread_id=str(thread_id or ""),
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            evidence_window=evidence_window,
-            deps=CheckpointPipelineDeps(
-                build_decide_context=_build_decide_context,
-                checkpoint_decide_prompt_builder=checkpoint_decide_prompt,
-                mind_call=_mind_call,
-                evidence_append=evw.append,
-                mine_workflow_from_segment=_mine_workflow_from_segment,
-                mine_preferences_from_segment=_mine_preferences_from_segment,
-                mine_claims_from_segment=_mine_claims_from_segment,
-                materialize_snapshot=mem.materialize_snapshot,
-                materialize_nodes_from_checkpoint=_materialize_nodes_from_checkpoint,
-                new_segment_state=_new_segment_state,
-                now_ts=now_rfc3339,
-                truncate=_truncate,
-            ),
+            deps=checkpoint_wiring,
         )
 
         segment_state = res.segment_state if isinstance(res.segment_state, dict) else {}

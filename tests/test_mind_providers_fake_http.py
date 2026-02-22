@@ -28,7 +28,7 @@ class TestMindProvidersFakeHttp(unittest.TestCase):
             out_dir = Path(td)
 
             def fake_http(_url: str, _body: dict, _headers: dict, _timeout_s: int) -> dict:
-                # Legacy completions-like shape; should be rejected.
+                # Non-chat-completions payload shape; should be rejected.
                 return {"choices": [{"text": json.dumps(_DECIDE_NEXT_OK)}]}
 
             p = OpenAICompatibleMindProvider(

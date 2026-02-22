@@ -21,7 +21,7 @@ def run_state_machine_loop(
 ) -> tuple[StateMachineState, StateMachineTrace]:
     """Run a deterministic orchestration state machine for batch execution.
 
-    Behavior is intentionally aligned with the legacy batch loop:
+    Behavior is intentionally aligned with the batch loop:
     - execute at most `max_batches` batches
     - stop early when `run_single_batch(...)` returns False
     - mark exhaustion separately (caller sets status/notes policy)
@@ -70,4 +70,3 @@ def compact_transition_trace(trace: StateMachineTrace) -> list[dict[str, Any]]:
     for tr in trace.transitions:
         out.append({"from": tr.prev_state.value, "to": tr.next_state.value, "reason": tr.reason})
     return out
-

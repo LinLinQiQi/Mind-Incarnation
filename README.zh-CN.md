@@ -100,7 +100,7 @@ mi config rollback
 }
 ```
 
-说明：MI 只支持 Chat Completions 风格的返回：`choices[0].message.content` 必须包含 JSON 输出。旧的 `choices[0].text` 以及 Responses API 的 payload 形状不支持。
+说明：MI 只支持 Chat Completions 风格的返回：`choices[0].message.content` 必须包含 JSON 输出。不支持其他 payload 形状（例如 `choices[0].text` 或 Responses API）。
 
 可选：用其他 agent CLI 作为 Hands（wrapper）
 
@@ -135,7 +135,7 @@ MI 可以通过 `hands.provider=cli` 包装大多数 agent CLI。你需要提供
 
 ```bash
 mi values set --text "我的偏好：尽量少问；默认行为不变重构；没有测试就停下来；非必要不联网/不安装依赖/不 push。"
-mi init --values "..."  # 兼容旧命令
+mi init --values "..."  # shortcut
 mi values show
 ```
 

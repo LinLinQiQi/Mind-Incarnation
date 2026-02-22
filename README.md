@@ -100,7 +100,7 @@ Edit `~/.mind-incarnation/config.json`:
 }
 ```
 
-Note: MI expects Chat Completions-style responses: `choices[0].message.content` must contain the JSON output. Legacy `choices[0].text` and Responses API payload shapes are not supported.
+Note: MI expects Chat Completions-style responses: `choices[0].message.content` must contain the JSON output. Other payload shapes (for example, `choices[0].text` or the Responses API) are not supported.
 
 Optional: Use another agent CLI as Hands (wrapper)
 

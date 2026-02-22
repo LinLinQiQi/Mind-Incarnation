@@ -4,10 +4,9 @@ import json
 import sys
 import secrets
 import time
-from pathlib import Path
 from typing import Any
 
-from .wiring import SegmentStateIO, bootstrap_autopilot_run, parse_runtime_features
+from .wiring import MindCaller, SegmentStateIO, bootstrap_autopilot_run, parse_runtime_features
 from .autopilot import (
     AutopilotResult,
     _batch_summary,
@@ -48,7 +47,6 @@ from .autopilot import (
     run_plan_checks_and_auto_answer,
     WorkflowRiskPhaseDeps,
     run_workflow_and_risk_phase,
-    RunSession,
     RunLoopOrchestrator,
     RunLoopOrchestratorDeps,
     BatchRunRequest,
@@ -113,11 +111,6 @@ from .autopilot.learn_suggested_flow import (
 from .autopilot.auto_answer_flow import (
     AutoAnswerQueryDeps,
     query_auto_answer_to_hands,
-)
-from .autopilot.mind_call_flow import (
-    MindCallDeps,
-    MindCallState,
-    run_mind_call,
 )
 from .autopilot.recall_flow import (
     RecallDeps,
@@ -371,13 +364,18 @@ def run_autopilot(
     sent_sigs: list[str] = []
     learn_suggested_records_this_run: list[dict[str, Any]] = []
 
-    # Mind circuit breaker:
-    # - After repeated consecutive Mind failures, stop issuing further Mind calls
-    #   in this `mi run` invocation and converge quickly to user override / blocked.
-    mind_failures_total = 0
-    mind_failures_consecutive = 0
-    mind_circuit_open = False
-    mind_circuit_threshold = 2
+    def _cur_thread_id() -> str:
+        return str(thread_id or "")
+
+    _mind_call = MindCaller(
+        llm_call=llm.call,
+        evidence_append=evw.append,
+        now_ts=now_rfc3339,
+        truncate=_truncate,
+        thread_id_getter=_cur_thread_id,
+        evidence_window=evidence_window,
+        threshold=2,
+    ).call
 
     def _log_decide_next(
         *,
@@ -437,47 +435,6 @@ def run_autopilot(
         if isinstance(rec, dict):
             learn_suggested_records_this_run.append(rec)
         return list(applied_claim_ids)
-
-    def _mind_call(
-        *,
-        schema_filename: str,
-        prompt: str,
-        tag: str,
-        batch_id: str,
-    ) -> tuple[dict[str, Any] | None, str, str]:
-        """Best-effort Mind call wrapper.
-
-        - Never raises (logs to EvidenceLog as kind=mind_error).
-        - Circuit breaker: after repeated failures, returns skipped without calling Mind.
-        - Returns (obj, mind_transcript_ref, state) where state is ok|error|skipped.
-        """
-
-        nonlocal mind_failures_total, mind_failures_consecutive, mind_circuit_open
-
-        res = run_mind_call(
-            state=MindCallState(
-                failures_total=mind_failures_total,
-                failures_consecutive=mind_failures_consecutive,
-                circuit_open=mind_circuit_open,
-            ),
-            thread_id=str(thread_id or ""),
-            batch_id=batch_id,
-            schema_filename=schema_filename,
-            prompt=prompt,
-            tag=tag,
-            threshold=mind_circuit_threshold,
-            evidence_window=evidence_window,
-            deps=MindCallDeps(
-                llm_call=llm.call,
-                evidence_append=evw.append,
-                now_ts=now_rfc3339,
-                truncate=_truncate,
-            ),
-        )
-        mind_failures_total = int(res.next_state.failures_total)
-        mind_failures_consecutive = int(res.next_state.failures_consecutive)
-        mind_circuit_open = bool(res.next_state.circuit_open)
-        return res.obj if isinstance(res.obj, dict) else None, str(res.mind_transcript_ref or ""), str(res.state or "")
 
     def _segment_add(obj: dict[str, Any]) -> None:
         add_segment_record(

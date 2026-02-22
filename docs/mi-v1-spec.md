@@ -72,7 +72,7 @@ flowchart TD
   D -->|done/blocked| END[Stop]
 ```
 
-Internal wiring (behavior-preserving): `mi/runtime/runner.py:run_autopilot` delegates bootstrap (config/overlay/session initialization + workflow trigger injection) to `mi/runtime/wiring/bootstrap.py`, parses runtime feature flags via `mi/runtime/wiring/runtime_cfg.py`, bootstraps segment buffer IO via `mi/runtime/wiring/segments.py`, and composes the run-loop/pipeline/checkpoint execution via `RunLoopOrchestrator` (`mi/runtime/autopilot/orchestrator.py`). Thought DB prompt-context assembly and run-end WhyTrace candidate retrieval are routed through `ThoughtDbApplicationService` (`mi/thoughtdb/app_service.py`) as a shared facade. Phase semantics and user-visible loop behavior remain unchanged.
+Internal wiring (behavior-preserving): `mi/runtime/runner.py:run_autopilot` delegates bootstrap (config/overlay/session initialization + workflow trigger injection) to `mi/runtime/wiring/bootstrap.py`, parses runtime feature flags via `mi/runtime/wiring/runtime_cfg.py`, bootstraps segment buffer IO via `mi/runtime/wiring/segments.py`, centralizes Mind call circuit-break state via `mi/runtime/wiring/mind_call.py`, and composes the run-loop/pipeline/checkpoint execution via `RunLoopOrchestrator` (`mi/runtime/autopilot/orchestrator.py`). Thought DB prompt-context assembly and run-end WhyTrace candidate retrieval are routed through `ThoughtDbApplicationService` (`mi/thoughtdb/app_service.py`) as a shared facade. Phase semantics and user-visible loop behavior remain unchanged.
 
 Pre-action arbitration (deterministic, V1):
 

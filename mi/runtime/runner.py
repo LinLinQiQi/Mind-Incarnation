@@ -7,11 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..providers.codex_runner import run_codex_exec, run_codex_resume
-from ..providers.interrupts import InterruptConfig
-from ..providers.llm import MiLlm
-from ..core.config import load_config
-from ..core.paths import GlobalPaths, ProjectPaths, default_home_dir
+from .wiring import bootstrap_autopilot_run, parse_runtime_features
 from .autopilot import (
     AutopilotResult,
     _batch_summary,
@@ -199,22 +195,15 @@ from .prompts import (
 from .prompts import auto_answer_to_hands_prompt
 from .prompts import risk_judge_prompt
 from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
-from ..core.storage import append_jsonl, ensure_dir, now_rfc3339, read_json_best_effort, write_json_atomic
-from ..core.redact import redact_text
+from ..core.storage import append_jsonl, now_rfc3339, read_json_best_effort, write_json_atomic
 from ..workflows import (
-    WorkflowStore,
-    GlobalWorkflowStore,
-    WorkflowRegistry,
     load_workflow_candidates,
     write_workflow_candidates,
     new_workflow_id,
-    render_workflow_markdown,
 )
 from ..workflows.preferences import load_preference_candidates, write_preference_candidates, preference_signature
 from ..workflows.hosts import sync_hosts_from_overlay
-from ..memory.facade import MemoryFacade
 from ..memory.ingest import thoughtdb_node_item
-from .evidence import EvidenceWriter, new_run_id
 from .injection import build_light_injection
 from ..thoughtdb import ThoughtDbStore, claim_signature
 from ..thoughtdb.app_service import ThoughtDbApplicationService
@@ -249,11 +238,26 @@ def run_autopilot(
     no_mi_prompt: bool = False,
     redact: bool = False,
 ) -> AutopilotResult:
-    project_path = Path(project_root).resolve()
-    home = Path(home_dir).expanduser().resolve() if home_dir else default_home_dir()
-    cfg = load_config(home)
-    runtime_cfg = cfg.get("runtime") if isinstance(cfg.get("runtime"), dict) else {}
-    state_warnings: list[dict[str, Any]] = []
+    boot = bootstrap_autopilot_run(
+        task=task,
+        project_root=project_root,
+        home_dir=home_dir,
+        hands_provider=hands_provider,
+        continue_hands=continue_hands,
+        reset_hands=reset_hands,
+        llm=llm,
+        hands_exec=hands_exec,
+        hands_resume=hands_resume,
+        hands_resume_default_sentinel=_DEFAULT,
+        live=live,
+        quiet=quiet,
+        redact=redact,
+        read_user_answer=_read_user_answer,
+    )
+    project_path = boot.project_path
+    home = boot.home
+    runtime_cfg = boot.runtime_cfg
+    state_warnings = boot.state_warnings
 
     def _mindspec_base_runtime() -> dict[str, Any]:
         """Runtime knobs context for Mind prompts.
@@ -265,108 +269,29 @@ def run_autopilot(
         return runtime_cfg if isinstance(runtime_cfg, dict) else {}
 
     # Cross-run Hands session persistence is stored in ProjectOverlay but only used when explicitly enabled.
-    overlay: dict[str, Any]
-    hands_state: dict[str, Any]
-    workflow_run: dict[str, Any]
+    overlay = boot.overlay
+    hands_state = boot.hands_state
+    workflow_run = boot.workflow_run
+    _refresh_overlay_refs = boot.refresh_overlay_refs
+    cur_provider = boot.cur_provider
+    project_paths = boot.project_paths
+    wf_store = boot.wf_store
+    wf_registry = boot.wf_registry
+    mem = boot.mem
+    tdb = boot.tdb
+    tdb_app = boot.tdb_app
+    evw = boot.evw
+    llm = boot.llm
+    hands_exec = boot.hands_exec
+    hands_resume = boot.hands_resume
+    run_session = boot.run_session
+    _emit_prefixed = boot.emit_prefixed
 
-    def _refresh_overlay_refs() -> None:
-        nonlocal overlay, hands_state, workflow_run
-        overlay = load_project_overlay(home_dir=home, project_root=project_path, warnings=state_warnings)
-        if not isinstance(overlay, dict):
-            overlay = {}
-        hs = overlay.get("hands_state")
-        if isinstance(hs, dict):
-            hands_state = hs
-        else:
-            hands_state = {}
-            overlay["hands_state"] = hands_state
-        wr = overlay.get("workflow_run")
-        if isinstance(wr, dict):
-            workflow_run = wr
-        else:
-            workflow_run = {}
-            overlay["workflow_run"] = workflow_run
-
-    _refresh_overlay_refs()
-
-    cur_provider = (hands_provider or str(hands_state.get("provider") or "")).strip()
-    if reset_hands:
-        hands_state["provider"] = cur_provider
-        hands_state["thread_id"] = ""
-        hands_state["updated_ts"] = now_rfc3339()
-        # Reset any best-effort workflow cursor that may be tied to the previous Hands thread.
-        overlay["workflow_run"] = {}
-        write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-        _refresh_overlay_refs()
-
-    project_paths = ProjectPaths(home_dir=home, project_root=project_path)
-    ensure_dir(project_paths.project_dir)
-    ensure_dir(project_paths.transcripts_dir)
-
-    wf_store = WorkflowStore(project_paths)
-    wf_global_store = GlobalWorkflowStore(GlobalPaths(home_dir=home))
-    wf_registry = WorkflowRegistry(project_store=wf_store, global_store=wf_global_store)
-    mem = MemoryFacade(home_dir=home, project_paths=project_paths, runtime_cfg=runtime_cfg)
-    mem.ensure_structured_ingested()
-    tdb = ThoughtDbStore(home_dir=home, project_paths=project_paths)
-    tdb_app = ThoughtDbApplicationService(tdb=tdb, project_paths=project_paths, mem=mem.service)
-    evw = EvidenceWriter(path=project_paths.evidence_log_path, run_id=new_run_id("run"))
-
-    if llm is None:
-        llm = MiLlm(project_root=project_path, transcripts_dir=project_paths.transcripts_dir)
-    if hands_exec is None:
-        hands_exec = run_codex_exec
-    if hands_resume is _DEFAULT:
-        hands_resume = run_codex_resume
-
-    live_enabled = bool(live) and (not bool(quiet))
-
-    def _emit_prefixed(prefix: str, text: str) -> None:
-        if not live_enabled:
-            return
-        s = str(text or "")
-        if redact:
-            s = redact_text(s)
-        lines = s.splitlines() if s else [""]
-        for line in lines:
-            if line:
-                print(f"{prefix} {line}", flush=True)
-            else:
-                print(prefix, flush=True)
-
-    run_session = RunSession(
-        home=home,
-        project_path=project_path,
-        project_paths=project_paths,
-        runtime_cfg=(runtime_cfg if isinstance(runtime_cfg, dict) else {}),
-        llm=llm,
-        hands_exec=hands_exec,
-        hands_resume=hands_resume,
-        evw=evw,
-        tdb=tdb,
-        mem=mem,
-        wf_registry=wf_registry,
-        emit=_emit_prefixed,
-        read_user_answer=_read_user_answer,
-        now_ts=now_rfc3339,
-    )
-
-    evidence_window: list[dict[str, Any]] = []
-    thread_id: str | None = None
-    resumed_from_overlay = False
-    if continue_hands and not reset_hands and hands_resume is not None:
-        prev_tid = str(hands_state.get("thread_id") or "").strip()
-        prev_provider = str(hands_state.get("provider") or "").strip()
-        if prev_tid and prev_tid != "unknown" and (not cur_provider or not prev_provider or prev_provider == cur_provider):
-            thread_id = prev_tid
-            resumed_from_overlay = True
-
-    # Default: do not carry an "active" workflow cursor across runs unless we are explicitly continuing the same Hands session.
-    if bool(workflow_run.get("active", False)) and not bool(resumed_from_overlay):
-        workflow_run.clear()
-        overlay["workflow_run"] = workflow_run
-        write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-    next_input: str = task
+    evidence_window = boot.evidence_window
+    thread_id = boot.thread_id
+    resumed_from_overlay = boot.resumed_from_overlay
+    next_input = boot.next_input
+    matched = boot.matched_workflow
 
     status = "not_done"
     notes = ""
@@ -379,115 +304,24 @@ def run_autopilot(
             recent_evidence=recent_evidence,
         )
 
-    # Workflow trigger routing (effective): if an enabled workflow (project or global) matches the task,
-    # inject it into the very first batch input (lightweight; no step slicing).
-    matched = match_workflow_for_task(task_text=task, workflows=wf_registry.enabled_workflows_effective(overlay=overlay))
-    if matched:
-        wid = str(matched.get("id") or "").strip()
-        name = str(matched.get("name") or "").strip()
-        trig = matched.get("trigger") if isinstance(matched.get("trigger"), dict) else {}
-        pat = str(trig.get("pattern") or "").strip()
-        # Best-effort workflow cursor: internal only. It does NOT impose step-by-step reporting.
-        # The cursor is used to provide next-step context to Mind prompts.
-        step_ids = workflow_step_ids(matched)
-        workflow_run.clear()
-        workflow_run.update(
-            {
-                "version": "v1",
-                "active": True,
-                "workflow_id": wid,
-                "workflow_name": name,
-                "thread_id": str(thread_id or hands_state.get("thread_id") or ""),
-                "started_ts": now_rfc3339(),
-                "updated_ts": now_rfc3339(),
-                "completed_step_ids": [],
-                "next_step_id": step_ids[0] if step_ids else "",
-                "last_batch_id": "b0.workflow_trigger",
-                "last_confidence": 0.0,
-                "last_notes": f"triggered: task_contains pattern={pat}",
-            }
-        )
-        overlay["workflow_run"] = workflow_run
-        write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-        injected = "\n".join(
-            [
-                "[MI Workflow Triggered]",
-                "A reusable workflow matches this task.",
-                "- Use it as guidance; you do NOT need to report step-by-step.",
-                "- If network/install/push/publish is not clearly safe per values, pause and ask.",
-                "",
-                render_workflow_markdown(matched),
-                "",
-                "User task:",
-                task.strip(),
-            ]
-        ).strip()
-        next_input = injected
-        wf_trig = evw.append(
-            {
-                "kind": "workflow_trigger",
-                "batch_id": "b0.workflow_trigger",
-                "ts": now_rfc3339(),
-                "thread_id": thread_id or "",
-                "workflow_id": wid,
-                "workflow_name": name,
-                "trigger_mode": str(trig.get("mode") or ""),
-                "trigger_pattern": pat,
-            }
-        )
-        evidence_window.append(
-            {
-                "kind": "workflow_trigger",
-                "batch_id": "b0.workflow_trigger",
-                "event_id": wf_trig.get("event_id"),
-                "workflow_id": wid,
-                "workflow_name": name,
-                "trigger_mode": str(trig.get("mode") or ""),
-                "trigger_pattern": pat,
-            }
-        )
-
-    # Checkpoint/segment mining settings (V1):
-    # - Segments are internal; they do NOT impose a step protocol on Hands.
-    # - Checkpoints decide when to mine workflows/preferences and reset the segment buffer.
+    feats = parse_runtime_features(runtime_cfg=runtime_cfg, why_trace_on_run_end=bool(why_trace_on_run_end))
     wf_cfg = runtime_cfg.get("workflows") if isinstance(runtime_cfg.get("workflows"), dict) else {}
-    wf_auto_mine = bool(wf_cfg.get("auto_mine", True))
     pref_cfg = runtime_cfg.get("preference_mining") if isinstance(runtime_cfg.get("preference_mining"), dict) else {}
-    pref_auto_mine = bool(pref_cfg.get("auto_mine", True))
-    tdb_cfg = runtime_cfg.get("thought_db") if isinstance(runtime_cfg.get("thought_db"), dict) else {}
-    tdb_enabled = bool(tdb_cfg.get("enabled", True))
-    tdb_auto_mine = bool(tdb_cfg.get("auto_mine", True)) and bool(tdb_enabled)
-    # Deterministic node materialization does not add mind calls; keep it separately controllable.
-    tdb_auto_nodes = bool(tdb_cfg.get("auto_materialize_nodes", True)) and bool(tdb_enabled)
-    try:
-        tdb_min_conf = float(tdb_cfg.get("min_confidence", 0.9) or 0.9)
-    except Exception:
-        tdb_min_conf = 0.9
-    tdb_min_conf = max(0.0, min(1.0, tdb_min_conf))
-    try:
-        tdb_max_claims = int(tdb_cfg.get("max_claims_per_checkpoint", 6) or 6)
-    except Exception:
-        tdb_max_claims = 6
-    tdb_max_claims = max(0, min(20, tdb_max_claims))
-
-    # Optional: automatic run-end WhyTrace (opt-in; one call per `mi run`).
-    why_cfg = tdb_cfg.get("why_trace") if isinstance(tdb_cfg.get("why_trace"), dict) else {}
-    auto_why_on_end = (bool(why_cfg.get("auto_on_run_end", False)) or bool(why_trace_on_run_end)) and bool(tdb_enabled)
-    try:
-        why_top_k = int(why_cfg.get("top_k", 12) or 12)
-    except Exception:
-        why_top_k = 12
-    why_top_k = max(1, min(40, why_top_k))
-    try:
-        why_min_write_conf = float(why_cfg.get("min_write_confidence", 0.7) or 0.7)
-    except Exception:
-        why_min_write_conf = 0.7
-    why_min_write_conf = max(0.0, min(1.0, why_min_write_conf))
-    why_write_edges = bool(why_cfg.get("write_edges", True))
+    wf_auto_mine = bool(feats.wf_auto_mine)
+    pref_auto_mine = bool(feats.pref_auto_mine)
+    tdb_enabled = bool(feats.tdb_enabled)
+    tdb_auto_mine = bool(feats.tdb_auto_mine)
+    tdb_auto_nodes = bool(feats.tdb_auto_nodes)
+    tdb_min_conf = float(feats.tdb_min_conf)
+    tdb_max_claims = int(feats.tdb_max_claims)
+    auto_why_on_end = bool(feats.auto_why_on_end)
+    why_top_k = int(feats.why_top_k)
+    why_min_write_conf = float(feats.why_min_write_conf)
+    why_write_edges = bool(feats.why_write_edges)
 
     # The "segment checkpoint" mechanism is shared infrastructure: it is required for both
     # mining (workflows/preferences/claims) and deterministic node materialization.
-    checkpoint_enabled = bool(wf_auto_mine or pref_auto_mine or tdb_auto_mine or tdb_auto_nodes)
+    checkpoint_enabled = bool(feats.checkpoint_enabled)
 
     def _flush_state_warnings(*, batch_id: str = "b0.state_recovery") -> None:
         if not state_warnings:
@@ -561,15 +395,7 @@ def run_autopilot(
         _persist_segment_state()
         _flush_state_warnings()
 
-    intr = runtime_cfg.get("interrupt") if isinstance(runtime_cfg.get("interrupt"), dict) else {}
-    intr_mode = str(intr.get("mode") or "off")
-    intr_signals = intr.get("signal_sequence") or ["SIGINT", "SIGTERM", "SIGKILL"]
-    intr_escalation = intr.get("escalation_ms") or [2000, 5000]
-    interrupt_cfg = (
-        InterruptConfig(mode=intr_mode, signal_sequence=[str(s) for s in intr_signals], escalation_ms=[int(x) for x in intr_escalation])
-        if intr_mode in ("on_high_risk", "on_any_external")
-        else None
-    )
+    interrupt_cfg = feats.interrupt_cfg
 
     sent_sigs: list[str] = []
     learn_suggested_records_this_run: list[dict[str, Any]] = []

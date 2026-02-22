@@ -7,6 +7,10 @@ centralizing bootstrap/config parsing code in testable modules.
 from .bootstrap import BootstrappedAutopilotRun, bootstrap_autopilot_run
 from .check_plan import CheckPlanWiringDeps, plan_checks_and_record_wired
 from .checkpoints import CheckpointWiringDeps, run_checkpoint_pipeline_wired
+from .loop_break_checks import (
+    LoopBreakChecksWiringDeps,
+    loop_break_get_checks_input_wired,
+)
 from .mind_call import MindCaller
 from .mining import (
     ClaimMiningWiringDeps,
@@ -31,6 +35,8 @@ __all__ = [
     "plan_checks_and_record_wired",
     "CheckpointWiringDeps",
     "run_checkpoint_pipeline_wired",
+    "LoopBreakChecksWiringDeps",
+    "loop_break_get_checks_input_wired",
     "MindCaller",
     "ClaimMiningWiringDeps",
     "NodeMaterializeWiringDeps",

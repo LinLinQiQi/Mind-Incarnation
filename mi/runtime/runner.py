@@ -10,6 +10,7 @@ from .wiring import (
     CheckPlanWiringDeps,
     CheckpointWiringDeps,
     ClaimMiningWiringDeps,
+    LoopBreakChecksWiringDeps,
     MindCaller,
     NextInputWiringDeps,
     NodeMaterializeWiringDeps,
@@ -24,6 +25,7 @@ from .wiring import (
     mine_preferences_from_segment_wired,
     mine_workflow_from_segment_wired,
     parse_runtime_features,
+    loop_break_get_checks_input_wired,
     plan_checks_and_record_wired,
     run_checkpoint_pipeline_wired,
     queue_next_input_wired,
@@ -97,10 +99,6 @@ from .autopilot.risk_predecide import (
     maybe_prompt_risk_continue,
     query_risk_judge,
     run_risk_predecide,
-)
-from .autopilot.loop_break_checks_flow import (
-    LoopBreakChecksDeps,
-    loop_break_get_checks_input as run_loop_break_get_checks_input,
 )
 from .autopilot.learn_suggested_flow import (
     LearnSuggestedDeps,
@@ -895,32 +893,25 @@ def run_autopilot(
         if bool(res.persist_segment_state):
             _persist_segment_state()
 
-    def _loop_break_get_checks_input(
-        *,
-        base_batch_id: str,
-        hands_last_message: str,
-        thought_db_context: dict[str, Any] | None,
-        repo_observation: dict[str, Any] | None,
-        existing_check_plan: dict[str, Any] | None,
-    ) -> tuple[str, str]:
-        """Return checks input text for loop_break run_checks_then_continue (best-effort).
+    loop_break_checks_wiring = LoopBreakChecksWiringDeps(
+        get_check_input=_get_check_input,
+        plan_checks_and_record=_plan_checks_and_record,
+        resolve_tls_for_checks=_resolve_tls_for_checks,
+        empty_check_plan=_empty_check_plan,
+        notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
+        notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
+    )
 
-        Returns: (checks_input_text, block_reason). block_reason=="" means OK.
-        """
-        return run_loop_break_get_checks_input(
-            base_batch_id=base_batch_id,
-            hands_last_message=hands_last_message,
-            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
-            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-            existing_check_plan=existing_check_plan if isinstance(existing_check_plan, dict) else None,
-            notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
-            notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
-            deps=LoopBreakChecksDeps(
-                get_check_input=_get_check_input,
-                plan_checks_and_record=_plan_checks_and_record,
-                resolve_tls_for_checks=_resolve_tls_for_checks,
-                empty_check_plan=_empty_check_plan,
-            ),
+    def _loop_break_get_checks_input(**kwargs: Any) -> tuple[str, str]:
+        """Wiring adapter for loop-break check computation."""
+
+        return loop_break_get_checks_input_wired(
+            base_batch_id=str(kwargs.get("base_batch_id") or ""),
+            hands_last_message=str(kwargs.get("hands_last_message") or ""),
+            thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
+            repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
+            existing_check_plan=(kwargs.get("existing_check_plan") if isinstance(kwargs.get("existing_check_plan"), dict) else None),
+            deps=loop_break_checks_wiring,
         )
 
     def _queue_next_input(

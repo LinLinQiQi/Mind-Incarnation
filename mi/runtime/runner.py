@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from .wiring import (
+    CheckPlanWiringDeps,
     CheckpointWiringDeps,
     ClaimMiningWiringDeps,
     MindCaller,
@@ -23,6 +24,7 @@ from .wiring import (
     mine_preferences_from_segment_wired,
     mine_workflow_from_segment_wired,
     parse_runtime_features,
+    plan_checks_and_record_wired,
     run_checkpoint_pipeline_wired,
     queue_next_input_wired,
     run_run_start_seeds,
@@ -134,12 +136,6 @@ from .autopilot.predecide_user_flow import (
     prompt_user_then_queue as run_predecide_prompt_user_then_queue,
     retry_auto_answer_after_recall as run_predecide_retry_auto_answer_after_recall,
     try_queue_answer_with_checks as run_predecide_try_queue_answer_with_checks,
-)
-from .autopilot.check_plan_flow import (
-    CheckPlanFlowDeps,
-    append_check_plan_record_with_tracking,
-    call_plan_min_checks,
-    plan_checks_and_record,
 )
 from .autopilot.evidence_flow import (
     EvidenceAppendDeps,
@@ -495,18 +491,47 @@ def run_autopilot(
         )
     )
 
-    def _mk_check_plan_flow_deps() -> CheckPlanFlowDeps:
-        """Build CheckPlanFlowDeps once per call-site; keeps runner wiring consistent."""
+    check_plan_wiring = CheckPlanWiringDeps(
+        task=task,
+        hands_provider=cur_provider,
+        mindspec_base_getter=_mindspec_base_runtime,
+        project_overlay=overlay if isinstance(overlay, dict) else {},
+        evidence_window=evidence_window,
+        thread_id=thread_id,
+        now_ts=now_rfc3339,
+        evidence_append=evw.append,
+        segment_add=_segment_add,
+        persist_segment_state=_persist_segment_state,
+        plan_min_checks_prompt_builder=plan_min_checks_prompt,
+        mind_call=_mind_call,
+        empty_check_plan=_empty_check_plan,
+    )
 
-        return CheckPlanFlowDeps(
-            empty_check_plan=_empty_check_plan,
-            evidence_append=evw.append,
-            segment_add=_segment_add,
-            persist_segment_state=_persist_segment_state,
-            now_ts=now_rfc3339,
-            thread_id=thread_id,
-            plan_min_checks_prompt_builder=plan_min_checks_prompt,
-            mind_call=_mind_call,
+    def _plan_checks_and_record(
+        *,
+        batch_id: str,
+        tag: str,
+        thought_db_context: dict[str, Any],
+        repo_observation: dict[str, Any],
+        should_plan: bool,
+        notes_on_skip: str,
+        notes_on_skipped: str,
+        notes_on_error: str,
+        postprocess: Any | None = None,
+    ) -> tuple[dict[str, Any], str, str]:
+        """Plan minimal checks and always record a check_plan event (best-effort)."""
+
+        return plan_checks_and_record_wired(
+            batch_id=batch_id,
+            tag=tag,
+            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
+            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
+            should_plan=bool(should_plan),
+            notes_on_skip=notes_on_skip,
+            notes_on_skipped=notes_on_skipped,
+            notes_on_error=notes_on_error,
+            postprocess=postprocess,
+            deps=check_plan_wiring,
         )
 
     def _mk_testless_resolution_deps() -> TestlessResolutionDeps:
@@ -543,8 +568,9 @@ def run_autopilot(
                 notes_on_skip=str(kwargs.get("notes_on_skip") or ""),
                 notes_on_skipped=str(kwargs.get("notes_on_skipped") or ""),
                 notes_on_error=str(kwargs.get("notes_on_error") or ""),
+                postprocess=None,
             ),
-            plan_checks_and_record2=lambda **kwargs: _plan_checks_and_record2(
+            plan_checks_and_record2=lambda **kwargs: _plan_checks_and_record(
                 batch_id=str(kwargs.get("batch_id") or ""),
                 tag=str(kwargs.get("tag") or ""),
                 thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
@@ -558,16 +584,6 @@ def run_autopilot(
             empty_check_plan=_empty_check_plan,
         )
 
-    def _append_check_plan_record(*, batch_id: str, checks_obj: Any, mind_transcript_ref: str) -> dict[str, Any]:
-        """Append a check_plan record and keep evidence_window/segment in sync (single source of truth)."""
-        return append_check_plan_record_with_tracking(
-            batch_id=batch_id,
-            checks_obj=checks_obj,
-            mind_transcript_ref=mind_transcript_ref,
-            evidence_window=evidence_window,
-            deps=_mk_check_plan_flow_deps(),
-        )
-
     def _get_check_input(checks_obj: dict[str, Any] | None) -> str:
         """Return hands_check_input when should_run_checks=true (best-effort)."""
 
@@ -577,91 +593,6 @@ def run_autopilot(
             return ""
         return str(checks_obj.get("hands_check_input") or "").strip()
 
-    def _call_plan_min_checks(
-        *,
-        batch_id: str,
-        tag: str,
-        thought_db_context: dict[str, Any],
-        repo_observation: dict[str, Any],
-        notes_on_skipped: str,
-        notes_on_error: str,
-    ) -> tuple[dict[str, Any], str, str]:
-        """Call plan_min_checks and normalize failure into an empty plan with notes."""
-        return call_plan_min_checks(
-            batch_id=batch_id,
-            tag=tag,
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
-            recent_evidence=evidence_window,
-            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-            notes_on_skipped=notes_on_skipped,
-            notes_on_error=notes_on_error,
-            deps=_mk_check_plan_flow_deps(),
-        )
-
-    def _plan_checks_and_record2(
-        *,
-        batch_id: str,
-        tag: str,
-        thought_db_context: dict[str, Any],
-        repo_observation: dict[str, Any],
-        should_plan: bool,
-        notes_on_skip: str,
-        notes_on_skipped: str,
-        notes_on_error: str,
-        postprocess: Any | None = None,
-    ) -> tuple[dict[str, Any], str, str]:
-        """Plan minimal checks and always record a check_plan event (best-effort).
-
-        Optionally applies a small postprocess hook to normalize the recorded check plan
-        (e.g., avoid re-prompting for testless strategy when Thought DB already has one).
-        """
-
-        return plan_checks_and_record(
-            batch_id=batch_id,
-            tag=tag,
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
-            recent_evidence=evidence_window,
-            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-            should_plan=bool(should_plan),
-            notes_on_skip=notes_on_skip,
-            notes_on_skipped=notes_on_skipped,
-            notes_on_error=notes_on_error,
-            evidence_window=evidence_window,
-            postprocess=postprocess,
-            deps=_mk_check_plan_flow_deps(),
-        )
-
-    def _plan_checks_and_record(
-        *,
-        batch_id: str,
-        tag: str,
-        thought_db_context: dict[str, Any],
-        repo_observation: dict[str, Any],
-        should_plan: bool,
-        notes_on_skip: str,
-        notes_on_skipped: str,
-        notes_on_error: str,
-    ) -> tuple[dict[str, Any], str, str]:
-        """Plan minimal checks and always record a check_plan event (best-effort)."""
-        return _plan_checks_and_record2(
-            batch_id=batch_id,
-            tag=tag,
-            thought_db_context=thought_db_context,
-            repo_observation=repo_observation,
-            should_plan=should_plan,
-            notes_on_skip=notes_on_skip,
-            notes_on_skipped=notes_on_skipped,
-            notes_on_error=notes_on_error,
-            postprocess=None,
-        )
 
     def _sync_tls_overlay_from_thoughtdb(*, as_of_ts: str) -> tuple[str, str, bool]:
         """Sync canonical testless strategy claim -> derived overlay pointer (best-effort)."""

@@ -29,6 +29,11 @@ from .evidence_record import (
     EvidenceRecordWiringDeps,
     append_evidence_with_tracking_wired,
 )
+from .extract_evidence import (
+    ExtractEvidenceContextResult,
+    ExtractEvidenceContextWiringDeps,
+    extract_evidence_and_context_wired,
+)
 from .loop_break_checks import (
     LoopBreakChecksWiringDeps,
     loop_break_get_checks_input_wired,
@@ -100,6 +105,9 @@ __all__ = [
     "record_decide_next_effects_wired",
     "EvidenceRecordWiringDeps",
     "append_evidence_with_tracking_wired",
+    "ExtractEvidenceContextWiringDeps",
+    "ExtractEvidenceContextResult",
+    "extract_evidence_and_context_wired",
     "PredecideUserWiringDeps",
     "retry_auto_answer_after_recall_wired",
     "try_queue_answer_with_checks_wired",

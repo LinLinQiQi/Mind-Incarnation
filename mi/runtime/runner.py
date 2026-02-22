@@ -17,6 +17,7 @@ from .wiring import (
     DecideNextQueryWiringDeps,
     DecideRecordEffectsWiringDeps,
     EvidenceRecordWiringDeps,
+    ExtractEvidenceContextWiringDeps,
     InteractionRecordWiringDeps,
     LoopBreakChecksWiringDeps,
     MindCaller,
@@ -38,10 +39,10 @@ from .wiring import (
     apply_set_testless_strategy_overlay_update_wired,
     apply_workflow_progress_wired,
     append_auto_answer_record_wired,
-    append_evidence_with_tracking_wired,
     append_risk_event_wired,
     append_user_input_record_wired,
     bootstrap_autopilot_run,
+    extract_evidence_and_context_wired,
     handle_auto_answer_needs_user_wired,
     handle_decide_next_ask_user_wired,
     mk_testless_strategy_flow_deps_wired,
@@ -1330,6 +1331,18 @@ def run_autopilot(
         now_ts=now_rfc3339,
         thread_id_getter=_cur_thread_id,
     )
+    extract_evidence_wiring = ExtractEvidenceContextWiringDeps(
+        task=task,
+        hands_provider=cur_provider,
+        batch_summary_fn=_batch_summary,
+        extract_evidence_prompt_builder=extract_evidence_prompt,
+        mind_call=_mind_call,
+        empty_evidence_obj=_empty_evidence_obj,
+        extract_evidence_counts=extract_evidence_counts,
+        emit_prefixed=_emit_prefixed,
+        evidence_record_deps=evidence_record_wiring,
+        build_decide_context=_build_decide_context,
+    )
 
     def _predecide_extract_evidence_and_context(
         *,
@@ -1341,58 +1354,18 @@ def run_autopilot(
     ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
         """Run extract_evidence and build Thought DB context for this batch."""
 
-        nonlocal last_evidence_rec, evidence_window
+        nonlocal last_evidence_rec
 
-        summary = _batch_summary(result)
-        extract_prompt = extract_evidence_prompt(
-            task=task,
-            hands_provider=cur_provider,
-            light_injection=ctx.light_injection,
-            batch_input=ctx.batch_input,
-            hands_batch_summary=summary,
-            repo_observation=repo_obs,
+        out = extract_evidence_and_context_wired(
+            batch_idx=int(batch_idx),
+            batch_id=str(batch_id or ""),
+            ctx=ctx,
+            result=result,
+            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
+            deps=extract_evidence_wiring,
         )
-        evidence_obj, evidence_mind_ref, evidence_state = _mind_call(
-            schema_filename="extract_evidence.json",
-            prompt=extract_prompt,
-            tag=f"extract_b{batch_idx}",
-            batch_id=batch_id,
-        )
-        if evidence_obj is None:
-            if evidence_state == "skipped":
-                evidence_obj = _empty_evidence_obj(note="mind_circuit_open: extract_evidence skipped")
-            else:
-                evidence_obj = _empty_evidence_obj(note="mind_error: extract_evidence failed; see EvidenceLog kind=mind_error")
-
-        counts = extract_evidence_counts(evidence_obj if isinstance(evidence_obj, dict) else None)
-        _emit_prefixed(
-            "[mi]",
-            "extract_evidence "
-            + f"state={str(evidence_state or '')} "
-            + f"facts={counts['facts']} actions={counts['actions']} "
-            + f"results={counts['results']} unknowns={counts['unknowns']} risk_signals={counts['risk_signals']}",
-        )
-        evidence_rec = append_evidence_with_tracking_wired(
-            batch_id=batch_id,
-            hands_transcript_ref=str(ctx.hands_transcript),
-            mind_transcript_ref=evidence_mind_ref,
-            mi_input=ctx.batch_input,
-            transcript_observation=summary.get("transcript_observation") or {},
-            repo_observation=repo_obs,
-            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
-            deps=evidence_record_wiring,
-        )
-        last_evidence_rec = evidence_rec
-
-        hands_last = result.last_agent_message()
-        tdb_ctx_batch = _build_decide_context(hands_last_message=hands_last, recent_evidence=evidence_window)
-        tdb_ctx_batch_obj = tdb_ctx_batch.to_prompt_obj()
-        return (
-            summary if isinstance(summary, dict) else {},
-            evidence_obj if isinstance(evidence_obj, dict) else {},
-            str(hands_last or ""),
-            tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-        )
+        last_evidence_rec = out.evidence_rec
+        return out.summary, out.evidence_obj, out.hands_last, out.tdb_ctx_batch_obj
 
     workflow_progress_wiring = WorkflowProgressWiringDeps(
         task=task,

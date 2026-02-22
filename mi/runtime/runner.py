@@ -16,6 +16,7 @@ from .wiring import (
     DecideAskUserWiringDeps,
     DecideNextQueryWiringDeps,
     DecideRecordEffectsWiringDeps,
+    EvidenceRecordWiringDeps,
     InteractionRecordWiringDeps,
     LoopBreakChecksWiringDeps,
     MindCaller,
@@ -37,6 +38,7 @@ from .wiring import (
     apply_set_testless_strategy_overlay_update_wired,
     apply_workflow_progress_wired,
     append_auto_answer_record_wired,
+    append_evidence_with_tracking_wired,
     append_risk_event_wired,
     append_user_input_record_wired,
     bootstrap_autopilot_run,
@@ -129,10 +131,6 @@ from .autopilot.learn_suggested_flow import (
 from .autopilot.recall_flow import (
     RecallDeps,
     maybe_cross_project_recall_write_through as run_cross_project_recall_write_through,
-)
-from .autopilot.evidence_flow import (
-    EvidenceAppendDeps,
-    append_evidence_with_tracking,
 )
 from .autopilot.segment_state import (
     add_segment_record,
@@ -1323,6 +1321,16 @@ def run_autopilot(
             return queued, checks_obj
         return None, checks_obj
 
+    evidence_record_wiring = EvidenceRecordWiringDeps(
+        evidence_window=evidence_window,
+        evidence_append=evw.append,
+        append_window=append_evidence_window,
+        segment_add=_segment_add,
+        persist_segment_state=_persist_segment_state,
+        now_ts=now_rfc3339,
+        thread_id_getter=_cur_thread_id,
+    )
+
     def _predecide_extract_evidence_and_context(
         *,
         batch_idx: int,
@@ -1364,7 +1372,7 @@ def run_autopilot(
             + f"facts={counts['facts']} actions={counts['actions']} "
             + f"results={counts['results']} unknowns={counts['unknowns']} risk_signals={counts['risk_signals']}",
         )
-        evidence_rec = append_evidence_with_tracking(
+        evidence_rec = append_evidence_with_tracking_wired(
             batch_id=batch_id,
             hands_transcript_ref=str(ctx.hands_transcript),
             mind_transcript_ref=evidence_mind_ref,
@@ -1372,18 +1380,7 @@ def run_autopilot(
             transcript_observation=summary.get("transcript_observation") or {},
             repo_observation=repo_obs,
             evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
-            evidence_window=evidence_window,
-            deps=EvidenceAppendDeps(
-                evidence_append=evw.append,
-                append_window=append_evidence_window,
-                segment_add=lambda item: segment_add_and_persist(
-                    segment_add=_segment_add,
-                    persist_segment_state=_persist_segment_state,
-                    item=item if isinstance(item, dict) else {},
-                ),
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-            ),
+            deps=evidence_record_wiring,
         )
         last_evidence_rec = evidence_rec
 

@@ -25,6 +25,10 @@ from .decide_next import (
     query_decide_next_wired,
     record_decide_next_effects_wired,
 )
+from .evidence_record import (
+    EvidenceRecordWiringDeps,
+    append_evidence_with_tracking_wired,
+)
 from .loop_break_checks import (
     LoopBreakChecksWiringDeps,
     loop_break_get_checks_input_wired,
@@ -94,6 +98,8 @@ __all__ = [
     "query_decide_next_wired",
     "DecideRecordEffectsWiringDeps",
     "record_decide_next_effects_wired",
+    "EvidenceRecordWiringDeps",
+    "append_evidence_with_tracking_wired",
     "PredecideUserWiringDeps",
     "retry_auto_answer_after_recall_wired",
     "try_queue_answer_with_checks_wired",

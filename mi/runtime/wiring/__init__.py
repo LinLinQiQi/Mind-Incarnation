@@ -5,6 +5,10 @@ centralizing bootstrap/config parsing code in testable modules.
 """
 
 from .bootstrap import BootstrappedAutopilotRun, bootstrap_autopilot_run
+from .auto_answer import (
+    AutoAnswerQueryWiringDeps,
+    query_auto_answer_to_hands_wired,
+)
 from .ask_user import (
     AskUserAutoAnswerAttemptWiringDeps,
     AskUserRedecideWithInputWiringDeps,
@@ -74,6 +78,8 @@ from .testless_strategy import (
 __all__ = [
     "BootstrappedAutopilotRun",
     "bootstrap_autopilot_run",
+    "AutoAnswerQueryWiringDeps",
+    "query_auto_answer_to_hands_wired",
     "AskUserAutoAnswerAttemptWiringDeps",
     "ask_user_auto_answer_attempt_wired",
     "AskUserRedecideWithInputWiringDeps",

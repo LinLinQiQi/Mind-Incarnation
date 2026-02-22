@@ -11,6 +11,7 @@ from .wiring import (
     AskUserRedecideWithInputWiringDeps,
     CheckPlanWiringDeps,
     CheckpointWiringDeps,
+    AutoAnswerQueryWiringDeps,
     ClaimMiningWiringDeps,
     DecideAskUserWiringDeps,
     DecideNextQueryWiringDeps,
@@ -49,6 +50,7 @@ from .wiring import (
     parse_runtime_features,
     loop_break_get_checks_input_wired,
     plan_checks_and_record_wired,
+    query_auto_answer_to_hands_wired,
     query_decide_next_wired,
     record_decide_next_effects_wired,
     resolve_tls_for_checks_wired,
@@ -123,10 +125,6 @@ from .autopilot.risk_predecide import (
 from .autopilot.learn_suggested_flow import (
     LearnSuggestedDeps,
     apply_learn_suggested,
-)
-from .autopilot.auto_answer_flow import (
-    AutoAnswerQueryDeps,
-    query_auto_answer_to_hands,
 )
 from .autopilot.recall_flow import (
     RecallDeps,
@@ -1627,35 +1625,16 @@ def run_autopilot(
             return checks_obj
         return _empty_check_plan()
 
-    def _auto_answer_query_and_normalize(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        hands_last: str,
-        repo_obs: dict[str, Any],
-        checks_obj: dict[str, Any],
-        tdb_ctx_batch_obj: dict[str, Any],
-    ) -> tuple[dict[str, Any], str, str]:
-        """Query auto_answer_to_hands and normalize fallback object."""
-
-        return query_auto_answer_to_hands(
-            batch_idx=batch_idx,
-            batch_id=batch_id,
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            thought_db_context=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            check_plan=checks_obj if isinstance(checks_obj, dict) else {},
-            recent_evidence=evidence_window,
-            hands_last_message=hands_last,
-            deps=AutoAnswerQueryDeps(
-                auto_answer_prompt_builder=auto_answer_to_hands_prompt,
-                mind_call=_mind_call,
-                empty_auto_answer=_empty_auto_answer,
-            ),
-        )
+    auto_answer_query_wiring = AutoAnswerQueryWiringDeps(
+        task=task,
+        hands_provider=cur_provider,
+        mindspec_base_getter=_mindspec_base_runtime,
+        project_overlay=overlay if isinstance(overlay, dict) else {},
+        recent_evidence=evidence_window,
+        auto_answer_prompt_builder=auto_answer_to_hands_prompt,
+        mind_call=_mind_call,
+        empty_auto_answer=_empty_auto_answer,
+    )
 
     def _predecide_maybe_auto_answer(
         *,
@@ -1671,13 +1650,14 @@ def run_autopilot(
         if not _looks_like_user_question(hands_last):
             return _empty_auto_answer()
 
-        auto_answer_obj, auto_answer_mind_ref, aa_state = _auto_answer_query_and_normalize(
+        auto_answer_obj, auto_answer_mind_ref, aa_state = query_auto_answer_to_hands_wired(
             batch_idx=batch_idx,
             batch_id=batch_id,
             hands_last=hands_last,
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
             tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            deps=auto_answer_query_wiring,
         )
         _emit_prefixed(
             "[mi]",

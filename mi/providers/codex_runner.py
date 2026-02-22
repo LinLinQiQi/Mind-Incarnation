@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from ..core.storage import ensure_dir, now_rfc3339
+from ..core.storage import now_rfc3339
 from ..core.redact import redact_text
 from ..runtime.live import render_codex_event
 from ..runtime.transcript_store import append_transcript_line, write_transcript_header
@@ -27,9 +27,28 @@ def _is_inside_git_repo(start_dir: Path) -> bool:
         cur = cur.parent
 
 
-def _build_codex_base_args(project_root: Path, skip_git_repo_check: bool) -> list[str]:
+def _build_codex_base_args(project_root: Path) -> list[str]:
     # Keep only global options here. `--skip-git-repo-check` is an `exec` option.
     return ["codex", "--cd", str(project_root)]
+
+
+def _append_common_exec_options(
+    args: list[str],
+    *,
+    skip_git_repo_check: bool,
+    full_auto: bool,
+    sandbox: str | None,
+    output_schema_path: Path | None,
+) -> None:
+    if skip_git_repo_check:
+        args.append("--skip-git-repo-check")
+    if full_auto:
+        args.append("--full-auto")
+    if sandbox:
+        args.extend(["--sandbox", sandbox])
+    args.append("--json")
+    if output_schema_path:
+        args.extend(["--output-schema", str(output_schema_path)])
 
 
 @dataclass(frozen=True)
@@ -91,17 +110,15 @@ def run_codex_exec(
     on_live_line: Callable[[str], None] | None = None,
 ) -> CodexRunResult:
     skip_git_repo_check = not _is_inside_git_repo(project_root)
-    args = _build_codex_base_args(project_root, skip_git_repo_check)
+    args = _build_codex_base_args(project_root)
     args.append("exec")
-    if skip_git_repo_check:
-        args.append("--skip-git-repo-check")
-    if full_auto:
-        args.append("--full-auto")
-    if sandbox:
-        args.extend(["--sandbox", sandbox])
-    args.append("--json")
-    if output_schema_path:
-        args.extend(["--output-schema", str(output_schema_path)])
+    _append_common_exec_options(
+        args,
+        skip_git_repo_check=skip_git_repo_check,
+        full_auto=full_auto,
+        sandbox=sandbox,
+        output_schema_path=output_schema_path,
+    )
     # Read prompt from stdin to avoid shell escaping/length issues.
     args.append("-")
 
@@ -143,17 +160,15 @@ def run_codex_resume(
     on_live_line: Callable[[str], None] | None = None,
 ) -> CodexRunResult:
     skip_git_repo_check = not _is_inside_git_repo(project_root)
-    args = _build_codex_base_args(project_root, skip_git_repo_check)
+    args = _build_codex_base_args(project_root)
     args.extend(["exec", "resume"])
-    if skip_git_repo_check:
-        args.append("--skip-git-repo-check")
-    if full_auto:
-        args.append("--full-auto")
-    if sandbox:
-        args.extend(["--sandbox", sandbox])
-    args.append("--json")
-    if output_schema_path:
-        args.extend(["--output-schema", str(output_schema_path)])
+    _append_common_exec_options(
+        args,
+        skip_git_repo_check=skip_git_repo_check,
+        full_auto=full_auto,
+        sandbox=sandbox,
+        output_schema_path=output_schema_path,
+    )
     args.append(thread_id)
     args.append("-")
 

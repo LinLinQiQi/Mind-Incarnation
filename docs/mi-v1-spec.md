@@ -160,6 +160,7 @@ Hands providers:
   - Uses `codex exec --json --full-auto` (and `codex exec resume --json --full-auto` for continuation).
   - Captures Codex's JSONL event stream (stdout) and logs (stderr) as the raw transcript.
   - During `mi run`, MI can live-render this stream to the terminal (prefix `[hands]`). Use `mi run --hands-raw` to display the raw JSON event lines instead.
+  - Implementation note (behavior-preserving): `mi/providers/codex_runner.py` centralizes shared `exec`/`resume` option assembly to reduce drift.
 - `hands.provider=cli` (experimental)
   - Runs arbitrary command argv configured by the user (wrapper mechanism).
   - Captures raw stdout/stderr lines into MI-owned JSONL transcript records.

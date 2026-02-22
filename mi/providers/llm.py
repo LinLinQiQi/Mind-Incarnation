@@ -1,34 +1,14 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .codex_runner import run_codex_exec
+from .mind_utils import extract_json as _extract_json
+from .mind_utils import new_mind_transcript_path
+from .mind_utils import schema_path as _schema_path
 from .mind_errors import MindCallError
-from ..core.storage import now_rfc3339
-
-
-def _schema_path(name: str) -> Path:
-    # Schemas live under `mi/schemas` (shared across providers).
-    return Path(__file__).resolve().parents[1] / "schemas" / name
-
-
-def _extract_json(text: str) -> Any:
-    text = text.strip()
-    if not text:
-        raise ValueError("empty model output")
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    # Best-effort recovery if the model wrapped JSON with extra text.
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("no JSON object found in model output")
-    return json.loads(text[start : end + 1])
 
 
 @dataclass(frozen=True)
@@ -49,8 +29,7 @@ class MiLlm:
 
     def call(self, *, schema_filename: str, prompt: str, tag: str) -> MiPromptResult:
         schema_path = _schema_path(schema_filename)
-        ts = now_rfc3339().replace(":", "").replace("-", "")
-        transcript_path = self._transcripts_dir / "mind" / f"{ts}_{tag}.jsonl"
+        transcript_path = new_mind_transcript_path(self._transcripts_dir, tag)
         try:
             result = run_codex_exec(
                 prompt=prompt,

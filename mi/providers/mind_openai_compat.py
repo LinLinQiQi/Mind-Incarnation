@@ -9,13 +9,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..core.schema_validate import validate_json_schema
-from ..core.storage import ensure_dir, now_rfc3339
+from ..core.storage import now_rfc3339
 from .mind_errors import MindCallError
-
-
-def _schema_path(name: str) -> Path:
-    # Schemas live under `mi/schemas` (shared across providers).
-    return Path(__file__).resolve().parents[1] / "schemas" / name
+from .mind_utils import append_jsonl as _append_jsonl
+from .mind_utils import extract_json as _extract_json
+from .mind_utils import new_mind_transcript_path
+from .mind_utils import schema_path as _schema_path
 
 
 def _extract_text_from_openai_like(payload: dict[str, Any]) -> str:
@@ -32,27 +31,6 @@ def _extract_text_from_openai_like(payload: dict[str, Any]) -> str:
         pass
 
     return ""
-
-
-def _extract_json(text: str) -> Any:
-    text = (text or "").strip()
-    if not text:
-        raise ValueError("empty model output")
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("no JSON object found in model output")
-    return json.loads(text[start : end + 1])
-
-
-def _append_jsonl(path: Path, obj: dict[str, Any]) -> None:
-    ensure_dir(path.parent)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, sort_keys=True) + "\n")
 
 
 @dataclass(frozen=True)
@@ -124,8 +102,7 @@ class OpenAICompatibleMindProvider:
         if not isinstance(schema_obj, dict):
             raise ValueError(f"schema {schema_filename} is not an object")
 
-        ts = now_rfc3339().replace(":", "").replace("-", "")
-        transcript_path = self._transcripts_dir / "mind" / f"{ts}_{tag}.jsonl"
+        transcript_path = new_mind_transcript_path(self._transcripts_dir, tag)
 
         url = self._base_url + "/chat/completions"
         headers = {

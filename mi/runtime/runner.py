@@ -27,10 +27,12 @@ from .wiring import (
     StateWarningsFlusher,
     TestlessResolutionWiringDeps,
     TestlessStrategyWiringDeps,
+    WorkflowProgressWiringDeps,
     WorkflowMiningWiringDeps,
     ask_user_auto_answer_attempt_wired,
     ask_user_redecide_with_input_wired,
     apply_set_testless_strategy_overlay_update_wired,
+    apply_workflow_progress_wired,
     append_auto_answer_record_wired,
     append_user_input_record_wired,
     bootstrap_autopilot_run,
@@ -134,13 +136,6 @@ from .autopilot.evidence_flow import (
 from .autopilot.risk_event_flow import (
     RiskEventAppendDeps,
     append_risk_event_with_tracking,
-)
-from .autopilot.workflow_progress_flow import (
-    WorkflowProgressQueryDeps,
-    apply_workflow_progress_and_persist,
-    append_workflow_progress_event,
-    build_workflow_progress_latest_evidence,
-    query_workflow_progress,
 )
 from .autopilot.segment_state import (
     add_segment_record,
@@ -1405,6 +1400,23 @@ def run_autopilot(
             tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
         )
 
+    workflow_progress_wiring = WorkflowProgressWiringDeps(
+        task=task,
+        hands_provider=cur_provider,
+        mindspec_base_getter=_mindspec_base_runtime,
+        project_overlay=overlay if isinstance(overlay, dict) else {},
+        workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+        workflow_load_effective=wf_registry.load_effective,
+        load_active_workflow=load_active_workflow,
+        workflow_progress_prompt_builder=workflow_progress_prompt,
+        mind_call=_mind_call,
+        evidence_append=evw.append,
+        now_ts=now_rfc3339,
+        thread_id_getter=_cur_thread_id,
+        apply_workflow_progress_output_fn=apply_workflow_progress_output,
+        write_project_overlay=lambda ov: write_project_overlay(home_dir=home, project_root=project_path, overlay=ov),
+    )
+
     def _predecide_apply_workflow_progress(
         *,
         batch_idx: int,
@@ -1418,58 +1430,16 @@ def run_autopilot(
     ) -> None:
         """Update workflow cursor/state using workflow_progress output (best-effort)."""
 
-        active_wf = load_active_workflow(workflow_run=workflow_run, load_effective=wf_registry.load_effective)
-        if not (isinstance(active_wf, dict) and active_wf):
-            return
-
-        latest_evidence = build_workflow_progress_latest_evidence(
+        apply_workflow_progress_wired(
+            batch_idx=batch_idx,
             batch_id=batch_id,
             summary=summary if isinstance(summary, dict) else {},
             evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-        )
-        wf_prog_obj, wf_prog_ref, wf_prog_state = query_workflow_progress(
-            batch_idx=batch_idx,
-            batch_id=batch_id,
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            active_workflow=active_wf,
-            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-            latest_evidence=latest_evidence,
-            last_batch_input=ctx.batch_input,
-            hands_last_message=hands_last,
-            thought_db_context=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            deps=WorkflowProgressQueryDeps(
-                workflow_progress_prompt_builder=workflow_progress_prompt,
-                mind_call=_mind_call,
-            ),
-        )
-        append_workflow_progress_event(
-            batch_id=batch_id,
-            thread_id=thread_id,
-            active_workflow=active_wf,
-            wf_prog_obj=wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
-            wf_prog_ref=wf_prog_ref,
-            wf_prog_state=wf_prog_state,
-            evidence_append=evw.append,
-            now_ts=now_rfc3339,
-        )
-
-        def _persist_workflow_overlay() -> None:
-            overlay["workflow_run"] = workflow_run
-            write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-
-        apply_workflow_progress_and_persist(
-            batch_id=batch_id,
-            thread_id=str(thread_id or ""),
-            active_workflow=active_wf,
-            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-            wf_prog_obj=wf_prog_obj if isinstance(wf_prog_obj, dict) else {},
-            apply_workflow_progress_output_fn=apply_workflow_progress_output,
-            persist_overlay=_persist_workflow_overlay,
-            now_ts=now_rfc3339,
+            hands_last=hands_last,
+            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
+            last_batch_input=str(ctx.batch_input or ""),
+            deps=workflow_progress_wiring,
         )
 
     def _predecide_detect_risk_signals(*, result: Any, ctx: BatchExecutionContext) -> list[str]:

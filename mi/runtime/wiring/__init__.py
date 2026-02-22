@@ -46,6 +46,10 @@ from .run_start import RunStartSeedsDeps, run_run_start_seeds
 from .runtime_cfg import ParsedRuntimeFeatures, parse_runtime_features
 from .segments import SegmentStateIO
 from .state_warnings import StateWarningsFlusher
+from .workflow_progress import (
+    WorkflowProgressWiringDeps,
+    apply_workflow_progress_wired,
+)
 from .predecide_user import (
     PredecideUserWiringDeps,
     handle_auto_answer_needs_user_wired,
@@ -110,4 +114,6 @@ __all__ = [
     "parse_runtime_features",
     "SegmentStateIO",
     "StateWarningsFlusher",
+    "WorkflowProgressWiringDeps",
+    "apply_workflow_progress_wired",
 ]

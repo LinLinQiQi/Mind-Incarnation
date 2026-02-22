@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ...providers.mind_errors import MindCallError
-from .windowing import trim_evidence_window
+from .batch_effects import append_evidence_window
 
 
 @dataclass(frozen=True)
@@ -101,16 +101,17 @@ def run_mind_call(
                 "error": deps.truncate(str(e or ""), 2000),
             }
         )
-        evidence_window.append(
+        append_evidence_window(
+            evidence_window,
             {
                 "kind": "mind_error",
                 "batch_id": str(batch_id),
                 "schema_filename": str(schema_filename),
                 "tag": str(tag),
                 "error": deps.truncate(str(e), 400),
-            }
+            },
+            limit=8,
         )
-        trim_evidence_window(evidence_window)
 
         if (not circuit_open) and failures_consecutive >= int(threshold):
             circuit_open = True
@@ -129,7 +130,8 @@ def run_mind_call(
                     "error": deps.truncate(str(e or ""), 2000),
                 }
             )
-            evidence_window.append(
+            append_evidence_window(
+                evidence_window,
                 {
                     "kind": "mind_circuit",
                     "batch_id": str(batch_id),
@@ -137,9 +139,9 @@ def run_mind_call(
                     "threshold": int(threshold),
                     "failures_consecutive": failures_consecutive,
                     "note": "opened due to repeated mind_error",
-                }
+                },
+                limit=8,
             )
-            trim_evidence_window(evidence_window)
 
         return MindCallResult(
             obj=None,

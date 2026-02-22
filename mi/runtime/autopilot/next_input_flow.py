@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .windowing import trim_evidence_window
+from .batch_effects import append_evidence_window
 
 
 @dataclass(frozen=True)
@@ -146,8 +146,11 @@ def apply_loop_guard(
             "reason": reason,
         }
     )
-    evidence_window.append({"kind": "loop_guard", "batch_id": batch_id, "pattern": pattern, "reason": reason})
-    trim_evidence_window(evidence_window)
+    append_evidence_window(
+        evidence_window,
+        {"kind": "loop_guard", "batch_id": batch_id, "pattern": pattern, "reason": reason},
+        limit=8,
+    )
 
     ask_when_uncertain = bool(deps.resolve_ask_when_uncertain())
 
@@ -185,7 +188,8 @@ def apply_loop_guard(
         }
     )
     event_id = str((lb_rec if isinstance(lb_rec, dict) else {}).get("event_id") or "")
-    evidence_window.append(
+    append_evidence_window(
+        evidence_window,
         {
             "kind": "loop_break",
             "batch_id": batch_id,
@@ -194,9 +198,9 @@ def apply_loop_guard(
             "state": lb_state,
             "action": (lb_obj.get("action") if isinstance(lb_obj, dict) else ""),
             "reason": reason,
-        }
+        },
+        limit=8,
     )
-    trim_evidence_window(evidence_window)
     if isinstance(lb_rec, dict):
         deps.append_segment_record(lb_rec)
 

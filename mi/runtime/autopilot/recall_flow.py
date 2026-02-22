@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .windowing import trim_evidence_window
+from .batch_effects import append_evidence_window
 
 
 @dataclass(frozen=True)
@@ -36,8 +36,7 @@ def maybe_cross_project_recall_write_through(
     if isinstance(rec, dict) and isinstance(rec.get("event_id"), str) and rec.get("event_id"):
         win["event_id"] = rec["event_id"]
 
-    evidence_window.append(win if isinstance(win, dict) else {})
-    trim_evidence_window(evidence_window)
+    append_evidence_window(evidence_window, win if isinstance(win, dict) else {}, limit=8)
 
     if isinstance(rec, dict):
         deps.segment_add(rec)

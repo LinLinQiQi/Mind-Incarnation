@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .windowing import trim_evidence_window
+from .batch_effects import append_evidence_window
 
 
 @dataclass(frozen=True)
@@ -209,16 +209,17 @@ def resolve_tls_for_checks(
             }
         )
         ui_obj = ui if isinstance(ui, dict) else {}
-        evidence_window.append(
+        append_evidence_window(
+            evidence_window,
             {
                 "kind": "user_input",
                 "batch_id": str(user_input_batch_id),
                 "event_id": ui_obj.get("event_id"),
                 "question": q,
                 "answer": answer,
-            }
+            },
+            limit=8,
         )
-        trim_evidence_window(evidence_window)
         deps.segment_add(ui_obj)
         deps.persist_segment_state()
 

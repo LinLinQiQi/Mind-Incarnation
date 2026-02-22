@@ -22,6 +22,8 @@ from .wiring import (
     NodeMaterializeWiringDeps,
     PreferenceMiningWiringDeps,
     PredecideUserWiringDeps,
+    RiskEventRecordWiringDeps,
+    RiskJudgeWiringDeps,
     RunStartSeedsDeps,
     SegmentStateIO,
     StateWarningsFlusher,
@@ -34,6 +36,7 @@ from .wiring import (
     apply_set_testless_strategy_overlay_update_wired,
     apply_workflow_progress_wired,
     append_auto_answer_record_wired,
+    append_risk_event_wired,
     append_user_input_record_wired,
     bootstrap_autopilot_run,
     handle_auto_answer_needs_user_wired,
@@ -51,6 +54,7 @@ from .wiring import (
     resolve_tls_for_checks_wired,
     run_checkpoint_pipeline_wired,
     queue_next_input_wired,
+    query_risk_judge_wired,
     run_run_start_seeds,
     try_queue_answer_with_checks_wired,
 )
@@ -114,7 +118,6 @@ from .autopilot.decide_actions import (
 from .autopilot.risk_predecide import (
     RiskPredecideDeps,
     maybe_prompt_risk_continue,
-    query_risk_judge,
     run_risk_predecide,
 )
 from .autopilot.learn_suggested_flow import (
@@ -132,10 +135,6 @@ from .autopilot.recall_flow import (
 from .autopilot.evidence_flow import (
     EvidenceAppendDeps,
     append_evidence_with_tracking,
-)
-from .autopilot.risk_event_flow import (
-    RiskEventAppendDeps,
-    append_risk_event_with_tracking,
 )
 from .autopilot.segment_state import (
     add_segment_record,
@@ -1450,6 +1449,27 @@ def run_autopilot(
             risk_signals = _detect_risk_signals_from_transcript(ctx.hands_transcript)
         return [str(x) for x in risk_signals if str(x).strip()]
 
+    risk_judge_wiring = RiskJudgeWiringDeps(
+        task=task,
+        hands_provider=cur_provider,
+        mindspec_base_getter=_mindspec_base_runtime,
+        project_overlay=overlay if isinstance(overlay, dict) else {},
+        maybe_cross_project_recall=_maybe_cross_project_recall,
+        risk_judge_prompt_builder=risk_judge_prompt,
+        mind_call=_mind_call,
+        build_risk_fallback=build_risk_fallback,
+    )
+
+    risk_event_wiring = RiskEventRecordWiringDeps(
+        evidence_window=evidence_window,
+        evidence_append=evw.append,
+        append_window=append_evidence_window,
+        segment_add=_segment_add,
+        persist_segment_state=_persist_segment_state,
+        now_ts=now_rfc3339,
+        thread_id_getter=_cur_thread_id,
+    )
+
     def _predecide_query_risk_judge(
         *,
         batch_idx: int,
@@ -1459,20 +1479,13 @@ def run_autopilot(
         tdb_ctx_batch_obj: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
         """Run recall + risk_judge and normalize fallback output."""
-        return query_risk_judge(
+        return query_risk_judge_wired(
             batch_idx=batch_idx,
             batch_id=batch_id,
             risk_signals=risk_signals,
             hands_last=hands_last,
             tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            maybe_cross_project_recall=_maybe_cross_project_recall,
-            risk_judge_prompt_builder=risk_judge_prompt,
-            mind_call=_mind_call,
-            build_risk_fallback=build_risk_fallback,
+            deps=risk_judge_wiring,
         )
 
     def _predecide_record_risk_event(
@@ -1484,23 +1497,12 @@ def run_autopilot(
     ) -> dict[str, Any]:
         """Persist risk event to EvidenceLog + segment + evidence window."""
 
-        return append_risk_event_with_tracking(
+        return append_risk_event_wired(
             batch_idx=batch_idx,
             risk_signals=risk_signals,
             risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
             risk_mind_ref=risk_mind_ref,
-            evidence_window=evidence_window,
-            deps=RiskEventAppendDeps(
-                evidence_append=evw.append,
-                append_window=append_evidence_window,
-                segment_add=lambda item: segment_add_and_persist(
-                    segment_add=_segment_add,
-                    persist_segment_state=_persist_segment_state,
-                    item=item if isinstance(item, dict) else {},
-                ),
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-            ),
+            deps=risk_event_wiring,
         )
 
     def _predecide_apply_risk_learn_suggested(

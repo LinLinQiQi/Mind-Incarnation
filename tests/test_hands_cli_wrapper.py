@@ -7,7 +7,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from mi.providers.codex_runner import InterruptConfig
+from mi.providers.interrupts import InterruptConfig
 from mi.providers.hands_cli import CliHandsAdapter
 from mi.runtime.runner import run_autopilot
 from mi.runtime.transcript import summarize_hands_transcript

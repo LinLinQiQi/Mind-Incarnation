@@ -5,16 +5,15 @@ import os
 import selectors
 import subprocess
 import time
-import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from .interrupts import InterruptConfig, compute_escalation_delays_ms, escalation_delay_s_for_step, signal_from_name, should_interrupt_command
 from ..core.storage import now_rfc3339
 from ..core.redact import redact_text
 from ..runtime.live import render_codex_event
 from ..runtime.transcript_store import append_transcript_line, write_transcript_header
-from ..runtime.risk import should_interrupt_text
 
 
 def _is_inside_git_repo(start_dir: Path) -> bool:
@@ -73,26 +72,6 @@ class CodexRunResult:
                 item = ev["item"]
                 if item.get("type") == "command_execution":
                     yield item
-
-
-@dataclass(frozen=True)
-class InterruptConfig:
-    mode: str  # off|on_high_risk|on_any_external
-    signal_sequence: list[str]
-    escalation_ms: list[int]
-
-
-def _signal_from_name(name: str) -> int | None:
-    name = name.strip().upper()
-    if not name:
-        return None
-    if not name.startswith("SIG"):
-        name = "SIG" + name
-    return getattr(signal, name, None)
-
-
-def _should_interrupt_command(mode: str, command: str) -> bool:
-    return should_interrupt_text(mode, command)
 
 
 def run_codex_exec(
@@ -231,6 +210,8 @@ def _run_codex_process(
     interrupt_requested_at = 0.0
     next_signal_idx = 0
     emit_live = bool(live)
+    sig_sequence: list[str] = list(interrupt.signal_sequence) if interrupt else []
+    delays_ms: list[int] = compute_escalation_delays_ms(interrupt.escalation_ms) if interrupt else [0]
 
     def emit(line: str) -> None:
         if not emit_live:
@@ -247,15 +228,11 @@ def _run_codex_process(
 
     while sel.get_map():
         # Escalate signals on a timer, if requested.
-        if interrupt and interrupt_requested and next_signal_idx < len(interrupt.signal_sequence):
-            delays = [0] + [max(0, int(x)) for x in interrupt.escalation_ms]
-            if next_signal_idx < len(delays):
-                delay_s = delays[next_signal_idx] / 1000.0
-            else:
-                delay_s = delays[-1] / 1000.0 if delays else 0.0
+        if interrupt and interrupt_requested and next_signal_idx < len(sig_sequence):
+            delay_s = escalation_delay_s_for_step(delays_ms, next_signal_idx)
             if (time.time() - interrupt_requested_at) >= delay_s:
-                sig_name = interrupt.signal_sequence[next_signal_idx]
-                sig = _signal_from_name(sig_name)
+                sig_name = sig_sequence[next_signal_idx]
+                sig = signal_from_name(sig_name)
                 if sig is not None:
                     try:
                         proc.send_signal(sig)
@@ -315,7 +292,7 @@ def _run_codex_process(
                 item = ev.get("item")
                 if isinstance(item, dict) and item.get("type") == "command_execution":
                     cmd = str(item.get("command") or "")
-                    if _should_interrupt_command(interrupt.mode, cmd):
+                    if should_interrupt_command(interrupt.mode, cmd):
                         interrupt_requested = True
                         interrupt_requested_at = time.time()
                         next_signal_idx = 0

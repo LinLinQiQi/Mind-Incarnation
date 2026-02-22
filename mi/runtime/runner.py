@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..providers.codex_runner import InterruptConfig, run_codex_exec, run_codex_resume
+from ..providers.codex_runner import run_codex_exec, run_codex_resume
+from ..providers.interrupts import InterruptConfig
 from ..providers.llm import MiLlm
 from ..core.config import load_config
 from ..core.paths import GlobalPaths, ProjectPaths, default_home_dir

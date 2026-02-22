@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .codex_runner import _should_interrupt_command, _signal_from_name
+from .interrupts import InterruptConfig, compute_escalation_delays_ms, escalation_delay_s_for_step, signal_from_name, should_interrupt_command
 from ..core.redact import redact_text
 from ..core.storage import now_rfc3339
 from ..runtime.transcript_store import append_transcript_line, write_transcript_header
@@ -66,7 +66,7 @@ def _run_process(
     transcript_path: Path,
     env: dict[str, str] | None,
     thread_id_regex: str,
-    interrupt: Any | None,
+    interrupt: InterruptConfig | None,
     live: bool,
     hands_raw: bool,
     redact: bool,
@@ -105,6 +105,8 @@ def _run_process(
     interrupt_requested_at = 0.0
     next_signal_idx = 0
     emit_live = bool(live)
+    sig_sequence: list[str] = list(interrupt.signal_sequence) if interrupt else []
+    delays_ms: list[int] = compute_escalation_delays_ms(interrupt.escalation_ms) if interrupt else [0]
 
     def emit(line: str) -> None:
         if not emit_live:
@@ -122,17 +124,11 @@ def _run_process(
     try:
         while sel.get_map():
             # Escalate signals on a timer, if requested (best-effort; we only have raw text).
-            if interrupt and interrupt_requested and next_signal_idx < len(getattr(interrupt, "signal_sequence", []) or []):
-                escalation = getattr(interrupt, "escalation_ms", []) or []
-                delays = [0] + [max(0, int(x)) for x in escalation]
-                if next_signal_idx < len(delays):
-                    delay_s = delays[next_signal_idx] / 1000.0
-                else:
-                    delay_s = delays[-1] / 1000.0 if delays else 0.0
+            if interrupt and interrupt_requested and next_signal_idx < len(sig_sequence):
+                delay_s = escalation_delay_s_for_step(delays_ms, next_signal_idx)
                 if (time.time() - interrupt_requested_at) >= delay_s:
-                    seq = getattr(interrupt, "signal_sequence", []) or []
-                    sig_name = str(seq[next_signal_idx])
-                    sig = _signal_from_name(sig_name)
+                    sig_name = str(sig_sequence[next_signal_idx])
+                    sig = signal_from_name(sig_name)
                     if sig is not None:
                         try:
                             proc.send_signal(sig)
@@ -178,8 +174,8 @@ def _run_process(
                     if m and m.group(1):
                         found_thread_id = m.group(1)
                 if interrupt and not interrupt_requested and line:
-                    mode = str(getattr(interrupt, "mode", "") or "")
-                    if mode in ("on_high_risk", "on_any_external") and _should_interrupt_command(mode, line):
+                    mode = str(interrupt.mode or "")
+                    if mode in ("on_high_risk", "on_any_external") and should_interrupt_command(mode, line):
                         interrupt_requested = True
                         interrupt_requested_at = time.time()
                         next_signal_idx = 0
@@ -246,7 +242,7 @@ class CliHandsAdapter:
         full_auto: bool,
         sandbox: str | None,
         output_schema_path: Path | None,
-        interrupt: Any | None = None,
+        interrupt: InterruptConfig | None = None,
         live: bool = False,
         hands_raw: bool = False,
         redact: bool = False,
@@ -306,7 +302,7 @@ class CliHandsAdapter:
         full_auto: bool,
         sandbox: str | None,
         output_schema_path: Path | None,
-        interrupt: Any | None = None,
+        interrupt: InterruptConfig | None = None,
         live: bool = False,
         hands_raw: bool = False,
         redact: bool = False,

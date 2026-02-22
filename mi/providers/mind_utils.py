@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ..core.storage import ensure_dir, now_rfc3339
+from ..core.storage import ensure_dir, filename_safe_ts, now_rfc3339
 
 
 def schema_path(name: str) -> Path:
@@ -35,6 +35,5 @@ def append_jsonl(path: Path, obj: dict[str, Any]) -> None:
 
 
 def new_mind_transcript_path(transcripts_dir: Path, tag: str) -> Path:
-    ts = now_rfc3339().replace(":", "").replace("-", "")
+    ts = filename_safe_ts(now_rfc3339())
     return transcripts_dir / "mind" / f"{ts}_{tag}.jsonl"
-

@@ -13,6 +13,8 @@ from .wiring import (
     CheckpointWiringDeps,
     ClaimMiningWiringDeps,
     DecideAskUserWiringDeps,
+    DecideNextQueryWiringDeps,
+    DecideRecordEffectsWiringDeps,
     LoopBreakChecksWiringDeps,
     MindCaller,
     NextInputWiringDeps,
@@ -37,6 +39,8 @@ from .wiring import (
     parse_runtime_features,
     loop_break_get_checks_input_wired,
     plan_checks_and_record_wired,
+    query_decide_next_wired,
+    record_decide_next_effects_wired,
     resolve_tls_for_checks_wired,
     run_checkpoint_pipeline_wired,
     queue_next_input_wired,
@@ -98,12 +102,6 @@ from .autopilot.services import (
 from .autopilot.decide_actions import (
     handle_decide_next_missing,
     route_decide_next_action,
-)
-from .autopilot.decide_query_flow import (
-    DecideNextQueryDeps,
-    DecideRecordEffectsDeps,
-    query_decide_next as run_query_decide_next,
-    record_decide_next_effects as run_record_decide_next_effects,
 )
 from .autopilot.risk_predecide import (
     RiskPredecideDeps,
@@ -1124,6 +1122,21 @@ def run_autopilot(
             ),
         )
 
+    decide_next_query_wiring = DecideNextQueryWiringDeps(
+        task=task,
+        hands_provider=cur_provider,
+        mindspec_base_getter=_mindspec_base_runtime,
+        project_overlay=overlay if isinstance(overlay, dict) else {},
+        workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+        workflow_load_effective=wf_registry.load_effective,
+        recent_evidence=evidence_window if isinstance(evidence_window, list) else [],
+        build_decide_context=_build_decide_context,
+        summarize_thought_db_context=summarize_thought_db_context,
+        decide_next_prompt_builder=decide_next_prompt,
+        load_active_workflow=load_active_workflow,
+        mind_call=_mind_call,
+    )
+
     def _decide_next_query(
         *,
         batch_idx: int,
@@ -1135,27 +1148,14 @@ def run_autopilot(
     ) -> tuple[dict[str, Any] | None, str, str, dict[str, Any], dict[str, Any]]:
         """Build decide_next prompt, call Mind, and return decision plus prompt context."""
 
-        return run_query_decide_next(
+        return query_decide_next_wired(
             batch_idx=batch_idx,
             batch_id=batch_id,
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-            workflow_load_effective=wf_registry.load_effective,
-            recent_evidence=evidence_window if isinstance(evidence_window, list) else [],
             hands_last=hands_last,
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
             auto_answer_obj=auto_answer_obj if isinstance(auto_answer_obj, dict) else {},
-            deps=DecideNextQueryDeps(
-                build_decide_context=_build_decide_context,
-                summarize_thought_db_context=summarize_thought_db_context,
-                decide_next_prompt_builder=decide_next_prompt,
-                load_active_workflow=load_active_workflow,
-                mind_call=_mind_call,
-            ),
+            deps=decide_next_query_wiring,
         )
 
     def _decide_next_record_effects(
@@ -1169,12 +1169,12 @@ def run_autopilot(
 
         nonlocal status, notes, last_decide_next_rec
 
-        res = run_record_decide_next_effects(
+        res = record_decide_next_effects_wired(
             batch_idx=batch_idx,
             decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
             decision_mind_ref=str(decision_mind_ref or ""),
             tdb_ctx_summary=tdb_ctx_summary if isinstance(tdb_ctx_summary, dict) else {},
-            deps=DecideRecordEffectsDeps(
+            deps=DecideRecordEffectsWiringDeps(
                 log_decide_next=_log_decide_next,
                 segment_add=_segment_add,
                 persist_segment_state=_persist_segment_state,

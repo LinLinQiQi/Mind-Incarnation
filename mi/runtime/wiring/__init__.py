@@ -15,6 +15,12 @@ from .ask_user import (
 )
 from .check_plan import CheckPlanWiringDeps, plan_checks_and_record_wired
 from .checkpoints import CheckpointWiringDeps, run_checkpoint_pipeline_wired
+from .decide_next import (
+    DecideNextQueryWiringDeps,
+    DecideRecordEffectsWiringDeps,
+    query_decide_next_wired,
+    record_decide_next_effects_wired,
+)
 from .loop_break_checks import (
     LoopBreakChecksWiringDeps,
     loop_break_get_checks_input_wired,
@@ -56,6 +62,10 @@ __all__ = [
     "plan_checks_and_record_wired",
     "CheckpointWiringDeps",
     "run_checkpoint_pipeline_wired",
+    "DecideNextQueryWiringDeps",
+    "query_decide_next_wired",
+    "DecideRecordEffectsWiringDeps",
+    "record_decide_next_effects_wired",
     "LoopBreakChecksWiringDeps",
     "loop_break_get_checks_input_wired",
     "MindCaller",

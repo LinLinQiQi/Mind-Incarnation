@@ -6,63 +6,7 @@ import secrets
 import time
 from typing import Any
 
-from .wiring import (
-    AskUserAutoAnswerAttemptWiringDeps,
-    AskUserRedecideWithInputWiringDeps,
-    CheckPlanWiringDeps,
-    CheckpointWiringDeps,
-    AutoAnswerQueryWiringDeps,
-    ClaimMiningWiringDeps,
-    DecideAskUserWiringDeps,
-    DecideNextQueryWiringDeps,
-    DecideRecordEffectsWiringDeps,
-    EvidenceRecordWiringDeps,
-    ExtractEvidenceContextWiringDeps,
-    InteractionRecordWiringDeps,
-    LoopBreakChecksWiringDeps,
-    MindCaller,
-    NextInputWiringDeps,
-    NodeMaterializeWiringDeps,
-    PreferenceMiningWiringDeps,
-    PredecideUserWiringDeps,
-    RiskEventRecordWiringDeps,
-    RiskJudgeWiringDeps,
-    RunStartSeedsDeps,
-    SegmentStateIO,
-    StateWarningsFlusher,
-    TestlessResolutionWiringDeps,
-    TestlessStrategyWiringDeps,
-    WorkflowProgressWiringDeps,
-    WorkflowMiningWiringDeps,
-    ask_user_auto_answer_attempt_wired,
-    ask_user_redecide_with_input_wired,
-    apply_set_testless_strategy_overlay_update_wired,
-    apply_workflow_progress_wired,
-    append_auto_answer_record_wired,
-    append_risk_event_wired,
-    append_user_input_record_wired,
-    bootstrap_autopilot_run,
-    extract_evidence_and_context_wired,
-    handle_auto_answer_needs_user_wired,
-    handle_decide_next_ask_user_wired,
-    mk_testless_strategy_flow_deps_wired,
-    materialize_nodes_from_checkpoint_wired,
-    mine_claims_from_segment_wired,
-    mine_preferences_from_segment_wired,
-    mine_workflow_from_segment_wired,
-    parse_runtime_features,
-    loop_break_get_checks_input_wired,
-    plan_checks_and_record_wired,
-    query_auto_answer_to_hands_wired,
-    query_decide_next_wired,
-    record_decide_next_effects_wired,
-    resolve_tls_for_checks_wired,
-    run_checkpoint_pipeline_wired,
-    queue_next_input_wired,
-    query_risk_judge_wired,
-    run_run_start_seeds,
-    try_queue_answer_with_checks_wired,
-)
+from . import wiring as W
 from .autopilot import (
     AutopilotResult,
     _batch_summary,
@@ -190,7 +134,7 @@ def run_autopilot(
     no_mi_prompt: bool = False,
     redact: bool = False,
 ) -> AutopilotResult:
-    boot = bootstrap_autopilot_run(
+    boot = W.bootstrap_autopilot_run(
         task=task,
         project_root=project_root,
         home_dir=home_dir,
@@ -256,7 +200,7 @@ def run_autopilot(
             recent_evidence=recent_evidence,
         )
 
-    feats = parse_runtime_features(runtime_cfg=runtime_cfg, why_trace_on_run_end=bool(why_trace_on_run_end))
+    feats = W.parse_runtime_features(runtime_cfg=runtime_cfg, why_trace_on_run_end=bool(why_trace_on_run_end))
     wf_cfg = runtime_cfg.get("workflows") if isinstance(runtime_cfg.get("workflows"), dict) else {}
     pref_cfg = runtime_cfg.get("preference_mining") if isinstance(runtime_cfg.get("preference_mining"), dict) else {}
     wf_auto_mine = bool(feats.wf_auto_mine)
@@ -278,7 +222,7 @@ def run_autopilot(
     def _cur_thread_id() -> str:
         return str(thread_id or "")
 
-    _flush_state_warnings = StateWarningsFlusher(
+    _flush_state_warnings = W.StateWarningsFlusher(
         state_warnings=state_warnings,
         evidence_append=evw.append,
         now_ts=now_rfc3339,
@@ -286,7 +230,7 @@ def run_autopilot(
         hands_state=hands_state,
     ).flush
 
-    segment_io = SegmentStateIO(
+    segment_io = W.SegmentStateIO(
         path=project_paths.segment_state_path,
         task=task,
         now_ts=now_rfc3339,
@@ -324,7 +268,7 @@ def run_autopilot(
     sent_sigs: list[str] = []
     learn_suggested_records_this_run: list[dict[str, Any]] = []
 
-    _mind_call = MindCaller(
+    _mind_call = W.MindCaller(
         llm_call=llm.call,
         evidence_append=evw.append,
         now_ts=now_rfc3339,
@@ -437,7 +381,7 @@ def run_autopilot(
             rationale=rationale,
         )
 
-    tls_strategy_wiring = TestlessStrategyWiringDeps(
+    tls_strategy_wiring = W.TestlessStrategyWiringDeps(
         now_ts=now_rfc3339,
         thread_id_getter=lambda: thread_id,
         evidence_append=evw.append,
@@ -449,20 +393,20 @@ def run_autopilot(
         refresh_overlay_refs=_refresh_overlay_refs,
     )
 
-    run_run_start_seeds(
-        deps=RunStartSeedsDeps(
+    W.run_run_start_seeds(
+        deps=W.RunStartSeedsDeps(
             home_dir=home,
             tdb=tdb,
             overlay=overlay,
             now_ts=now_rfc3339,
             evidence_append=evw.append,
-            mk_testless_strategy_flow_deps=lambda: mk_testless_strategy_flow_deps_wired(deps=tls_strategy_wiring),
+            mk_testless_strategy_flow_deps=lambda: W.mk_testless_strategy_flow_deps_wired(deps=tls_strategy_wiring),
             maybe_cross_project_recall=_maybe_cross_project_recall,
             task=task,
         )
     )
 
-    check_plan_wiring = CheckPlanWiringDeps(
+    check_plan_wiring = W.CheckPlanWiringDeps(
         task=task,
         hands_provider=cur_provider,
         mindspec_base_getter=_mindspec_base_runtime,
@@ -492,7 +436,7 @@ def run_autopilot(
     ) -> tuple[dict[str, Any], str, str]:
         """Plan minimal checks and always record a check_plan event (best-effort)."""
 
-        return plan_checks_and_record_wired(
+        return W.plan_checks_and_record_wired(
             batch_id=batch_id,
             tag=tag,
             thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
@@ -505,7 +449,7 @@ def run_autopilot(
             deps=check_plan_wiring,
         )
 
-    tls_resolution_wiring = TestlessResolutionWiringDeps(
+    tls_resolution_wiring = W.TestlessResolutionWiringDeps(
         strategy=tls_strategy_wiring,
         read_user_answer=_read_user_answer,
         segment_add=lambda item: _segment_add(item if isinstance(item, dict) else {}),
@@ -568,7 +512,7 @@ def run_autopilot(
         Returns: (final_checks_obj, block_reason). block_reason=="" means OK.
         """
 
-        return resolve_tls_for_checks_wired(
+        return W.resolve_tls_for_checks_wired(
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
             hands_last_message=hands_last_message,
             repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
@@ -594,7 +538,7 @@ def run_autopilot(
     ) -> None:
         """Apply update_project_overlay.set_testless_strategy (canonicalized via Thought DB)."""
 
-        apply_set_testless_strategy_overlay_update_wired(
+        W.apply_set_testless_strategy_overlay_update_wired(
             set_tls=set_tls,
             decide_event_id=decide_event_id,
             fallback_batch_id=fallback_batch_id,
@@ -617,7 +561,7 @@ def run_autopilot(
             return ""
         return str(segment_state.get("segment_id") or "")
 
-    workflow_mining_wiring = WorkflowMiningWiringDeps(
+    workflow_mining_wiring = W.WorkflowMiningWiringDeps(
         enabled=bool(wf_auto_mine),
         executed_batches_getter=_get_executed_batches,
         wf_cfg=wf_cfg if isinstance(wf_cfg, dict) else {},
@@ -652,7 +596,7 @@ def run_autopilot(
         now_ts=now_rfc3339,
     )
 
-    preference_mining_wiring = PreferenceMiningWiringDeps(
+    preference_mining_wiring = W.PreferenceMiningWiringDeps(
         enabled=bool(pref_auto_mine),
         executed_batches_getter=_get_executed_batches,
         pref_cfg=pref_cfg if isinstance(pref_cfg, dict) else {},
@@ -679,7 +623,7 @@ def run_autopilot(
         now_ts=now_rfc3339,
     )
 
-    claim_mining_wiring = ClaimMiningWiringDeps(
+    claim_mining_wiring = W.ClaimMiningWiringDeps(
         enabled=bool(tdb_auto_mine),
         executed_batches_getter=_get_executed_batches,
         max_claims=int(tdb_max_claims),
@@ -700,7 +644,7 @@ def run_autopilot(
         now_ts=now_rfc3339,
     )
 
-    node_materialize_wiring = NodeMaterializeWiringDeps(
+    node_materialize_wiring = W.NodeMaterializeWiringDeps(
         enabled=bool(tdb_enabled) and bool(tdb_auto_nodes),
         task=task,
         now_ts=now_rfc3339,
@@ -717,7 +661,7 @@ def run_autopilot(
     )
 
     def _mine_workflow_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
-        mine_workflow_from_segment_wired(
+        W.mine_workflow_from_segment_wired(
             seg_evidence=seg_evidence,
             base_batch_id=base_batch_id,
             source=source,
@@ -725,7 +669,7 @@ def run_autopilot(
         )
 
     def _mine_preferences_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
-        mine_preferences_from_segment_wired(
+        W.mine_preferences_from_segment_wired(
             seg_evidence=seg_evidence,
             base_batch_id=base_batch_id,
             source=source,
@@ -735,7 +679,7 @@ def run_autopilot(
     def _mine_claims_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
         """Mine high-signal atomic Claims into Thought DB (checkpoint-only; best-effort)."""
 
-        mine_claims_from_segment_wired(
+        W.mine_claims_from_segment_wired(
             seg_evidence=seg_evidence,
             base_batch_id=base_batch_id,
             source=source,
@@ -752,7 +696,7 @@ def run_autopilot(
         planned_next_input: str,
         note: str,
     ) -> None:
-        materialize_nodes_from_checkpoint_wired(
+        W.materialize_nodes_from_checkpoint_wired(
             seg_evidence=seg_evidence,
             snapshot_rec=snapshot_rec,
             base_batch_id=base_batch_id,
@@ -764,7 +708,7 @@ def run_autopilot(
         )
 
     _last_checkpoint_key = ""
-    checkpoint_wiring = CheckpointWiringDeps(
+    checkpoint_wiring = W.CheckpointWiringDeps(
         checkpoint_enabled=bool(checkpoint_enabled),
         task=task,
         hands_provider=cur_provider,
@@ -791,7 +735,7 @@ def run_autopilot(
 
         nonlocal segment_state, segment_records, _last_checkpoint_key
 
-        res = run_checkpoint_pipeline_wired(
+        res = W.run_checkpoint_pipeline_wired(
             segment_state=segment_state if isinstance(segment_state, dict) else {},
             segment_records=segment_records if isinstance(segment_records, list) else [],
             last_checkpoint_key=str(_last_checkpoint_key or ""),
@@ -808,7 +752,7 @@ def run_autopilot(
         if bool(res.persist_segment_state):
             _persist_segment_state()
 
-    loop_break_checks_wiring = LoopBreakChecksWiringDeps(
+    loop_break_checks_wiring = W.LoopBreakChecksWiringDeps(
         get_check_input=_get_check_input,
         plan_checks_and_record=_plan_checks_and_record,
         resolve_tls_for_checks=_resolve_tls_for_checks,
@@ -820,7 +764,7 @@ def run_autopilot(
     def _loop_break_get_checks_input(**kwargs: Any) -> tuple[str, str]:
         """Wiring adapter for loop-break check computation."""
 
-        return loop_break_get_checks_input_wired(
+        return W.loop_break_get_checks_input_wired(
             base_batch_id=str(kwargs.get("base_batch_id") or ""),
             hands_last_message=str(kwargs.get("hands_last_message") or ""),
             thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
@@ -842,7 +786,7 @@ def run_autopilot(
         """Set next_input for the next Hands batch, with loop-guard + loop-break (best-effort)."""
 
         nonlocal next_input, status, notes, sent_sigs
-        out = queue_next_input_wired(
+        out = W.queue_next_input_wired(
             nxt=nxt,
             hands_last_message=hands_last_message,
             batch_id=batch_id,
@@ -851,7 +795,7 @@ def run_autopilot(
             repo_observation=repo_observation,
             thought_db_context=thought_db_context,
             check_plan=check_plan,
-            deps=NextInputWiringDeps(
+            deps=W.NextInputWiringDeps(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base_getter=_mindspec_base_runtime,
@@ -887,7 +831,7 @@ def run_autopilot(
         notes = str(out.notes or "")
         return True
 
-    interaction_record_wiring = InteractionRecordWiringDeps(
+    interaction_record_wiring = W.InteractionRecordWiringDeps(
         evidence_window=evidence_window,
         evidence_append=evw.append,
         append_window=append_evidence_window,
@@ -900,7 +844,7 @@ def run_autopilot(
     def _append_user_input_record(*, batch_id: str, question: str, answer: str) -> dict[str, Any]:
         """Append user input evidence and keep segment/evidence windows in sync."""
 
-        return append_user_input_record_wired(
+        return W.append_user_input_record_wired(
             batch_id=str(batch_id),
             question=question,
             answer=answer,
@@ -910,7 +854,7 @@ def run_autopilot(
     def _append_auto_answer_record(*, batch_id: str, mind_transcript_ref: str, auto_answer: dict[str, Any]) -> dict[str, Any]:
         """Append auto_answer evidence and keep segment/evidence windows in sync."""
 
-        return append_auto_answer_record_wired(
+        return W.append_auto_answer_record_wired(
             batch_id=str(batch_id),
             mind_transcript_ref=str(mind_transcript_ref or ""),
             auto_answer=auto_answer if isinstance(auto_answer, dict) else {},
@@ -954,7 +898,7 @@ def run_autopilot(
             recent_evidence=recs if isinstance(recs, list) else [],
         ).to_prompt_obj()
 
-    ask_user_auto_answer_wiring = AskUserAutoAnswerAttemptWiringDeps(
+    ask_user_auto_answer_wiring = W.AskUserAutoAnswerAttemptWiringDeps(
         task=task,
         hands_provider=cur_provider,
         mindspec_base_getter=_mindspec_base_runtime,
@@ -991,7 +935,7 @@ def run_autopilot(
         - (None, q): no immediate queue; caller may continue and possibly ask user
         """
 
-        return ask_user_auto_answer_attempt_wired(
+        return W.ask_user_auto_answer_attempt_wired(
             batch_idx=batch_idx,
             q=q,
             hands_last=hands_last,
@@ -1018,13 +962,13 @@ def run_autopilot(
 
         nonlocal last_decide_next_rec
 
-        cont, decide_rec2 = ask_user_redecide_with_input_wired(
+        cont, decide_rec2 = W.ask_user_redecide_with_input_wired(
             batch_idx=batch_idx,
             hands_last=hands_last,
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
             answer=answer,
-            deps=AskUserRedecideWithInputWiringDeps(
+            deps=W.AskUserRedecideWithInputWiringDeps(
                 task=task,
                 hands_provider=cur_provider,
                 mindspec_base_getter=_mindspec_base_runtime,
@@ -1069,7 +1013,7 @@ def run_autopilot(
         """Handle decide_next(next_action=ask_user) path with auto-answer retries and re-decide."""
 
         nonlocal status, notes
-        return handle_decide_next_ask_user_wired(
+        return W.handle_decide_next_ask_user_wired(
             batch_idx=batch_idx,
             task=task,
             hands_last=hands_last,
@@ -1077,7 +1021,7 @@ def run_autopilot(
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
             tdb_ctx_obj=tdb_ctx_obj if isinstance(tdb_ctx_obj, dict) else {},
             decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
-            deps=DecideAskUserWiringDeps(
+            deps=W.DecideAskUserWiringDeps(
                 maybe_cross_project_recall=_maybe_cross_project_recall,
                 read_user_answer=_read_user_answer,
                 append_user_input_record=_append_user_input_record,
@@ -1090,7 +1034,7 @@ def run_autopilot(
             ),
         )
 
-    decide_next_query_wiring = DecideNextQueryWiringDeps(
+    decide_next_query_wiring = W.DecideNextQueryWiringDeps(
         task=task,
         hands_provider=cur_provider,
         mindspec_base_getter=_mindspec_base_runtime,
@@ -1116,7 +1060,7 @@ def run_autopilot(
     ) -> tuple[dict[str, Any] | None, str, str, dict[str, Any], dict[str, Any]]:
         """Build decide_next prompt, call Mind, and return decision plus prompt context."""
 
-        return query_decide_next_wired(
+        return W.query_decide_next_wired(
             batch_idx=batch_idx,
             batch_id=batch_id,
             hands_last=hands_last,
@@ -1137,12 +1081,12 @@ def run_autopilot(
 
         nonlocal status, notes, last_decide_next_rec
 
-        res = record_decide_next_effects_wired(
+        res = W.record_decide_next_effects_wired(
             batch_idx=batch_idx,
             decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
             decision_mind_ref=str(decision_mind_ref or ""),
             tdb_ctx_summary=tdb_ctx_summary if isinstance(tdb_ctx_summary, dict) else {},
-            deps=DecideRecordEffectsWiringDeps(
+            deps=W.DecideRecordEffectsWiringDeps(
                 log_decide_next=_log_decide_next,
                 segment_add=_segment_add,
                 persist_segment_state=_persist_segment_state,
@@ -1240,7 +1184,7 @@ def run_autopilot(
         executed_batches = int(st.executed_batches or 0)
         return result
 
-    predecide_user_deps = PredecideUserWiringDeps(
+    predecide_user_deps = W.PredecideUserWiringDeps(
         task=task,
         hands_provider=cur_provider,
         mindspec_base_getter=_mindspec_base_runtime,
@@ -1276,7 +1220,7 @@ def run_autopilot(
         nonlocal status, notes
 
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("needs_user_input", False)):
-            handled, checks_out = handle_auto_answer_needs_user_wired(
+            handled, checks_out = W.handle_auto_answer_needs_user_wired(
                 batch_idx=batch_idx,
                 hands_last=hands_last,
                 repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
@@ -1308,7 +1252,7 @@ def run_autopilot(
         answer_text = ""
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("should_answer", False)):
             answer_text = str(auto_answer_obj.get("hands_answer_input") or "").strip()
-        queued = try_queue_answer_with_checks_wired(
+        queued = W.try_queue_answer_with_checks_wired(
             batch_id=f"b{batch_idx}",
             queue_reason="sent auto-answer/checks to Hands",
             answer_text=answer_text,
@@ -1322,7 +1266,7 @@ def run_autopilot(
             return queued, checks_obj
         return None, checks_obj
 
-    evidence_record_wiring = EvidenceRecordWiringDeps(
+    evidence_record_wiring = W.EvidenceRecordWiringDeps(
         evidence_window=evidence_window,
         evidence_append=evw.append,
         append_window=append_evidence_window,
@@ -1331,7 +1275,7 @@ def run_autopilot(
         now_ts=now_rfc3339,
         thread_id_getter=_cur_thread_id,
     )
-    extract_evidence_wiring = ExtractEvidenceContextWiringDeps(
+    extract_evidence_wiring = W.ExtractEvidenceContextWiringDeps(
         task=task,
         hands_provider=cur_provider,
         batch_summary_fn=_batch_summary,
@@ -1356,7 +1300,7 @@ def run_autopilot(
 
         nonlocal last_evidence_rec
 
-        out = extract_evidence_and_context_wired(
+        out = W.extract_evidence_and_context_wired(
             batch_idx=int(batch_idx),
             batch_id=str(batch_id or ""),
             ctx=ctx,
@@ -1367,7 +1311,7 @@ def run_autopilot(
         last_evidence_rec = out.evidence_rec
         return out.summary, out.evidence_obj, out.hands_last, out.tdb_ctx_batch_obj
 
-    workflow_progress_wiring = WorkflowProgressWiringDeps(
+    workflow_progress_wiring = W.WorkflowProgressWiringDeps(
         task=task,
         hands_provider=cur_provider,
         mindspec_base_getter=_mindspec_base_runtime,
@@ -1397,7 +1341,7 @@ def run_autopilot(
     ) -> None:
         """Update workflow cursor/state using workflow_progress output (best-effort)."""
 
-        apply_workflow_progress_wired(
+        W.apply_workflow_progress_wired(
             batch_idx=batch_idx,
             batch_id=batch_id,
             summary=summary if isinstance(summary, dict) else {},
@@ -1417,7 +1361,7 @@ def run_autopilot(
             risk_signals = _detect_risk_signals_from_transcript(ctx.hands_transcript)
         return [str(x) for x in risk_signals if str(x).strip()]
 
-    risk_judge_wiring = RiskJudgeWiringDeps(
+    risk_judge_wiring = W.RiskJudgeWiringDeps(
         task=task,
         hands_provider=cur_provider,
         mindspec_base_getter=_mindspec_base_runtime,
@@ -1428,7 +1372,7 @@ def run_autopilot(
         build_risk_fallback=build_risk_fallback,
     )
 
-    risk_event_wiring = RiskEventRecordWiringDeps(
+    risk_event_wiring = W.RiskEventRecordWiringDeps(
         evidence_window=evidence_window,
         evidence_append=evw.append,
         append_window=append_evidence_window,
@@ -1447,7 +1391,7 @@ def run_autopilot(
         tdb_ctx_batch_obj: dict[str, Any],
     ) -> tuple[dict[str, Any], str]:
         """Run recall + risk_judge and normalize fallback output."""
-        return query_risk_judge_wired(
+        return W.query_risk_judge_wired(
             batch_idx=batch_idx,
             batch_id=batch_id,
             risk_signals=risk_signals,
@@ -1465,7 +1409,7 @@ def run_autopilot(
     ) -> dict[str, Any]:
         """Persist risk event to EvidenceLog + segment + evidence window."""
 
-        return append_risk_event_wired(
+        return W.append_risk_event_wired(
             batch_idx=batch_idx,
             risk_signals=risk_signals,
             risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
@@ -1595,7 +1539,7 @@ def run_autopilot(
             return checks_obj
         return _empty_check_plan()
 
-    auto_answer_query_wiring = AutoAnswerQueryWiringDeps(
+    auto_answer_query_wiring = W.AutoAnswerQueryWiringDeps(
         task=task,
         hands_provider=cur_provider,
         mindspec_base_getter=_mindspec_base_runtime,
@@ -1620,7 +1564,7 @@ def run_autopilot(
         if not _looks_like_user_question(hands_last):
             return _empty_auto_answer()
 
-        auto_answer_obj, auto_answer_mind_ref, aa_state = query_auto_answer_to_hands_wired(
+        auto_answer_obj, auto_answer_mind_ref, aa_state = W.query_auto_answer_to_hands_wired(
             batch_idx=batch_idx,
             batch_id=batch_id,
             hands_last=hands_last,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from mi.runtime.autopilot.testless_strategy_flow import (
-    TestlessStrategyFlowDeps,
+    MiTestlessStrategyFlowDeps,
     apply_set_testless_strategy_overlay_update,
     canonicalize_tls_and_update_overlay,
     sync_tls_overlay_from_thoughtdb,
@@ -21,7 +21,7 @@ class TestlessStrategyFlowHelpersTests(unittest.TestCase):
         refreshed = {"n": 0}
         evidence: list[dict[str, object]] = []
 
-        deps = TestlessStrategyFlowDeps(
+        deps = MiTestlessStrategyFlowDeps(
             now_ts=lambda: "2026-02-01T00:00:00Z",
             thread_id="t_1",
             evidence_append=lambda rec: evidence.append(dict(rec)) or {"event_id": "ev_tls_1"},

@@ -305,7 +305,7 @@ def run_autopilot(
             rationale=rationale,
         )
 
-    tls_strategy_wiring = W.TestlessStrategyWiringDeps(
+    tls_strategy_wiring = W.MiTestlessStrategyWiringDeps(
         now_ts=now_rfc3339,
         thread_id_getter=lambda: thread_id,
         evidence_append=evw.append,
@@ -373,7 +373,7 @@ def run_autopilot(
             deps=check_plan_wiring,
         )
 
-    tls_resolution_wiring = W.TestlessResolutionWiringDeps(
+    tls_resolution_wiring = W.MiTestlessResolutionWiringDeps(
         strategy=tls_strategy_wiring,
         read_user_answer=_read_user_answer,
         segment_add=lambda item: _segment_add(item if isinstance(item, dict) else {}),

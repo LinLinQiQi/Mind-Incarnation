@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ...thoughtdb.operational_defaults import ensure_operational_defaults_claims_current
-from ..autopilot.testless_strategy_flow import TestlessStrategyFlowDeps, sync_tls_overlay_from_thoughtdb
+from ..autopilot.testless_strategy_flow import MiTestlessStrategyFlowDeps, sync_tls_overlay_from_thoughtdb
 
 
 @dataclass(frozen=True)
@@ -14,7 +14,7 @@ class RunStartSeedsDeps:
     overlay: dict[str, Any]
     now_ts: Callable[[], str]
     evidence_append: Callable[[dict[str, Any]], Any]
-    mk_testless_strategy_flow_deps: Callable[[], TestlessStrategyFlowDeps]
+    mk_testless_strategy_flow_deps: Callable[[], MiTestlessStrategyFlowDeps]
     maybe_cross_project_recall: Callable[..., Any]
     task: str
 
@@ -61,4 +61,3 @@ def run_run_start_seeds(*, deps: RunStartSeedsDeps) -> None:
     # Seed one conservative recall at run start so later Mind calls can use it without bothering the user.
     if str(deps.task or "").strip():
         deps.maybe_cross_project_recall(batch_id="b0.recall", reason="run_start", query=deps.task)
-

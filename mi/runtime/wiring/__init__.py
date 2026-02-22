@@ -77,8 +77,8 @@ from .predecide_user import (
     try_queue_answer_with_checks_wired,
 )
 from .testless_strategy import (
-    TestlessResolutionWiringDeps,
-    TestlessStrategyWiringDeps,
+    MiTestlessResolutionWiringDeps,
+    MiTestlessStrategyWiringDeps,
     apply_set_testless_strategy_overlay_update_wired,
     mk_testless_strategy_flow_deps_wired,
     resolve_tls_for_checks_wired,
@@ -116,8 +116,8 @@ __all__ = [
     "LoopBreakChecksWiringDeps",
     "loop_break_get_checks_input_wired",
     "MindCaller",
-    "TestlessResolutionWiringDeps",
-    "TestlessStrategyWiringDeps",
+    "MiTestlessResolutionWiringDeps",
+    "MiTestlessStrategyWiringDeps",
     "apply_set_testless_strategy_overlay_update_wired",
     "mk_testless_strategy_flow_deps_wired",
     "resolve_tls_for_checks_wired",

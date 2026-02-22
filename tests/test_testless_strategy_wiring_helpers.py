@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from mi.runtime.wiring.testless_strategy import (
-    TestlessStrategyWiringDeps,
+    MiTestlessStrategyWiringDeps,
     mk_testless_strategy_flow_deps_wired,
 )
 
@@ -12,7 +12,7 @@ class TestlessStrategyWiringHelpersTests(unittest.TestCase):
     def test_mk_flow_deps_reads_thread_id_getter_each_time(self) -> None:
         tid = {"v": "t1"}
 
-        deps = TestlessStrategyWiringDeps(
+        deps = MiTestlessStrategyWiringDeps(
             now_ts=lambda: "2026-02-01T00:00:00Z",
             thread_id_getter=lambda: tid["v"],
             evidence_append=lambda rec: rec,
@@ -34,4 +34,3 @@ class TestlessStrategyWiringHelpersTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

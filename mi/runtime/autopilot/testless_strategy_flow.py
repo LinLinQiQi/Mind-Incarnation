@@ -7,7 +7,7 @@ from .batch_effects import append_evidence_window
 
 
 @dataclass(frozen=True)
-class TestlessStrategyFlowDeps:
+class MiTestlessStrategyFlowDeps:
     """Dependencies for canonical testless strategy sync/write behavior."""
 
     now_ts: Callable[[], str]
@@ -21,7 +21,7 @@ class TestlessStrategyFlowDeps:
 
 
 @dataclass(frozen=True)
-class TestlessResolutionDeps:
+class MiTestlessResolutionDeps:
     """Dependencies for resolving testless strategy during check planning."""
 
     now_ts: Callable[[], str]
@@ -42,7 +42,7 @@ def sync_tls_overlay_from_thoughtdb(
     *,
     overlay: dict[str, Any],
     as_of_ts: str,
-    deps: TestlessStrategyFlowDeps,
+    deps: MiTestlessStrategyFlowDeps,
 ) -> tuple[str, str, bool]:
     """Sync canonical testless strategy claim to overlay pointer (best-effort)."""
 
@@ -83,7 +83,7 @@ def canonicalize_tls_and_update_overlay(
     claim_rationale: str,
     default_rationale: str,
     source: str,
-    deps: TestlessStrategyFlowDeps,
+    deps: MiTestlessStrategyFlowDeps,
 ) -> str:
     """Canonicalize testless strategy as claim and mirror overlay pointer."""
 
@@ -135,7 +135,7 @@ def apply_set_testless_strategy_overlay_update(
     fallback_batch_id: str,
     default_rationale: str,
     source: str,
-    deps: TestlessStrategyFlowDeps,
+    deps: MiTestlessStrategyFlowDeps,
 ) -> None:
     """Apply update_project_overlay.set_testless_strategy via canonical claim write."""
 
@@ -175,7 +175,7 @@ def resolve_tls_for_checks(
     source: str,
     rationale: str,
     evidence_window: list[dict[str, Any]],
-    deps: TestlessResolutionDeps,
+    deps: MiTestlessResolutionDeps,
 ) -> tuple[dict[str, Any], str]:
     """Resolve testless strategy for a check plan (ask once + re-plan; best-effort)."""
 

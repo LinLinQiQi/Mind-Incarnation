@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from mi.runtime.autopilot.testless_strategy_flow import TestlessResolutionDeps, resolve_tls_for_checks
+from mi.runtime.autopilot.testless_strategy_flow import MiTestlessResolutionDeps, resolve_tls_for_checks
 
 
 class TestlessResolutionFlowHelpersTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class TestlessResolutionFlowHelpersTests(unittest.TestCase):
             source="user_input:testless_strategy",
             rationale="r",
             evidence_window=evidence_window,
-            deps=TestlessResolutionDeps(
+            deps=MiTestlessResolutionDeps(
                 now_ts=lambda: "2026-02-01T00:00:00Z",
                 thread_id="t_1",
                 read_user_answer=lambda _q: "",
@@ -72,7 +72,7 @@ class TestlessResolutionFlowHelpersTests(unittest.TestCase):
             source="user_input:testless_strategy",
             rationale="r",
             evidence_window=evidence_window,
-            deps=TestlessResolutionDeps(
+            deps=MiTestlessResolutionDeps(
                 now_ts=lambda: "2026-02-01T00:00:00Z",
                 thread_id="t_1",
                 read_user_answer=lambda _q: "Run smoke + manual checks",
@@ -139,7 +139,7 @@ class TestlessResolutionFlowHelpersTests(unittest.TestCase):
             source="user_input:testless_strategy",
             rationale="r",
             evidence_window=evidence_window,
-            deps=TestlessResolutionDeps(
+            deps=MiTestlessResolutionDeps(
                 now_ts=lambda: "2026-02-01T00:00:00Z",
                 thread_id="t_1",
                 read_user_answer=lambda _q: "unused",

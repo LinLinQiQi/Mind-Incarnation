@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..autopilot.testless_strategy_flow import (
-    TestlessResolutionDeps,
-    TestlessStrategyFlowDeps,
+    MiTestlessResolutionDeps,
+    MiTestlessStrategyFlowDeps,
     apply_set_testless_strategy_overlay_update,
     canonicalize_tls_and_update_overlay,
     resolve_tls_for_checks,
@@ -14,7 +14,7 @@ from ..autopilot.testless_strategy_flow import (
 
 
 @dataclass(frozen=True)
-class TestlessStrategyWiringDeps:
+class MiTestlessStrategyWiringDeps:
     """Wiring bundle for canonical testless strategy claim + overlay pointer behavior."""
 
     now_ts: Callable[[], str]
@@ -31,10 +31,10 @@ class TestlessStrategyWiringDeps:
 
 
 @dataclass(frozen=True)
-class TestlessResolutionWiringDeps:
+class MiTestlessResolutionWiringDeps:
     """Wiring bundle for resolving testless strategy during check planning."""
 
-    strategy: TestlessStrategyWiringDeps
+    strategy: MiTestlessStrategyWiringDeps
     read_user_answer: Callable[[str], str]
     segment_add: Callable[[dict[str, Any]], None]
     persist_segment_state: Callable[[], None]
@@ -44,10 +44,10 @@ class TestlessResolutionWiringDeps:
     empty_check_plan: Callable[[], dict[str, Any]]
 
 
-def mk_testless_strategy_flow_deps_wired(*, deps: TestlessStrategyWiringDeps) -> TestlessStrategyFlowDeps:
-    """Build TestlessStrategyFlowDeps using runner wiring (behavior-preserving)."""
+def mk_testless_strategy_flow_deps_wired(*, deps: MiTestlessStrategyWiringDeps) -> MiTestlessStrategyFlowDeps:
+    """Build MiTestlessStrategyFlowDeps using runner wiring (behavior-preserving)."""
 
-    return TestlessStrategyFlowDeps(
+    return MiTestlessStrategyFlowDeps(
         now_ts=deps.now_ts,
         thread_id=deps.thread_id_getter() if callable(deps.thread_id_getter) else None,
         evidence_append=deps.evidence_append,
@@ -59,7 +59,7 @@ def mk_testless_strategy_flow_deps_wired(*, deps: TestlessStrategyWiringDeps) ->
     )
 
 
-def sync_tls_overlay_from_thoughtdb_wired(*, as_of_ts: str, deps: TestlessStrategyWiringDeps) -> tuple[str, str, bool]:
+def sync_tls_overlay_from_thoughtdb_wired(*, as_of_ts: str, deps: MiTestlessStrategyWiringDeps) -> tuple[str, str, bool]:
     """Sync canonical testless strategy claim -> overlay pointer using runner wiring (best-effort)."""
 
     return sync_tls_overlay_from_thoughtdb(
@@ -79,7 +79,7 @@ def canonicalize_tls_and_update_overlay_wired(
     claim_rationale: str,
     default_rationale: str,
     source: str,
-    deps: TestlessStrategyWiringDeps,
+    deps: MiTestlessStrategyWiringDeps,
 ) -> str:
     """Canonicalize TLS into Thought DB and mirror an overlay pointer (best-effort)."""
 
@@ -104,7 +104,7 @@ def apply_set_testless_strategy_overlay_update_wired(
     fallback_batch_id: str,
     default_rationale: str,
     source: str,
-    deps: TestlessStrategyWiringDeps,
+    deps: MiTestlessStrategyWiringDeps,
 ) -> None:
     """Apply update_project_overlay.set_testless_strategy via canonical claim write."""
 
@@ -133,7 +133,7 @@ def resolve_tls_for_checks_wired(
     source: str,
     rationale: str,
     evidence_window: list[dict[str, Any]],
-    deps: TestlessResolutionWiringDeps,
+    deps: MiTestlessResolutionWiringDeps,
 ) -> tuple[dict[str, Any], str]:
     """Resolve testless strategy for a check plan using runner wiring (best-effort)."""
 
@@ -163,7 +163,7 @@ def resolve_tls_for_checks_wired(
         source=str(source or ""),
         rationale=str(rationale or ""),
         evidence_window=evidence_window if isinstance(evidence_window, list) else [],
-        deps=TestlessResolutionDeps(
+        deps=MiTestlessResolutionDeps(
             now_ts=deps.strategy.now_ts,
             thread_id=(
                 deps.strategy.thread_id_getter() if callable(deps.strategy.thread_id_getter) else None
@@ -180,4 +180,3 @@ def resolve_tls_for_checks_wired(
             empty_check_plan=deps.empty_check_plan,
         ),
     )
-

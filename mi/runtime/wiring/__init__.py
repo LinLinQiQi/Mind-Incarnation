@@ -5,6 +5,14 @@ centralizing bootstrap/config parsing code in testable modules.
 """
 
 from .bootstrap import BootstrappedAutopilotRun, bootstrap_autopilot_run
+from .ask_user import (
+    AskUserAutoAnswerAttemptWiringDeps,
+    AskUserRedecideWithInputWiringDeps,
+    DecideAskUserWiringDeps,
+    ask_user_auto_answer_attempt_wired,
+    ask_user_redecide_with_input_wired,
+    handle_decide_next_ask_user_wired,
+)
 from .check_plan import CheckPlanWiringDeps, plan_checks_and_record_wired
 from .checkpoints import CheckpointWiringDeps, run_checkpoint_pipeline_wired
 from .loop_break_checks import (
@@ -38,6 +46,12 @@ from .testless_strategy import (
 __all__ = [
     "BootstrappedAutopilotRun",
     "bootstrap_autopilot_run",
+    "AskUserAutoAnswerAttemptWiringDeps",
+    "ask_user_auto_answer_attempt_wired",
+    "AskUserRedecideWithInputWiringDeps",
+    "ask_user_redecide_with_input_wired",
+    "DecideAskUserWiringDeps",
+    "handle_decide_next_ask_user_wired",
     "CheckPlanWiringDeps",
     "plan_checks_and_record_wired",
     "CheckpointWiringDeps",

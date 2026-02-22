@@ -7,9 +7,12 @@ import time
 from typing import Any
 
 from .wiring import (
+    AskUserAutoAnswerAttemptWiringDeps,
+    AskUserRedecideWithInputWiringDeps,
     CheckPlanWiringDeps,
     CheckpointWiringDeps,
     ClaimMiningWiringDeps,
+    DecideAskUserWiringDeps,
     LoopBreakChecksWiringDeps,
     MindCaller,
     NextInputWiringDeps,
@@ -21,8 +24,11 @@ from .wiring import (
     TestlessResolutionWiringDeps,
     TestlessStrategyWiringDeps,
     WorkflowMiningWiringDeps,
+    ask_user_auto_answer_attempt_wired,
+    ask_user_redecide_with_input_wired,
     apply_set_testless_strategy_overlay_update_wired,
     bootstrap_autopilot_run,
+    handle_decide_next_ask_user_wired,
     mk_testless_strategy_flow_deps_wired,
     materialize_nodes_from_checkpoint_wired,
     mine_claims_from_segment_wired,
@@ -121,14 +127,6 @@ from .autopilot.interaction_record_flow import (
     InteractionRecordDeps,
     append_auto_answer_record_with_tracking as run_append_auto_answer_record,
     append_user_input_record_with_tracking as run_append_user_input_record,
-)
-from .autopilot.ask_user_flow import (
-    AskUserAutoAnswerAttemptDeps,
-    AskUserRedecideDeps,
-    DecideAskUserFlowDeps,
-    ask_user_redecide_with_input as run_ask_user_redecide_with_input,
-    ask_user_auto_answer_attempt as run_ask_user_auto_answer_attempt,
-    handle_decide_next_ask_user as run_handle_decide_next_ask_user,
 )
 from .autopilot.predecide_user_flow import (
     PredecideNeedsUserDeps,
@@ -984,6 +982,28 @@ def run_autopilot(
             notes = blocked_note
         return bool(cont)
 
+    def _build_thought_db_context_obj(hlm: str, recs: list[dict[str, Any]]) -> dict[str, Any]:
+        return _build_decide_context(
+            hands_last_message=str(hlm or ""),
+            recent_evidence=recs if isinstance(recs, list) else [],
+        ).to_prompt_obj()
+
+    ask_user_auto_answer_wiring = AskUserAutoAnswerAttemptWiringDeps(
+        task=task,
+        hands_provider=cur_provider,
+        mindspec_base_getter=_mindspec_base_runtime,
+        project_overlay=overlay if isinstance(overlay, dict) else {},
+        recent_evidence=evidence_window,
+        empty_auto_answer=_empty_auto_answer,
+        build_thought_db_context_obj=_build_thought_db_context_obj,
+        auto_answer_prompt_builder=auto_answer_to_hands_prompt,
+        mind_call=_mind_call,
+        append_auto_answer_record=_append_auto_answer_record,
+        get_check_input=_get_check_input,
+        join_hands_inputs=join_hands_inputs,
+        queue_next_input=_queue_next_input,
+    )
+
     def _ask_user_auto_answer_attempt(
         *,
         batch_idx: int,
@@ -1005,7 +1025,7 @@ def run_autopilot(
         - (None, q): no immediate queue; caller may continue and possibly ask user
         """
 
-        return run_ask_user_auto_answer_attempt(
+        return ask_user_auto_answer_attempt_wired(
             batch_idx=batch_idx,
             q=q,
             hands_last=hands_last,
@@ -1017,24 +1037,7 @@ def run_autopilot(
             queue_reason=queue_reason,
             note_skipped=note_skipped,
             note_error=note_error,
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            recent_evidence=evidence_window,
-            deps=AskUserAutoAnswerAttemptDeps(
-                empty_auto_answer=_empty_auto_answer,
-                build_thought_db_context_obj=lambda hlm, recs: _build_decide_context(
-                    hands_last_message=hlm,
-                    recent_evidence=recs if isinstance(recs, list) else [],
-                ).to_prompt_obj(),
-                auto_answer_prompt_builder=auto_answer_to_hands_prompt,
-                mind_call=_mind_call,
-                append_auto_answer_record=_append_auto_answer_record,
-                get_check_input=_get_check_input,
-                join_hands_inputs=join_hands_inputs,
-                queue_next_input=_queue_next_input,
-            ),
+            deps=ask_user_auto_answer_wiring,
         )
 
     def _ask_user_redecide_with_input(
@@ -1049,20 +1052,20 @@ def run_autopilot(
 
         nonlocal last_decide_next_rec
 
-        cont, decide_rec2 = run_ask_user_redecide_with_input(
+        cont, decide_rec2 = ask_user_redecide_with_input_wired(
             batch_idx=batch_idx,
-            task=task,
-            hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-            workflow_load_effective=wf_registry.load_effective,
-            recent_evidence=evidence_window if isinstance(evidence_window, list) else [],
             hands_last=hands_last,
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
             answer=answer,
-            deps=AskUserRedecideDeps(
+            deps=AskUserRedecideWithInputWiringDeps(
+                task=task,
+                hands_provider=cur_provider,
+                mindspec_base_getter=_mindspec_base_runtime,
+                project_overlay=overlay if isinstance(overlay, dict) else {},
+                workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+                workflow_load_effective=wf_registry.load_effective,
+                recent_evidence=evidence_window if isinstance(evidence_window, list) else [],
                 empty_auto_answer=_empty_auto_answer,
                 build_decide_context=_build_decide_context,
                 summarize_thought_db_context=summarize_thought_db_context,
@@ -1100,7 +1103,7 @@ def run_autopilot(
         """Handle decide_next(next_action=ask_user) path with auto-answer retries and re-decide."""
 
         nonlocal status, notes
-        return run_handle_decide_next_ask_user(
+        return handle_decide_next_ask_user_wired(
             batch_idx=batch_idx,
             task=task,
             hands_last=hands_last,
@@ -1108,16 +1111,16 @@ def run_autopilot(
             checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
             tdb_ctx_obj=tdb_ctx_obj if isinstance(tdb_ctx_obj, dict) else {},
             decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
-            deps=DecideAskUserFlowDeps(
-                run_auto_answer_attempt=_ask_user_auto_answer_attempt,
+            deps=DecideAskUserWiringDeps(
                 maybe_cross_project_recall=_maybe_cross_project_recall,
                 read_user_answer=_read_user_answer,
                 append_user_input_record=_append_user_input_record,
-                redecide_with_input=_ask_user_redecide_with_input,
                 set_blocked=lambda blocked_note: (
                     _set_status("blocked"),
                     _set_notes(str(blocked_note or "").strip()),
                 ),
+                run_auto_answer_attempt=_ask_user_auto_answer_attempt,
+                redecide_with_input=_ask_user_redecide_with_input,
             ),
         )
 

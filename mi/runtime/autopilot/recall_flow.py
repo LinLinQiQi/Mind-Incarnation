@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .windowing import trim_evidence_window
+
 
 @dataclass(frozen=True)
 class RecallDeps:
@@ -35,10 +37,9 @@ def maybe_cross_project_recall_write_through(
         win["event_id"] = rec["event_id"]
 
     evidence_window.append(win if isinstance(win, dict) else {})
-    evidence_window[:] = evidence_window[-8:]
+    trim_evidence_window(evidence_window)
 
     if isinstance(rec, dict):
         deps.segment_add(rec)
         deps.persist_segment_state()
     return rec if isinstance(rec, dict) else None
-

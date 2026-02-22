@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .windowing import trim_evidence_window
+
 
 @dataclass(frozen=True)
 class CheckPlanFlowDeps:
@@ -42,7 +44,7 @@ def append_check_plan_record_with_tracking(
     out = rec if isinstance(rec, dict) else {}
     track = {"kind": "check_plan", "batch_id": str(batch_id), "event_id": out.get("event_id"), **obj}
     evidence_window.append(track)
-    evidence_window[:] = evidence_window[-8:]
+    trim_evidence_window(evidence_window)
     deps.segment_add(track)
     deps.persist_segment_state()
     return out

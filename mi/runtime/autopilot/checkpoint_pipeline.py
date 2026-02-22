@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .windowing import trim_evidence_window
+
 
 @dataclass(frozen=True)
 class CheckpointPipelineDeps:
@@ -168,7 +170,7 @@ def run_checkpoint_pipeline(
             win["event_id"] = rec["event_id"]
         if win:
             evidence_window.append(win)
-            evidence_window[:] = evidence_window[-8:]
+            trim_evidence_window(evidence_window)
 
     deps.materialize_nodes_from_checkpoint(
         seg_evidence=segment_records,

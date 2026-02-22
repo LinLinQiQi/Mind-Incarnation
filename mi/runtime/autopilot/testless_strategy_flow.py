@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .windowing import trim_evidence_window
+
 
 @dataclass(frozen=True)
 class TestlessStrategyFlowDeps:
@@ -216,7 +218,7 @@ def resolve_tls_for_checks(
                 "answer": answer,
             }
         )
-        evidence_window[:] = evidence_window[-8:]
+        trim_evidence_window(evidence_window)
         deps.segment_add(ui_obj)
         deps.persist_segment_state()
 

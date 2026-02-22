@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .windowing import trim_evidence_window
+
 
 @dataclass(frozen=True)
 class LoopGuardDeps:
@@ -145,7 +147,7 @@ def apply_loop_guard(
         }
     )
     evidence_window.append({"kind": "loop_guard", "batch_id": batch_id, "pattern": pattern, "reason": reason})
-    evidence_window[:] = evidence_window[-8:]
+    trim_evidence_window(evidence_window)
 
     ask_when_uncertain = bool(deps.resolve_ask_when_uncertain())
 
@@ -194,7 +196,7 @@ def apply_loop_guard(
             "reason": reason,
         }
     )
-    evidence_window[:] = evidence_window[-8:]
+    trim_evidence_window(evidence_window)
     if isinstance(lb_rec, dict):
         deps.append_segment_record(lb_rec)
 

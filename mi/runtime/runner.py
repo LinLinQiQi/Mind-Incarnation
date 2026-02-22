@@ -9,11 +9,13 @@ from typing import Any
 from .wiring import (
     CheckpointWiringDeps,
     MindCaller,
+    RunStartSeedsDeps,
     SegmentStateIO,
     StateWarningsFlusher,
     bootstrap_autopilot_run,
     parse_runtime_features,
     run_checkpoint_pipeline_wired,
+    run_run_start_seeds,
 )
 from .autopilot import (
     AutopilotResult,
@@ -198,7 +200,7 @@ from ..memory.ingest import thoughtdb_node_item
 from .injection import build_light_injection
 from ..thoughtdb import ThoughtDbStore, claim_signature
 from ..thoughtdb.app_service import ThoughtDbApplicationService
-from ..thoughtdb.operational_defaults import ensure_operational_defaults_claims_current, resolve_operational_defaults
+from ..thoughtdb.operational_defaults import resolve_operational_defaults
 from ..project.overlay_store import load_project_overlay, write_project_overlay
 
 
@@ -490,39 +492,18 @@ def run_autopilot(
             refresh_overlay_refs=_refresh_overlay_refs,
         )
 
-    # Canonical operational defaults (ask_when_uncertain/refactor_intent) live as global Thought DB preference claims.
-    # Runtime config defaults are non-canonical; we only seed missing claims.
-    try:
-        defaults_sync = ensure_operational_defaults_claims_current(
+    run_run_start_seeds(
+        deps=RunStartSeedsDeps(
             home_dir=home,
             tdb=tdb,
-            desired_defaults=None,
-            mode="seed_missing",
-            event_notes="auto_seed_on_run",
-            claim_notes_prefix="auto_seed",
+            overlay=overlay,
+            now_ts=now_rfc3339,
+            evidence_append=evw.append,
+            mk_testless_strategy_flow_deps=_mk_testless_strategy_flow_deps,
+            maybe_cross_project_recall=_maybe_cross_project_recall,
+            task=task,
         )
-    except Exception as e:
-        defaults_sync = {"ok": False, "changed": False, "mode": "seed_missing", "event_id": "", "error": f"{type(e).__name__}: {e}"}
-
-    evw.append(
-        {
-            "kind": "defaults_claim_sync",
-            "batch_id": "b0.defaults_claim_sync",
-            "ts": now_rfc3339(),
-            "thread_id": "",
-            "sync": defaults_sync if isinstance(defaults_sync, dict) else {"ok": False, "error": "invalid result"},
-        }
     )
-
-    sync_tls_overlay_from_thoughtdb(
-        overlay=overlay,
-        as_of_ts=now_rfc3339(),
-        deps=_mk_testless_strategy_flow_deps(),
-    )
-
-    # Seed one conservative recall at run start so later Mind calls can use it without bothering the user.
-    if str(task or "").strip():
-        _maybe_cross_project_recall(batch_id="b0.recall", reason="run_start", query=task)
 
     def _mk_check_plan_flow_deps() -> CheckPlanFlowDeps:
         """Build CheckPlanFlowDeps once per call-site; keeps runner wiring consistent."""

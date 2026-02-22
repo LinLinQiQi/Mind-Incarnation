@@ -43,7 +43,7 @@ class CheckPlanWiringHelpersTests(unittest.TestCase):
             mindspec_base_getter=lambda: {"x": 1},
             project_overlay={"o": 1},
             evidence_window=evidence_window,
-            thread_id=None,
+            thread_id_getter=lambda: None,
             now_ts=lambda: "2026-02-01T00:00:00Z",
             evidence_append=_evidence_append,
             segment_add=lambda item: segment_items.append(dict(item)),
@@ -101,4 +101,3 @@ class CheckPlanWiringHelpersTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

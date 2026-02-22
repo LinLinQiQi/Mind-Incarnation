@@ -558,6 +558,7 @@ Stable identifiers (V1+):
 - `run_id`: unique per `mi run` invocation (or per CLI write session)
 - `seq`: monotonically increasing within the `run_id`
 - `event_id`: derived from `run_id` + `seq` (used for traceability; older logs may not include it)
+- `thread_id`: best-effort Hands session/thread identifier (may be empty before MI learns it, or unavailable for some providers)
 
 ```json
 {

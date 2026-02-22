@@ -495,7 +495,7 @@ def run_autopilot(
         mindspec_base_getter=_mindspec_base_runtime,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         evidence_window=evidence_window,
-        thread_id=thread_id,
+        thread_id_getter=lambda: thread_id,
         now_ts=now_rfc3339,
         evidence_append=evw.append,
         segment_add=_segment_add,

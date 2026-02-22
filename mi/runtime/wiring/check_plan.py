@@ -15,7 +15,7 @@ class CheckPlanWiringDeps:
     mindspec_base_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     evidence_window: list[dict[str, Any]]
-    thread_id: str | None
+    thread_id_getter: Callable[[], str | None]
     now_ts: Callable[[], str]
     evidence_append: Callable[[dict[str, Any]], Any]
     segment_add: Callable[[dict[str, Any]], None]
@@ -62,9 +62,8 @@ def plan_checks_and_record_wired(
             segment_add=deps.segment_add,
             persist_segment_state=deps.persist_segment_state,
             now_ts=deps.now_ts,
-            thread_id=deps.thread_id,
+            thread_id=deps.thread_id_getter() if callable(deps.thread_id_getter) else None,
             plan_min_checks_prompt_builder=deps.plan_min_checks_prompt_builder,
             mind_call=deps.mind_call,
         ),
     )
-

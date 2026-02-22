@@ -10,7 +10,7 @@ from .decide_batch_service import DecideBatchService
 from .checkpoint_service import CheckpointService
 from .testless_strategy_service import (
     TESTLESS_STRATEGY_PREFIX,
-    testless_strategy_claim_text,
+    mk_testless_strategy_claim_text,
     parse_testless_strategy_from_claim_text,
     find_testless_strategy_claim,
     upsert_testless_strategy_claim,
@@ -28,7 +28,7 @@ __all__ = [
     "DecideBatchService",
     "CheckpointService",
     "TESTLESS_STRATEGY_PREFIX",
-    "testless_strategy_claim_text",
+    "mk_testless_strategy_claim_text",
     "parse_testless_strategy_from_claim_text",
     "find_testless_strategy_claim",
     "upsert_testless_strategy_claim",

@@ -10,7 +10,7 @@ from ....thoughtdb.pins import TESTLESS_STRATEGY_TAG
 TESTLESS_STRATEGY_PREFIX = "When this project has no tests, use this verification strategy:"
 
 
-def testless_strategy_claim_text(strategy: str) -> str:
+def mk_testless_strategy_claim_text(strategy: str) -> str:
     s = " ".join((strategy or "").strip().split())
     if not s:
         return ""
@@ -58,7 +58,7 @@ def upsert_testless_strategy_claim(
     if not s:
         return ""
 
-    text = testless_strategy_claim_text(s)
+    text = mk_testless_strategy_claim_text(s)
     if not text:
         return ""
 
@@ -126,4 +126,3 @@ def upsert_testless_strategy_claim(
             pass
 
     return cid
-

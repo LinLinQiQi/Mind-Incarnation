@@ -9,7 +9,7 @@ from mi.core.storage import now_rfc3339
 from mi.runtime.autopilot.services import (
     find_testless_strategy_claim,
     parse_testless_strategy_from_claim_text,
-    testless_strategy_claim_text,
+    mk_testless_strategy_claim_text,
     upsert_testless_strategy_claim,
 )
 from mi.thoughtdb import ThoughtDbStore
@@ -17,7 +17,7 @@ from mi.thoughtdb import ThoughtDbStore
 
 class TestTestlessStrategyService(unittest.TestCase):
     def test_claim_text_roundtrip(self) -> None:
-        text = testless_strategy_claim_text("Run smoke + manual checks")
+        text = mk_testless_strategy_claim_text("Run smoke + manual checks")
         self.assertIn("verification strategy", text)
         parsed = parse_testless_strategy_from_claim_text(text)
         self.assertEqual(parsed, "Run smoke + manual checks")
@@ -47,4 +47,3 @@ class TestTestlessStrategyService(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

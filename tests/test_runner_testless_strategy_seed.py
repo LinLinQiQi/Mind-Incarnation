@@ -8,7 +8,7 @@ from pathlib import Path
 from mi.core.paths import ProjectPaths
 from mi.project import load_project_overlay
 from mi.providers.codex_runner import CodexRunResult
-from mi.runtime.autopilot.services.testless_strategy_service import testless_strategy_claim_text
+from mi.runtime.autopilot.services.testless_strategy_service import mk_testless_strategy_claim_text
 from mi.runtime.runner import run_autopilot
 from mi.thoughtdb import ThoughtDbStore
 from mi.thoughtdb.pins import TESTLESS_STRATEGY_TAG
@@ -62,7 +62,7 @@ class TestRunnerTestlessStrategySeed(unittest.TestCase):
             tdb = ThoughtDbStore(home_dir=Path(home), project_paths=pp)
             tls_claim_id = tdb.append_claim_create(
                 claim_type="preference",
-                text=testless_strategy_claim_text("Run smoke + manual checks"),
+                text=mk_testless_strategy_claim_text("Run smoke + manual checks"),
                 scope="project",
                 visibility="project",
                 valid_from=None,
@@ -147,4 +147,3 @@ class TestRunnerTestlessStrategySeed(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

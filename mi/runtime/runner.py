@@ -6,7 +6,7 @@ import secrets
 import time
 from typing import Any
 
-from .wiring import MindCaller, SegmentStateIO, bootstrap_autopilot_run, parse_runtime_features
+from .wiring import MindCaller, SegmentStateIO, StateWarningsFlusher, bootstrap_autopilot_run, parse_runtime_features
 from .autopilot import (
     AutopilotResult,
     _batch_summary,
@@ -310,21 +310,16 @@ def run_autopilot(
     # mining (workflows/preferences/claims) and deterministic node materialization.
     checkpoint_enabled = bool(feats.checkpoint_enabled)
 
-    def _flush_state_warnings(*, batch_id: str = "b0.state_recovery") -> None:
-        if not state_warnings:
-            return
-        tid = str(thread_id or hands_state.get("thread_id") or "").strip()
-        items = list(state_warnings)
-        state_warnings.clear()
-        evw.append(
-            {
-                "kind": "state_corrupt",
-                "batch_id": str(batch_id or "b0.state_recovery"),
-                "ts": now_rfc3339(),
-                "thread_id": tid,
-                "items": items,
-            }
-        )
+    def _cur_thread_id() -> str:
+        return str(thread_id or "")
+
+    _flush_state_warnings = StateWarningsFlusher(
+        state_warnings=state_warnings,
+        evidence_append=evw.append,
+        now_ts=now_rfc3339,
+        thread_id_getter=_cur_thread_id,
+        hands_state=hands_state,
+    ).flush
 
     segment_io = SegmentStateIO(
         path=project_paths.segment_state_path,
@@ -363,9 +358,6 @@ def run_autopilot(
 
     sent_sigs: list[str] = []
     learn_suggested_records_this_run: list[dict[str, Any]] = []
-
-    def _cur_thread_id() -> str:
-        return str(thread_id or "")
 
     _mind_call = MindCaller(
         llm_call=llm.call,

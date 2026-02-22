@@ -14,17 +14,7 @@ from .autopilot import risk_predecide as RP
 from .autopilot import learn_suggested_flow as LS
 from .autopilot import recall_flow as RF
 from .autopilot import segment_state as SS
-from .prompts import (
-    checkpoint_decide_prompt,
-    decide_next_prompt,
-    extract_evidence_prompt,
-    loop_break_prompt,
-    plan_min_checks_prompt,
-    workflow_progress_prompt,
-)
-from .prompts import auto_answer_to_hands_prompt
-from .prompts import risk_judge_prompt
-from .prompts import suggest_workflow_prompt, mine_preferences_prompt, mine_claims_prompt
+from . import prompts as P
 from ..core.storage import append_jsonl, now_rfc3339, read_json_best_effort, write_json_atomic
 from ..workflows import (
     load_workflow_candidates,
@@ -351,7 +341,7 @@ def run_autopilot(
         evidence_append=evw.append,
         segment_add=_segment_add,
         persist_segment_state=_persist_segment_state,
-        plan_min_checks_prompt_builder=plan_min_checks_prompt,
+        plan_min_checks_prompt_builder=P.plan_min_checks_prompt,
         mind_call=_mind_call,
         empty_check_plan=AP._empty_check_plan,
     )
@@ -508,7 +498,7 @@ def run_autopilot(
         thread_id_getter=_cur_thread_id,
         wf_sigs_counted_in_run=wf_sigs_counted_in_run,
         build_decide_context=_build_decide_context,
-        suggest_workflow_prompt_builder=suggest_workflow_prompt,
+        suggest_workflow_prompt_builder=P.suggest_workflow_prompt,
         mind_call=_mind_call,
         evidence_append=evw.append,
         load_workflow_candidates=lambda: load_workflow_candidates(project_paths, warnings=state_warnings),
@@ -544,7 +534,7 @@ def run_autopilot(
         project_id=str(project_paths.project_id or ""),
         pref_sigs_counted_in_run=pref_sigs_counted_in_run,
         build_decide_context=_build_decide_context,
-        mine_preferences_prompt_builder=mine_preferences_prompt,
+        mine_preferences_prompt_builder=P.mine_preferences_prompt,
         mind_call=_mind_call,
         evidence_append=evw.append,
         load_preference_candidates=lambda: load_preference_candidates(project_paths, warnings=state_warnings),
@@ -571,7 +561,7 @@ def run_autopilot(
         thread_id_getter=_cur_thread_id,
         segment_id_getter=_get_segment_id,
         build_decide_context=_build_decide_context,
-        mine_claims_prompt_builder=mine_claims_prompt,
+        mine_claims_prompt_builder=P.mine_claims_prompt,
         mind_call=_mind_call,
         apply_mined_output=tdb.apply_mined_output,
         evidence_append=evw.append,
@@ -651,7 +641,7 @@ def run_autopilot(
         evidence_window=evidence_window,
         thread_id_getter=_cur_thread_id,
         build_decide_context=_build_decide_context,
-        checkpoint_decide_prompt_builder=checkpoint_decide_prompt,
+        checkpoint_decide_prompt_builder=P.checkpoint_decide_prompt,
         mind_call=_mind_call,
         evidence_append=evw.append,
         mine_workflow_from_segment=_mine_workflow_from_segment,
@@ -747,7 +737,7 @@ def run_autopilot(
                     item=rec,
                 ),
                 resolve_ask_when_uncertain=lambda: bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain),
-                loop_break_prompt_builder=loop_break_prompt,
+                loop_break_prompt_builder=P.loop_break_prompt,
                 mind_call=_mind_call,
                 loop_break_get_checks_input=_loop_break_get_checks_input,
                 read_user_answer=_read_user_answer,
@@ -840,7 +830,7 @@ def run_autopilot(
         recent_evidence=evidence_window,
         empty_auto_answer=AP._empty_auto_answer,
         build_thought_db_context_obj=_build_thought_db_context_obj,
-        auto_answer_prompt_builder=auto_answer_to_hands_prompt,
+        auto_answer_prompt_builder=P.auto_answer_to_hands_prompt,
         mind_call=_mind_call,
         append_auto_answer_record=_append_auto_answer_record,
         get_check_input=_get_check_input,
@@ -913,7 +903,7 @@ def run_autopilot(
                 empty_auto_answer=AP._empty_auto_answer,
                 build_decide_context=_build_decide_context,
                 summarize_thought_db_context=AP.summarize_thought_db_context,
-                decide_next_prompt_builder=decide_next_prompt,
+                decide_next_prompt_builder=P.decide_next_prompt,
                 load_active_workflow=AP.load_active_workflow,
                 mind_call=_mind_call,
                 log_decide_next=_log_decide_next,
@@ -978,7 +968,7 @@ def run_autopilot(
         recent_evidence=evidence_window if isinstance(evidence_window, list) else [],
         build_decide_context=_build_decide_context,
         summarize_thought_db_context=AP.summarize_thought_db_context,
-        decide_next_prompt_builder=decide_next_prompt,
+        decide_next_prompt_builder=P.decide_next_prompt,
         load_active_workflow=AP.load_active_workflow,
         mind_call=_mind_call,
     )
@@ -1126,7 +1116,7 @@ def run_autopilot(
         recent_evidence=evidence_window,
         empty_auto_answer=AP._empty_auto_answer,
         maybe_cross_project_recall=_maybe_cross_project_recall,
-        auto_answer_prompt_builder=auto_answer_to_hands_prompt,
+        auto_answer_prompt_builder=P.auto_answer_to_hands_prompt,
         mind_call=_mind_call,
         append_auto_answer_record=_append_auto_answer_record,
         get_check_input=_get_check_input,
@@ -1213,7 +1203,7 @@ def run_autopilot(
         task=task,
         hands_provider=cur_provider,
         batch_summary_fn=AP._batch_summary,
-        extract_evidence_prompt_builder=extract_evidence_prompt,
+        extract_evidence_prompt_builder=P.extract_evidence_prompt,
         mind_call=_mind_call,
         empty_evidence_obj=AP._empty_evidence_obj,
         extract_evidence_counts=AP.extract_evidence_counts,
@@ -1253,7 +1243,7 @@ def run_autopilot(
         workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
         workflow_load_effective=wf_registry.load_effective,
         load_active_workflow=AP.load_active_workflow,
-        workflow_progress_prompt_builder=workflow_progress_prompt,
+        workflow_progress_prompt_builder=P.workflow_progress_prompt,
         mind_call=_mind_call,
         evidence_append=evw.append,
         now_ts=now_rfc3339,
@@ -1301,7 +1291,7 @@ def run_autopilot(
         mindspec_base_getter=_mindspec_base_runtime,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         maybe_cross_project_recall=_maybe_cross_project_recall,
-        risk_judge_prompt_builder=risk_judge_prompt,
+        risk_judge_prompt_builder=P.risk_judge_prompt,
         mind_call=_mind_call,
         build_risk_fallback=AP.build_risk_fallback,
     )
@@ -1479,7 +1469,7 @@ def run_autopilot(
         mindspec_base_getter=_mindspec_base_runtime,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         recent_evidence=evidence_window,
-        auto_answer_prompt_builder=auto_answer_to_hands_prompt,
+        auto_answer_prompt_builder=P.auto_answer_to_hands_prompt,
         mind_call=_mind_call,
         empty_auto_answer=AP._empty_auto_answer,
     )

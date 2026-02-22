@@ -41,6 +41,13 @@ from .run_start import RunStartSeedsDeps, run_run_start_seeds
 from .runtime_cfg import ParsedRuntimeFeatures, parse_runtime_features
 from .segments import SegmentStateIO
 from .state_warnings import StateWarningsFlusher
+from .predecide_user import (
+    PredecideUserWiringDeps,
+    handle_auto_answer_needs_user_wired,
+    prompt_user_then_queue_wired,
+    retry_auto_answer_after_recall_wired,
+    try_queue_answer_with_checks_wired,
+)
 from .testless_strategy import (
     TestlessResolutionWiringDeps,
     TestlessStrategyWiringDeps,
@@ -66,6 +73,11 @@ __all__ = [
     "query_decide_next_wired",
     "DecideRecordEffectsWiringDeps",
     "record_decide_next_effects_wired",
+    "PredecideUserWiringDeps",
+    "retry_auto_answer_after_recall_wired",
+    "try_queue_answer_with_checks_wired",
+    "prompt_user_then_queue_wired",
+    "handle_auto_answer_needs_user_wired",
     "LoopBreakChecksWiringDeps",
     "loop_break_get_checks_input_wired",
     "MindCaller",

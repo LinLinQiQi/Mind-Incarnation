@@ -8,31 +8,12 @@ from typing import Any
 
 from . import wiring as W
 from . import autopilot as AP
-from .autopilot.services import (
-    find_testless_strategy_claim,
-    parse_testless_strategy_from_claim_text,
-    upsert_testless_strategy_claim,
-)
-from .autopilot.decide_actions import (
-    handle_decide_next_missing,
-    route_decide_next_action,
-)
-from .autopilot.risk_predecide import (
-    RiskPredecideDeps,
-    maybe_prompt_risk_continue,
-    run_risk_predecide,
-)
-from .autopilot.learn_suggested_flow import (
-    LearnSuggestedDeps,
-    apply_learn_suggested,
-)
-from .autopilot.recall_flow import (
-    RecallDeps,
-    maybe_cross_project_recall_write_through as run_cross_project_recall_write_through,
-)
-from .autopilot.segment_state import (
-    add_segment_record,
-)
+from .autopilot import services as APS
+from .autopilot import decide_actions as AD
+from .autopilot import risk_predecide as RP
+from .autopilot import learn_suggested_flow as LS
+from .autopilot import recall_flow as RF
+from .autopilot import segment_state as SS
 from .prompts import (
     checkpoint_decide_prompt,
     decide_next_prompt,
@@ -268,14 +249,14 @@ def run_autopilot(
         mind_transcript_ref: str,
         source_event_ids: list[str],
     ) -> list[str]:
-        applied_claim_ids, rec = apply_learn_suggested(
+        applied_claim_ids, rec = LS.apply_learn_suggested(
             learn_suggested=learn_suggested,
             batch_id=batch_id,
             source=source,
             mind_transcript_ref=mind_transcript_ref,
             source_event_ids=source_event_ids,
             runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
-            deps=LearnSuggestedDeps(
+            deps=LS.LearnSuggestedDeps(
                 claim_signature_fn=claim_signature,
                 existing_signature_map=lambda scope: tdb.existing_signature_map(scope=scope),
                 append_claim_create=tdb.append_claim_create,
@@ -291,7 +272,7 @@ def run_autopilot(
         return list(applied_claim_ids)
 
     def _segment_add(obj: dict[str, Any]) -> None:
-        add_segment_record(
+        SS.add_segment_record(
             enabled=checkpoint_enabled,
             obj=obj,
             segment_records=segment_records,
@@ -304,13 +285,13 @@ def run_autopilot(
 
         This writes an EvidenceLog record and appends a compact version to evidence_window so Mind prompts can use it.
         """
-        run_cross_project_recall_write_through(
+        RF.maybe_cross_project_recall_write_through(
             batch_id=batch_id,
             reason=reason,
             query=query,
             thread_id=str(thread_id or ""),
             evidence_window=evidence_window,
-            deps=RecallDeps(
+            deps=RF.RecallDeps(
                 mem_recall=mem.maybe_cross_project_recall,
                 evidence_append=evw.append,
                 segment_add=_segment_add,
@@ -319,13 +300,13 @@ def run_autopilot(
         )
 
     def _parse_testless_strategy_from_claim_text(text: str) -> str:
-        return parse_testless_strategy_from_claim_text(text)
+        return APS.parse_testless_strategy_from_claim_text(text)
 
     def _find_testless_strategy_claim(*, as_of_ts: str) -> dict[str, Any] | None:
-        return find_testless_strategy_claim(tdb=tdb, as_of_ts=as_of_ts)
+        return APS.find_testless_strategy_claim(tdb=tdb, as_of_ts=as_of_ts)
 
     def _upsert_testless_strategy_claim(*, strategy_text: str, source_event_id: str, source: str, rationale: str) -> str:
-        return upsert_testless_strategy_claim(
+        return APS.upsert_testless_strategy_claim(
             tdb=tdb,
             project_id=project_paths.project_id,
             strategy_text=strategy_text,
@@ -827,7 +808,7 @@ def run_autopilot(
 
         nonlocal status, notes
         ask_when_uncertain = bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain)
-        cont, blocked_note = handle_decide_next_missing(
+        cont, blocked_note = AD.handle_decide_next_missing(
             batch_idx=batch_idx,
             decision_state=str(decision_state or ""),
             hands_last=hands_last,
@@ -1068,7 +1049,7 @@ def run_autopilot(
         """Route and apply next_action from decide_next."""
 
         nonlocal status, notes
-        cont, blocked_note = route_decide_next_action(
+        cont, blocked_note = AD.route_decide_next_action(
             batch_idx=batch_idx,
             next_action=str(next_action or ""),
             hands_last=hands_last,
@@ -1393,7 +1374,7 @@ def run_autopilot(
         nonlocal status, notes
 
         vr = runtime_cfg.get("violation_response") if isinstance(runtime_cfg.get("violation_response"), dict) else {}
-        out = maybe_prompt_risk_continue(
+        out = RP.maybe_prompt_risk_continue(
             risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
             should_prompt_risk_user=AP.should_prompt_risk_user,
             violation_response_cfg=vr if isinstance(vr, dict) else {},
@@ -1414,13 +1395,13 @@ def run_autopilot(
         tdb_ctx_batch_obj: dict[str, Any],
     ) -> bool | None:
         """Run risk_judge, record evidence, and enforce runtime violation policy."""
-        return run_risk_predecide(
+        return RP.run_risk_predecide(
             batch_idx=batch_idx,
             batch_id=batch_id,
             risk_signals=risk_signals,
             hands_last=hands_last,
             tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            deps=RiskPredecideDeps(
+            deps=RP.RiskPredecideDeps(
                 query_risk=_predecide_query_risk_judge,
                 record_risk=_predecide_record_risk_event,
                 apply_learn_suggested=_predecide_apply_risk_learn_suggested,

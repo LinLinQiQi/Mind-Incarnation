@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .wiring import bootstrap_autopilot_run, parse_runtime_features
+from .wiring import SegmentStateIO, bootstrap_autopilot_run, parse_runtime_features
 from .autopilot import (
     AutopilotResult,
     _batch_summary,
@@ -35,11 +35,9 @@ from .autopilot import (
     compose_check_plan_log,
     compose_auto_answer_log,
     load_active_workflow,
-    match_workflow_for_task,
     maybe_run_learn_update_on_run_end,
     maybe_run_why_trace_on_run_end,
     summarize_thought_db_context,
-    workflow_step_ids,
     RunState,
     RunDeps,
     HandsFlowDeps,
@@ -179,10 +177,6 @@ from .autopilot.workflow_progress_flow import (
 )
 from .autopilot.segment_state import (
     add_segment_record,
-    clear_segment_state,
-    load_segment_state,
-    new_segment_state,
-    persist_segment_state,
 )
 from .prompts import (
     checkpoint_decide_prompt,
@@ -339,7 +333,17 @@ def run_autopilot(
             }
         )
 
-    segment_max_records = 40
+    segment_io = SegmentStateIO(
+        path=project_paths.segment_state_path,
+        task=task,
+        now_ts=now_rfc3339,
+        truncate=_truncate,
+        read_json_best_effort=read_json_best_effort,
+        write_json_atomic=write_json_atomic,
+        state_warnings=state_warnings,
+        segment_max_records=40,
+    )
+    segment_max_records = int(segment_io.segment_max_records)
     segment_state: dict[str, Any] = {}
     segment_records: list[dict[str, Any]] = []
     # Avoid inflating mined occurrence counts within a single `mi run` invocation.
@@ -347,52 +351,19 @@ def run_autopilot(
     pref_sigs_counted_in_run: set[str] = set()
 
     def _new_segment_state(*, reason: str, thread_hint: str) -> dict[str, Any]:
-        return new_segment_state(
-            reason=reason,
-            thread_hint=thread_hint,
-            task=task,
-            now_ts=now_rfc3339,
-            truncate=_truncate,
-            id_factory=lambda: f"seg_{time.time_ns()}_{secrets.token_hex(4)}",
-        )
-
-    def _load_segment_state(*, thread_hint: str) -> dict[str, Any] | None:
-        return load_segment_state(
-            path=project_paths.segment_state_path,
-            read_json_best_effort=read_json_best_effort,
-            state_warnings=state_warnings,
-            thread_hint=thread_hint,
-        )
+        return segment_io.new_state(reason=reason, thread_hint=thread_hint)
 
     def _persist_segment_state() -> None:
-        persist_segment_state(
-            enabled=checkpoint_enabled,
-            path=project_paths.segment_state_path,
-            segment_state=segment_state,
-            segment_max_records=segment_max_records,
-            now_ts=now_rfc3339,
-            write_json_atomic=write_json_atomic,
-        )
-
-    def _clear_segment_state() -> None:
-        clear_segment_state(path=project_paths.segment_state_path)
+        segment_io.persist(enabled=checkpoint_enabled, segment_state=segment_state)
 
     if checkpoint_enabled:
-        # When NOT continuing a Hands session, do not carry over an open segment buffer.
-        if not bool(continue_hands) or bool(reset_hands):
-            _clear_segment_state()
-
-        seg0 = _load_segment_state(thread_hint=str(thread_id or ""))
-        segment_state = seg0 if isinstance(seg0, dict) else _new_segment_state(reason="run_start", thread_hint=str(thread_id or ""))
-        recs0 = segment_state.get("records")
-        segment_records = recs0 if isinstance(recs0, list) else []
-        segment_state["records"] = segment_records
-
-        # Include a workflow trigger marker in the segment when present.
-        if matched:
-            segment_records.append(evidence_window[-1])
-            segment_records[:] = segment_records[-segment_max_records:]
-        _persist_segment_state()
+        segment_state, segment_records = segment_io.bootstrap(
+            enabled=True,
+            continue_hands=continue_hands,
+            reset_hands=reset_hands,
+            thread_hint=str(thread_id or ""),
+            workflow_marker=(evidence_window[-1] if matched else None),
+        )
         _flush_state_warnings()
 
     interrupt_cfg = feats.interrupt_cfg

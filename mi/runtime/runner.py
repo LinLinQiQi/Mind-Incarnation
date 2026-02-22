@@ -725,35 +725,19 @@ def run_autopilot(
             rationale=rationale,
         )
 
-    def _ensure_testless_strategy_claim_current() -> None:
-        """Unify testless verification strategy storage via Thought DB.
+    def _mk_testless_strategy_flow_deps() -> TestlessStrategyFlowDeps:
+        """Build TestlessStrategyFlowDeps with shared overlay IO/service hooks."""
 
-        - If a tagged preference Claim exists, derive ProjectOverlay from it (best-effort).
-        """
-        nonlocal overlay
-
-        as_of = now_rfc3339()
-        claim = _find_testless_strategy_claim(as_of_ts=as_of)
-        claim_id = str(claim.get("claim_id") or "").strip() if isinstance(claim, dict) else ""
-        claim_text = str(claim.get("text") or "").strip() if isinstance(claim, dict) else ""
-        claim_strategy = _parse_testless_strategy_from_claim_text(claim_text)
-
-        tls = overlay.get("testless_verification_strategy") if isinstance(overlay, dict) else None
-        overlay_chosen = bool(tls.get("chosen_once", False)) if isinstance(tls, dict) else False
-        overlay_claim_id = str(tls.get("claim_id") or "").strip() if isinstance(tls, dict) else ""
-
-        if claim_id and claim_strategy:
-            # Derive overlay from canonical claim when missing or divergent.
-            if (not overlay_chosen) or (overlay_claim_id.strip() != claim_id.strip()):
-                overlay.setdefault("testless_verification_strategy", {})
-                overlay["testless_verification_strategy"] = {
-                    "chosen_once": True,
-                    "claim_id": claim_id,
-                    "rationale": f"derived from Thought DB {claim_id}",
-                }
-                write_project_overlay(home_dir=home, project_root=project_path, overlay=overlay)
-                _refresh_overlay_refs()
-            return
+        return TestlessStrategyFlowDeps(
+            now_ts=now_rfc3339,
+            thread_id=thread_id,
+            evidence_append=evw.append,
+            find_testless_strategy_claim=lambda ts: _find_testless_strategy_claim(as_of_ts=ts),
+            parse_testless_strategy_from_claim_text=_parse_testless_strategy_from_claim_text,
+            upsert_testless_strategy_claim=_upsert_testless_strategy_claim,
+            write_overlay=lambda obj: write_project_overlay(home_dir=home, project_root=project_path, overlay=obj),
+            refresh_overlay_refs=_refresh_overlay_refs,
+        )
 
     # Canonical operational defaults (ask_when_uncertain/refactor_intent) live as global Thought DB preference claims.
     # Runtime config defaults are non-canonical; we only seed missing claims.
@@ -779,7 +763,11 @@ def run_autopilot(
         }
     )
 
-    _ensure_testless_strategy_claim_current()
+    sync_tls_overlay_from_thoughtdb(
+        overlay=overlay,
+        as_of_ts=now_rfc3339(),
+        deps=_mk_testless_strategy_flow_deps(),
+    )
 
     # Seed one conservative recall at run start so later Mind calls can use it without bothering the user.
     if str(task or "").strip():
@@ -797,20 +785,6 @@ def run_autopilot(
             thread_id=thread_id,
             plan_min_checks_prompt_builder=plan_min_checks_prompt,
             mind_call=_mind_call,
-        )
-
-    def _mk_testless_strategy_flow_deps() -> TestlessStrategyFlowDeps:
-        """Build TestlessStrategyFlowDeps with shared overlay IO/service hooks."""
-
-        return TestlessStrategyFlowDeps(
-            now_ts=now_rfc3339,
-            thread_id=thread_id,
-            evidence_append=evw.append,
-            find_testless_strategy_claim=lambda ts: _find_testless_strategy_claim(as_of_ts=ts),
-            parse_testless_strategy_from_claim_text=_parse_testless_strategy_from_claim_text,
-            upsert_testless_strategy_claim=_upsert_testless_strategy_claim,
-            write_overlay=lambda obj: write_project_overlay(home_dir=home, project_root=project_path, overlay=obj),
-            refresh_overlay_refs=_refresh_overlay_refs,
         )
 
     def _mk_testless_resolution_deps() -> TestlessResolutionDeps:

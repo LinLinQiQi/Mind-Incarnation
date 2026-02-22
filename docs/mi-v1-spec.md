@@ -1,7 +1,7 @@
 # Mind Incarnation (MI) - V1 Spec (Batch Autopilot above Hands; default: Codex CLI)
 
 Status: draft
-Last updated: 2026-02-21
+Last updated: 2026-02-22
 
 ## Goal
 
@@ -401,7 +401,7 @@ Minimal shape:
 
 ### ProjectOverlay
 
-Note: `testless_verification_strategy` is a derived mirror/cache pointer to the canonical project-scoped Thought DB preference Claim tagged `mi:testless_verification_strategy`. The overlay stores only a `claim_id` pointer (not the full strategy text).
+Note: `testless_verification_strategy` is a derived mirror/cache pointer to the canonical project-scoped Thought DB preference Claim tagged `mi:testless_verification_strategy`. The overlay stores only a `claim_id` pointer (not the full strategy text). MI may refresh/derive this pointer at run start (best-effort) when a canonical claim exists, so check planning can avoid re-asking for a one-time strategy.
 
 ```json
 {

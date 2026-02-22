@@ -17,6 +17,7 @@ from .mining import (
     mine_preferences_from_segment_wired,
     mine_workflow_from_segment_wired,
 )
+from .next_input import NextInputWiringDeps, queue_next_input_wired
 from .run_start import RunStartSeedsDeps, run_run_start_seeds
 from .runtime_cfg import ParsedRuntimeFeatures, parse_runtime_features
 from .segments import SegmentStateIO
@@ -36,6 +37,8 @@ __all__ = [
     "mine_claims_from_segment_wired",
     "mine_preferences_from_segment_wired",
     "mine_workflow_from_segment_wired",
+    "NextInputWiringDeps",
+    "queue_next_input_wired",
     "RunStartSeedsDeps",
     "run_run_start_seeds",
     "ParsedRuntimeFeatures",

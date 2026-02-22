@@ -10,6 +10,7 @@ from .wiring import (
     CheckpointWiringDeps,
     ClaimMiningWiringDeps,
     MindCaller,
+    NextInputWiringDeps,
     NodeMaterializeWiringDeps,
     PreferenceMiningWiringDeps,
     RunStartSeedsDeps,
@@ -23,6 +24,7 @@ from .wiring import (
     mine_workflow_from_segment_wired,
     parse_runtime_features,
     run_checkpoint_pipeline_wired,
+    queue_next_input_wired,
     run_run_start_seeds,
 )
 from .autopilot import (
@@ -93,12 +95,6 @@ from .autopilot.risk_predecide import (
     maybe_prompt_risk_continue,
     query_risk_judge,
     run_risk_predecide,
-)
-from .autopilot.next_input_flow import (
-    LoopGuardDeps,
-    apply_loop_guard,
-    QueueNextInputDeps,
-    queue_next_input as run_queue_next_input,
 )
 from .autopilot.loop_break_checks_flow import (
     LoopBreakChecksDeps,
@@ -1009,53 +1005,38 @@ def run_autopilot(
         """Set next_input for the next Hands batch, with loop-guard + loop-break (best-effort)."""
 
         nonlocal next_input, status, notes, sent_sigs
-
-        def _loop_guard(**kwargs) -> Any:
-            return apply_loop_guard(
-                candidate=str(kwargs.get("candidate") or ""),
-                hands_last_message=str(kwargs.get("hands_last_message") or ""),
-                batch_id=str(kwargs.get("batch_id") or ""),
-                reason=str(kwargs.get("reason") or ""),
-                sent_sigs=kwargs.get("sent_sigs") if isinstance(kwargs.get("sent_sigs"), list) else [],
-                task=task,
-                hands_provider=cur_provider,
-                mindspec_base=_mindspec_base_runtime(),
-                project_overlay=overlay if isinstance(overlay, dict) else {},
-                thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
-                repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-                check_plan=check_plan if isinstance(check_plan, dict) else {},
-                evidence_window=evidence_window,
-                thread_id=str(thread_id or ""),
-                deps=LoopGuardDeps(
-                    loop_sig=_loop_sig,
-                    loop_pattern=_loop_pattern,
-                    now_ts=now_rfc3339,
-                    truncate=_truncate,
-                    evidence_append=evw.append,
-                    append_segment_record=lambda rec: segment_add_and_persist(
-                        segment_add=_segment_add,
-                        persist_segment_state=_persist_segment_state,
-                        item=rec,
-                    ),
-                    resolve_ask_when_uncertain=lambda: bool(
-                        resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain
-                    ),
-                    loop_break_prompt_builder=loop_break_prompt,
-                    mind_call=_mind_call,
-                    loop_break_get_checks_input=_loop_break_get_checks_input,
-                    read_user_answer=_read_user_answer,
-                    append_user_input_record=_append_user_input_record,
-                ),
-            )
-
-        out = run_queue_next_input(
+        out = queue_next_input_wired(
             nxt=nxt,
             hands_last_message=hands_last_message,
             batch_id=batch_id,
             reason=reason,
             sent_sigs=sent_sigs,
-            deps=QueueNextInputDeps(
-                loop_guard=_loop_guard,
+            repo_observation=repo_observation,
+            thought_db_context=thought_db_context,
+            check_plan=check_plan,
+            deps=NextInputWiringDeps(
+                task=task,
+                hands_provider=cur_provider,
+                mindspec_base_getter=_mindspec_base_runtime,
+                project_overlay=overlay if isinstance(overlay, dict) else {},
+                evidence_window=evidence_window,
+                thread_id_getter=_cur_thread_id,
+                loop_sig=_loop_sig,
+                loop_pattern=_loop_pattern,
+                now_ts=now_rfc3339,
+                truncate=_truncate,
+                evidence_append=evw.append,
+                append_segment_record=lambda rec: segment_add_and_persist(
+                    segment_add=_segment_add,
+                    persist_segment_state=_persist_segment_state,
+                    item=rec,
+                ),
+                resolve_ask_when_uncertain=lambda: bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain),
+                loop_break_prompt_builder=loop_break_prompt,
+                mind_call=_mind_call,
+                loop_break_get_checks_input=_loop_break_get_checks_input,
+                read_user_answer=_read_user_answer,
+                append_user_input_record=_append_user_input_record,
                 checkpoint_before_continue=_maybe_checkpoint_and_mine,
             ),
         )

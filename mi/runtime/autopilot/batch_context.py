@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ...core.storage import filename_safe_ts
 
 @dataclass
 class BatchExecutionContext:
@@ -49,7 +50,7 @@ def build_batch_execution_context(
     """Build one batch execution context with deterministic prompt metadata."""
 
     batch_id = f"b{batch_idx}"
-    batch_ts = now_ts().replace(":", "").replace("-", "")
+    batch_ts = filename_safe_ts(now_ts())
     light = build_light_injection_for_ts(now_ts())
     batch_input = str(next_input or "").strip()
     hands_prompt = light + "\n" + batch_input + "\n"

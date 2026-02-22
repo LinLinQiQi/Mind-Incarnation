@@ -89,8 +89,12 @@ def _env_tristate_bool(name: str) -> bool | None:
     return True
 
 
-def _filename_safe_ts(ts: str) -> str:
-    # RFC3339 -> filename-safe stamp (YYYYMMDDTHHMMSSZ)
+def filename_safe_ts(ts: str) -> str:
+    """Convert an RFC3339 timestamp into a filename-safe stamp.
+
+    Example: 2026-02-22T12:34:56Z -> 20260222T123456Z
+    """
+
     return str(ts or "").replace("-", "").replace(":", "")
 
 
@@ -101,7 +105,7 @@ def _quarantine_corrupt_file(path: Path) -> tuple[str, str]:
     """
 
     p = Path(path).expanduser().resolve()
-    stamp = _filename_safe_ts(now_rfc3339())
+    stamp = filename_safe_ts(now_rfc3339())
     base = Path(str(p) + f".corrupt.{stamp}")
     dest = base
     for i in range(1, 100):

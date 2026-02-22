@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .storage import ensure_dir, read_json, write_json, now_rfc3339
+from .storage import ensure_dir, read_json, write_json, now_rfc3339, filename_safe_ts
 
 
 def config_path(home_dir: Path) -> Path:
@@ -201,7 +201,7 @@ def apply_config_template(home_dir: Path, *, name: str) -> dict[str, str]:
     path = config_path(home_dir)
     raw = load_config_raw(home_dir)
 
-    ts = now_rfc3339().replace(":", "").replace("-", "")
+    ts = filename_safe_ts(now_rfc3339())
     backups = _backups_dir(home_dir)
     ensure_dir(backups)
     backup_path = backups / f"config.json.{ts}.bak"

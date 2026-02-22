@@ -1001,6 +1001,8 @@ Notes:
 
 Default MI home: `~/.mind-incarnation` (override with `$MI_HOME` or `mi --home ...`).
 
+- Timestamp placeholders (`<ts>`) use filename-safe RFC3339 stamps (see `mi/core/storage.py` `filename_safe_ts`).
+
 - Global:
   - `config.json` (Mind/Hands providers + runtime knobs)
   - `backups/config.json.<ts>.bak` + `backups/config.last_backup` (created by `mi config apply-template`; rollback uses the marker)

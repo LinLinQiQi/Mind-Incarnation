@@ -27,6 +27,13 @@ from .run_start import RunStartSeedsDeps, run_run_start_seeds
 from .runtime_cfg import ParsedRuntimeFeatures, parse_runtime_features
 from .segments import SegmentStateIO
 from .state_warnings import StateWarningsFlusher
+from .testless_strategy import (
+    TestlessResolutionWiringDeps,
+    TestlessStrategyWiringDeps,
+    apply_set_testless_strategy_overlay_update_wired,
+    mk_testless_strategy_flow_deps_wired,
+    resolve_tls_for_checks_wired,
+)
 
 __all__ = [
     "BootstrappedAutopilotRun",
@@ -38,6 +45,11 @@ __all__ = [
     "LoopBreakChecksWiringDeps",
     "loop_break_get_checks_input_wired",
     "MindCaller",
+    "TestlessResolutionWiringDeps",
+    "TestlessStrategyWiringDeps",
+    "apply_set_testless_strategy_overlay_update_wired",
+    "mk_testless_strategy_flow_deps_wired",
+    "resolve_tls_for_checks_wired",
     "ClaimMiningWiringDeps",
     "NodeMaterializeWiringDeps",
     "PreferenceMiningWiringDeps",

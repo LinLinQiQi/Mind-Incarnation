@@ -36,6 +36,11 @@ from .mining import (
     mine_preferences_from_segment_wired,
     mine_workflow_from_segment_wired,
 )
+from .interaction_record import (
+    InteractionRecordWiringDeps,
+    append_auto_answer_record_wired,
+    append_user_input_record_wired,
+)
 from .next_input import NextInputWiringDeps, queue_next_input_wired
 from .run_start import RunStartSeedsDeps, run_run_start_seeds
 from .runtime_cfg import ParsedRuntimeFeatures, parse_runtime_features
@@ -94,6 +99,9 @@ __all__ = [
     "mine_claims_from_segment_wired",
     "mine_preferences_from_segment_wired",
     "mine_workflow_from_segment_wired",
+    "InteractionRecordWiringDeps",
+    "append_user_input_record_wired",
+    "append_auto_answer_record_wired",
     "NextInputWiringDeps",
     "queue_next_input_wired",
     "RunStartSeedsDeps",

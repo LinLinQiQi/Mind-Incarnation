@@ -15,6 +15,7 @@ from .wiring import (
     DecideAskUserWiringDeps,
     DecideNextQueryWiringDeps,
     DecideRecordEffectsWiringDeps,
+    InteractionRecordWiringDeps,
     LoopBreakChecksWiringDeps,
     MindCaller,
     NextInputWiringDeps,
@@ -30,6 +31,8 @@ from .wiring import (
     ask_user_auto_answer_attempt_wired,
     ask_user_redecide_with_input_wired,
     apply_set_testless_strategy_overlay_update_wired,
+    append_auto_answer_record_wired,
+    append_user_input_record_wired,
     bootstrap_autopilot_run,
     handle_auto_answer_needs_user_wired,
     handle_decide_next_ask_user_wired,
@@ -123,11 +126,6 @@ from .autopilot.auto_answer_flow import (
 from .autopilot.recall_flow import (
     RecallDeps,
     maybe_cross_project_recall_write_through as run_cross_project_recall_write_through,
-)
-from .autopilot.interaction_record_flow import (
-    InteractionRecordDeps,
-    append_auto_answer_record_with_tracking as run_append_auto_answer_record,
-    append_user_input_record_with_tracking as run_append_user_input_record,
 )
 from .autopilot.evidence_flow import (
     EvidenceAppendDeps,
@@ -898,48 +896,34 @@ def run_autopilot(
         notes = str(out.notes or "")
         return True
 
+    interaction_record_wiring = InteractionRecordWiringDeps(
+        evidence_window=evidence_window,
+        evidence_append=evw.append,
+        append_window=append_evidence_window,
+        segment_add=_segment_add,
+        persist_segment_state=_persist_segment_state,
+        now_ts=now_rfc3339,
+        thread_id_getter=lambda: thread_id,
+    )
+
     def _append_user_input_record(*, batch_id: str, question: str, answer: str) -> dict[str, Any]:
         """Append user input evidence and keep segment/evidence windows in sync."""
 
-        nonlocal evidence_window
-        return run_append_user_input_record(
+        return append_user_input_record_wired(
             batch_id=str(batch_id),
             question=question,
             answer=answer,
-            evidence_window=evidence_window,
-            deps=InteractionRecordDeps(
-                evidence_append=evw.append,
-                append_window=append_evidence_window,
-                append_segment_record=lambda item: segment_add_and_persist(
-                    segment_add=_segment_add,
-                    persist_segment_state=_persist_segment_state,
-                    item=item,
-                ),
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-            ),
+            deps=interaction_record_wiring,
         )
 
     def _append_auto_answer_record(*, batch_id: str, mind_transcript_ref: str, auto_answer: dict[str, Any]) -> dict[str, Any]:
         """Append auto_answer evidence and keep segment/evidence windows in sync."""
 
-        nonlocal evidence_window
-        return run_append_auto_answer_record(
+        return append_auto_answer_record_wired(
             batch_id=str(batch_id),
             mind_transcript_ref=str(mind_transcript_ref or ""),
             auto_answer=auto_answer if isinstance(auto_answer, dict) else {},
-            evidence_window=evidence_window,
-            deps=InteractionRecordDeps(
-                evidence_append=evw.append,
-                append_window=append_evidence_window,
-                append_segment_record=lambda item: segment_add_and_persist(
-                    segment_add=_segment_add,
-                    persist_segment_state=_persist_segment_state,
-                    item=item,
-                ),
-                now_ts=now_rfc3339,
-                thread_id=thread_id,
-            ),
+            deps=interaction_record_wiring,
         )
 
     def _handle_decide_next_missing(

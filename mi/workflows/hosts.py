@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from ..core.storage import ensure_dir, now_rfc3339, read_json_best_effort, write_json_atomic
-from .host_adapters.openclaw import OpenClawSkillsAdapter
-from .host_contracts import HostAdapter, HostBinding
+from .host_adapters.registry import get_host_adapter
+from .host_contracts import HostBinding
 from .host_fs import _ensure_symlink, _is_rel_path, _safe_rel
 from .store import render_workflow_markdown
 
@@ -62,14 +62,6 @@ def _load_manifest(binding: HostBinding, *, warnings: list[dict[str, Any]] | Non
 
 def _write_manifest(binding: HostBinding, obj: dict[str, Any]) -> None:
     write_json_atomic(_manifest_path(binding), obj)
-
-_HOST_ADAPTERS: dict[str, HostAdapter] = {
-    "openclaw": OpenClawSkillsAdapter(),
-}
-
-
-def get_host_adapter(host: str) -> HostAdapter | None:
-    return _HOST_ADAPTERS.get(str(host or "").strip().lower())
 
 
 def sync_host_binding(

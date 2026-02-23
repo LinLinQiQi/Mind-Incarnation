@@ -13,16 +13,9 @@ from .autopilot import learn_suggested_flow as LS
 from .autopilot import recall_flow as RF
 from .autopilot import segment_state as SS
 from . import prompts as P
+from .runner_wiring_checkpoint import build_checkpoint_mining_wiring_bundle
 from .runner_wiring_testless import build_testless_wiring_bundle
 from ..core.storage import now_rfc3339, read_json_best_effort, write_json_atomic
-from ..workflows import (
-    load_workflow_candidates,
-    write_workflow_candidates,
-    new_workflow_id,
-)
-from ..workflows.preferences import load_preference_candidates, write_preference_candidates, preference_signature
-from ..workflows.hosts import sync_hosts_from_overlay
-from ..memory.ingest import thoughtdb_node_item
 from .injection import build_light_injection
 from ..thoughtdb import claim_signature
 from ..thoughtdb.operational_defaults import resolve_operational_defaults
@@ -337,178 +330,49 @@ def run_autopilot_from_boot(
             return ""
         return str(state.segment_state.get("segment_id") or "")
 
-    workflow_mining_wiring = W.WorkflowMiningWiringDeps(
-        enabled=bool(wf_auto_mine),
-        executed_batches_getter=_get_executed_batches,
+    checkpoint_bundle = build_checkpoint_mining_wiring_bundle(
+        checkpoint_enabled=bool(checkpoint_enabled),
+        wf_auto_mine=bool(wf_auto_mine),
+        pref_auto_mine=bool(pref_auto_mine),
+        tdb_enabled=bool(tdb_enabled),
+        tdb_auto_mine=bool(tdb_auto_mine),
+        tdb_auto_nodes=bool(tdb_auto_nodes),
+        tdb_min_conf=float(tdb_min_conf),
+        tdb_max_claims=int(tdb_max_claims),
         wf_cfg=wf_cfg if isinstance(wf_cfg, dict) else {},
-        status_getter=_get_status,
-        notes_getter=_get_notes,
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_getter=_runtime_cfg_for_prompts,
-        project_overlay=overlay if isinstance(overlay, dict) else {},
-        thread_id_getter=_cur_thread_id,
-        wf_sigs_counted_in_run=wf_sigs_counted_in_run,
-        build_decide_context=_build_decide_context,
-        suggest_workflow_prompt_builder=P.suggest_workflow_prompt,
-        mind_call=_mind_call,
-        evidence_append=evw.append,
-        load_workflow_candidates=lambda: load_workflow_candidates(project_paths, warnings=state_warnings),
-        write_workflow_candidates=lambda obj: write_workflow_candidates(project_paths, obj),
-        flush_state_warnings=_flush_state_warnings,
-        write_workflow=wf_store.write,
-        new_workflow_id=new_workflow_id,
-        enabled_effective_workflows=lambda: [
-            {k: v for k, v in w.items() if k != "_mi_scope"}
-            for w in (wf_registry.enabled_workflows_effective(overlay=overlay) or [])
-            if isinstance(w, dict)
-        ],
-        sync_hosts=lambda workflows: sync_hosts_from_overlay(
-            overlay=overlay,
-            project_id=project_paths.project_id,
-            workflows=workflows,
-            warnings=state_warnings,
-        ),
-        now_ts=now_rfc3339,
-    )
-
-    preference_mining_wiring = W.PreferenceMiningWiringDeps(
-        enabled=bool(pref_auto_mine),
-        executed_batches_getter=_get_executed_batches,
         pref_cfg=pref_cfg if isinstance(pref_cfg, dict) else {},
-        status_getter=_get_status,
-        notes_getter=_get_notes,
         task=task,
         hands_provider=cur_provider,
-        runtime_cfg_getter=_runtime_cfg_for_prompts,
-        project_overlay=overlay if isinstance(overlay, dict) else {},
+        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+        overlay=overlay if isinstance(overlay, dict) else {},
+        evidence_window=evidence_window,
+        project_paths=project_paths,
+        state_warnings=state_warnings,
+        flush_state_warnings=_flush_state_warnings,
+        wf_registry=wf_registry,
+        wf_store=wf_store,
+        mem=mem,
+        tdb=tdb,
+        now_ts=now_rfc3339,
+        truncate=AP._truncate,
         thread_id_getter=_cur_thread_id,
-        project_id=str(project_paths.project_id or ""),
+        segment_id_getter=_get_segment_id,
+        executed_batches_getter=_get_executed_batches,
+        status_getter=_get_status,
+        notes_getter=_get_notes,
+        wf_sigs_counted_in_run=wf_sigs_counted_in_run,
         pref_sigs_counted_in_run=pref_sigs_counted_in_run,
         build_decide_context=_build_decide_context,
-        mine_preferences_prompt_builder=P.mine_preferences_prompt,
         mind_call=_mind_call,
         evidence_append=evw.append,
-        load_preference_candidates=lambda: load_preference_candidates(project_paths, warnings=state_warnings),
-        write_preference_candidates=lambda obj: write_preference_candidates(project_paths, obj),
-        flush_state_warnings=_flush_state_warnings,
-        existing_signature_map=lambda scope: tdb.existing_signature_map(scope=scope),
-        claim_signature_fn=claim_signature,
-        preference_signature_fn=preference_signature,
         handle_learn_suggested=_handle_learn_suggested,
-        now_ts=now_rfc3339,
-    )
-
-    claim_mining_wiring = W.ClaimMiningWiringDeps(
-        enabled=bool(tdb_auto_mine),
-        executed_batches_getter=_get_executed_batches,
-        max_claims=int(tdb_max_claims),
-        min_confidence=float(tdb_min_conf),
-        status_getter=_get_status,
-        notes_getter=_get_notes,
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_getter=_runtime_cfg_for_prompts,
-        project_overlay=overlay if isinstance(overlay, dict) else {},
-        thread_id_getter=_cur_thread_id,
-        segment_id_getter=_get_segment_id,
-        build_decide_context=_build_decide_context,
-        mine_claims_prompt_builder=P.mine_claims_prompt,
-        mind_call=_mind_call,
-        apply_mined_output=tdb.apply_mined_output,
-        evidence_append=evw.append,
-        now_ts=now_rfc3339,
-    )
-
-    node_materialize_wiring = W.NodeMaterializeWiringDeps(
-        enabled=bool(tdb_enabled) and bool(tdb_auto_nodes),
-        task=task,
-        now_ts=now_rfc3339,
-        truncate=AP._truncate,
-        project_id=str(project_paths.project_id or ""),
-        nodes_path=project_paths.thoughtdb_nodes_path,
-        thread_id_getter=_cur_thread_id,
-        segment_id_getter=_get_segment_id,
-        append_node_create=tdb.append_node_create,
-        append_edge=tdb.append_edge,
-        upsert_memory_items=mem.upsert_items,
-        build_index_item=thoughtdb_node_item,
-        evidence_append=evw.append,
-    )
-
-    def _mine_workflow_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
-        W.mine_workflow_from_segment_wired(
-            seg_evidence=seg_evidence,
-            base_batch_id=base_batch_id,
-            source=source,
-            deps=workflow_mining_wiring,
-        )
-
-    def _mine_preferences_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
-        W.mine_preferences_from_segment_wired(
-            seg_evidence=seg_evidence,
-            base_batch_id=base_batch_id,
-            source=source,
-            deps=preference_mining_wiring,
-        )
-
-    def _mine_claims_from_segment(*, seg_evidence: list[dict[str, Any]], base_batch_id: str, source: str) -> None:
-        """Mine high-signal atomic Claims into Thought DB (checkpoint-only; best-effort)."""
-
-        W.mine_claims_from_segment_wired(
-            seg_evidence=seg_evidence,
-            base_batch_id=base_batch_id,
-            source=source,
-            deps=claim_mining_wiring,
-        )
-
-    def _materialize_nodes_from_checkpoint(
-        *,
-        seg_evidence: list[dict[str, Any]],
-        snapshot_rec: dict[str, Any] | None,
-        base_batch_id: str,
-        checkpoint_kind: str,
-        status_hint: str,
-        planned_next_input: str,
-        note: str,
-    ) -> None:
-        W.materialize_nodes_from_checkpoint_wired(
-            seg_evidence=seg_evidence,
-            snapshot_rec=snapshot_rec,
-            base_batch_id=base_batch_id,
-            checkpoint_kind=checkpoint_kind,
-            status_hint=status_hint,
-            planned_next_input=planned_next_input,
-            note=note,
-            deps=node_materialize_wiring,
-        )
-
-    checkpoint_wiring = W.CheckpointWiringDeps(
-        checkpoint_enabled=bool(checkpoint_enabled),
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg=_runtime_cfg_for_prompts,
-        project_overlay=overlay if isinstance(overlay, dict) else {},
-        evidence_window=evidence_window,
-        thread_id_getter=_cur_thread_id,
-        build_decide_context=_build_decide_context,
-        checkpoint_decide_prompt_builder=P.checkpoint_decide_prompt,
-        mind_call=_mind_call,
-        evidence_append=evw.append,
-        mine_workflow_from_segment=_mine_workflow_from_segment,
-        mine_preferences_from_segment=_mine_preferences_from_segment,
-        mine_claims_from_segment=_mine_claims_from_segment,
-        materialize_snapshot=mem.materialize_snapshot,
-        materialize_nodes_from_checkpoint=_materialize_nodes_from_checkpoint,
         new_segment_state=_new_segment_state,
-        now_ts=now_rfc3339,
-        truncate=AP._truncate,
     )
 
     def _maybe_checkpoint_and_mine(*, batch_id: str, planned_next_input: str, status_hint: str, note: str) -> None:
         """LLM-judged checkpoint: may mine workflows/preferences and reset segment buffer."""
 
-        res = W.run_checkpoint_pipeline_wired(
+        res = checkpoint_bundle.run_checkpoint_pipeline(
             segment_state=state.segment_state if isinstance(state.segment_state, dict) else {},
             segment_records=state.segment_records if isinstance(state.segment_records, list) else [],
             last_checkpoint_key=str(state.last_checkpoint_key or ""),
@@ -516,7 +380,6 @@ def run_autopilot_from_boot(
             planned_next_input=planned_next_input,
             status_hint=status_hint,
             note=note,
-            deps=checkpoint_wiring,
         )
 
         state.segment_state = res.segment_state if isinstance(res.segment_state, dict) else {}

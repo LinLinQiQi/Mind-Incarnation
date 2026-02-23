@@ -254,6 +254,91 @@ def _build_run_end_callbacks(
     return RunEndCallbacks(learn_runner=_run_learn_update, why_runner=_run_why_trace)
 
 
+def _build_decide_next_logger(
+    *,
+    evidence_append: Any,
+    now_ts: Callable[[], str],
+    thread_id_getter: Callable[[], str | None],
+) -> Callable[..., dict[str, Any] | None]:
+    """Build decide_next EvidenceLog appender (behavior-preserving)."""
+
+    def _log_decide_next(
+        *,
+        decision_obj: Any,
+        batch_id: str,
+        phase: str,
+        mind_transcript_ref: str,
+        thought_db_context_summary: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(decision_obj, dict):
+            return None
+        return evidence_append(
+            {
+                "kind": "decide_next",
+                "batch_id": batch_id,
+                "ts": now_ts(),
+                "thread_id": thread_id_getter(),
+                "phase": phase,
+                "next_action": str(decision_obj.get("next_action") or ""),
+                "status": str(decision_obj.get("status") or ""),
+                "confidence": decision_obj.get("confidence"),
+                "notes": str(decision_obj.get("notes") or ""),
+                "ask_user_question": str(decision_obj.get("ask_user_question") or ""),
+                "next_hands_input": str(decision_obj.get("next_hands_input") or ""),
+                "mind_transcript_ref": str(mind_transcript_ref or ""),
+                "thought_db": thought_db_context_summary if isinstance(thought_db_context_summary, dict) else {},
+                "decision": decision_obj,
+            }
+        )
+
+    return _log_decide_next
+
+
+def _build_learn_suggested_handler(
+    *,
+    runtime_cfg: Any,
+    project_paths: Any,
+    state_access: RunnerStateAccess,
+    learn_suggested_records_this_run: list[dict[str, Any]],
+    tdb: Any,
+    evidence_append: Any,
+    now_ts: Callable[[], str],
+) -> Callable[..., list[str]]:
+    """Build learn_suggested handler (behavior-preserving)."""
+
+    def _handle_learn_suggested(
+        *,
+        learn_suggested: Any,
+        batch_id: str,
+        source: str,
+        mind_transcript_ref: str,
+        source_event_ids: list[str],
+    ) -> list[str]:
+        applied_claim_ids, rec = LS.apply_learn_suggested(
+            learn_suggested=learn_suggested,
+            batch_id=batch_id,
+            source=source,
+            mind_transcript_ref=mind_transcript_ref,
+            source_event_ids=source_event_ids,
+            runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
+            deps=LS.LearnSuggestedDeps(
+                claim_signature_fn=claim_signature,
+                existing_signature_map=lambda scope: tdb.existing_signature_map(scope=scope),
+                append_claim_create=tdb.append_claim_create,
+                evidence_append=evidence_append,
+                now_ts=now_ts,
+                new_suggestion_id=lambda: f"ls_{time.time_ns()}_{secrets.token_hex(4)}",
+                project_id=project_paths.project_id,
+                thread_id=state_access.get_thread_id(),
+            ),
+        )
+        if isinstance(rec, dict):
+            learn_suggested_records_this_run.append(rec)
+        return list(applied_claim_ids)
+
+    return _handle_learn_suggested
+
+
 def run_autopilot_from_boot(
     *,
     boot: W.BootstrappedAutopilotRun,
@@ -376,64 +461,21 @@ def run_autopilot_from_boot(
         thread_id_getter=_cur_thread_id,
     )
 
-    def _log_decide_next(
-        *,
-        decision_obj: Any,
-        batch_id: str,
-        phase: str,
-        mind_transcript_ref: str,
-        thought_db_context_summary: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        if not isinstance(decision_obj, dict):
-            return None
-        return evw.append(
-            {
-                "kind": "decide_next",
-                "batch_id": batch_id,
-                "ts": now_rfc3339(),
-                "thread_id": state_access.get_thread_id_opt(),
-                "phase": phase,
-                "next_action": str(decision_obj.get("next_action") or ""),
-                "status": str(decision_obj.get("status") or ""),
-                "confidence": decision_obj.get("confidence"),
-                "notes": str(decision_obj.get("notes") or ""),
-                "ask_user_question": str(decision_obj.get("ask_user_question") or ""),
-                "next_hands_input": str(decision_obj.get("next_hands_input") or ""),
-                "mind_transcript_ref": str(mind_transcript_ref or ""),
-                "thought_db": thought_db_context_summary if isinstance(thought_db_context_summary, dict) else {},
-                "decision": decision_obj,
-            }
-        )
+    _log_decide_next = _build_decide_next_logger(
+        evidence_append=evw.append,
+        now_ts=now_rfc3339,
+        thread_id_getter=state_access.get_thread_id_opt,
+    )
 
-    def _handle_learn_suggested(
-        *,
-        learn_suggested: Any,
-        batch_id: str,
-        source: str,
-        mind_transcript_ref: str,
-        source_event_ids: list[str],
-    ) -> list[str]:
-        applied_claim_ids, rec = LS.apply_learn_suggested(
-            learn_suggested=learn_suggested,
-            batch_id=batch_id,
-            source=source,
-            mind_transcript_ref=mind_transcript_ref,
-            source_event_ids=source_event_ids,
-            runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
-            deps=LS.LearnSuggestedDeps(
-                claim_signature_fn=claim_signature,
-                existing_signature_map=lambda scope: tdb.existing_signature_map(scope=scope),
-                append_claim_create=tdb.append_claim_create,
-                evidence_append=evw.append,
-                now_ts=now_rfc3339,
-                new_suggestion_id=lambda: f"ls_{time.time_ns()}_{secrets.token_hex(4)}",
-                project_id=project_paths.project_id,
-                thread_id=state_access.get_thread_id(),
-            ),
-        )
-        if isinstance(rec, dict):
-            learn_suggested_records_this_run.append(rec)
-        return list(applied_claim_ids)
+    _handle_learn_suggested = _build_learn_suggested_handler(
+        runtime_cfg=runtime_cfg,
+        project_paths=project_paths,
+        state_access=state_access,
+        learn_suggested_records_this_run=learn_suggested_records_this_run,
+        tdb=tdb,
+        evidence_append=evw.append,
+        now_ts=now_rfc3339,
+    )
 
     def _segment_add(obj: dict[str, Any]) -> None:
         SS.add_segment_record(

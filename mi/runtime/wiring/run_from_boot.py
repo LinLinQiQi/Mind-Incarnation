@@ -86,7 +86,7 @@ def _build_batch_predecide_deps(
     )
 
 
-def _build_checkpoint_runner(
+def _build_checkpoint_callbacks(
     *,
     checkpoint_bundle: Any,
     state: RunnerWiringState,
@@ -490,7 +490,7 @@ def run_autopilot_from_boot(
             new_segment_state=_new_segment_state,
         )
 
-        checkpoint_callbacks = _build_checkpoint_runner(
+        checkpoint_callbacks = _build_checkpoint_callbacks(
             checkpoint_bundle=checkpoint_bundle,
             state=state,
             persist_segment_state=_persist_segment_state,

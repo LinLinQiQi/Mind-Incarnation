@@ -22,7 +22,7 @@ class WorkflowMiningWiringDeps:
     notes_getter: Callable[[], str]
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     thread_id_getter: Callable[[], str]
     wf_sigs_counted_in_run: set[str]
@@ -59,7 +59,7 @@ def mine_workflow_from_segment_wired(
         notes=str(deps.notes_getter() or ""),
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+        runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         thread_id=str(deps.thread_id_getter() or ""),
         wf_sigs_counted_in_run=deps.wf_sigs_counted_in_run,
@@ -89,7 +89,7 @@ class PreferenceMiningWiringDeps:
     notes_getter: Callable[[], str]
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     thread_id_getter: Callable[[], str]
     project_id: str
@@ -127,7 +127,7 @@ def mine_preferences_from_segment_wired(
         notes=str(deps.notes_getter() or ""),
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+        runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         thread_id=str(deps.thread_id_getter() or ""),
         project_id=str(deps.project_id or ""),
@@ -159,7 +159,7 @@ class ClaimMiningWiringDeps:
     notes_getter: Callable[[], str]
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     thread_id_getter: Callable[[], str]
     segment_id_getter: Callable[[], str]
@@ -191,7 +191,7 @@ def mine_claims_from_segment_wired(
         notes=str(deps.notes_getter() or ""),
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+        runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         thread_id=str(deps.thread_id_getter() or ""),
         segment_id=str(deps.segment_id_getter() or ""),

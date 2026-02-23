@@ -25,7 +25,7 @@ class RiskPredecideHelpersTests(unittest.TestCase):
             tdb_ctx_batch_obj={},
             task="ship",
             hands_provider="codex",
-            mindspec_base={},
+            runtime_cfg={},
             project_overlay={},
             maybe_cross_project_recall=_recall,
             risk_judge_prompt_builder=lambda **kwargs: "prompt",

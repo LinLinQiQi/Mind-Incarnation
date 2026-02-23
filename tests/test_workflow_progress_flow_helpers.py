@@ -50,7 +50,7 @@ class WorkflowProgressFlowHelpersTests(unittest.TestCase):
             batch_id="b7",
             task="Refactor parser",
             hands_provider="codex",
-            mindspec_base={"ask": "auto"},
+            runtime_cfg={"ask": "auto"},
             project_overlay={"rules": []},
             active_workflow={"id": "wf1"},
             workflow_run={"active": True},

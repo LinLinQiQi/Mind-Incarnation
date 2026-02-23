@@ -317,7 +317,7 @@ def handle_workflow_commands(
                 )
                 tdb_ctx_obj = tdb_ctx.to_prompt_obj()
                 prompt = edit_workflow_prompt(
-                    mindspec_base=runtime_cfg,
+                    runtime_cfg=runtime_cfg,
                     project_overlay=overlay2,
                     thought_db_context=tdb_ctx_obj,
                     workflow=w0,

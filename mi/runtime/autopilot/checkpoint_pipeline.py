@@ -43,7 +43,7 @@ def run_checkpoint_pipeline(
     thread_id: str,
     task: str,
     hands_provider: str,
-    mindspec_base: dict[str, Any],
+    runtime_cfg: dict[str, Any],
     project_overlay: dict[str, Any],
     evidence_window: list[dict[str, Any]],
     deps: CheckpointPipelineDeps,
@@ -95,7 +95,7 @@ def run_checkpoint_pipeline(
     prompt = deps.checkpoint_decide_prompt_builder(
         task=task,
         hands_provider=hands_provider,
-        mindspec_base=mindspec_base if isinstance(mindspec_base, dict) else {},
+        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
         project_overlay=project_overlay if isinstance(project_overlay, dict) else {},
         thought_db_context=tdb_ctx_obj if isinstance(tdb_ctx_obj, dict) else {},
         segment_evidence=segment_records,

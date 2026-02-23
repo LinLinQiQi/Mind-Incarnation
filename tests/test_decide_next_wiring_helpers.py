@@ -33,7 +33,7 @@ class DecideNextWiringHelpersTests(unittest.TestCase):
         deps = DecideNextQueryWiringDeps(
             task="fix tests",
             hands_provider="codex",
-            mindspec_base_getter=lambda: {"runtime": True},
+            runtime_cfg_getter=lambda: {"runtime": True},
             project_overlay={"k": "v"},
             workflow_run={"active": True},
             workflow_load_effective=lambda: [{"id": "wf_1"}],
@@ -65,7 +65,7 @@ class DecideNextWiringHelpersTests(unittest.TestCase):
         self.assertIsInstance(prompt_kwargs, dict)
         self.assertEqual(prompt_kwargs.get("task"), "fix tests")
         self.assertEqual(prompt_kwargs.get("hands_provider"), "codex")
-        self.assertEqual(prompt_kwargs.get("mindspec_base"), {"runtime": True})
+        self.assertEqual(prompt_kwargs.get("runtime_cfg"), {"runtime": True})
         self.assertEqual(prompt_kwargs.get("project_overlay"), {"k": "v"})
 
         mind_kwargs = calls.get("mind_kwargs")

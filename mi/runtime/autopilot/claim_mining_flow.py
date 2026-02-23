@@ -46,7 +46,7 @@ def mine_claims_from_segment(
     notes: str,
     task: str,
     hands_provider: str,
-    mindspec_base: dict[str, Any],
+    runtime_cfg: dict[str, Any],
     project_overlay: dict[str, Any],
     thread_id: str,
     segment_id: str,
@@ -73,7 +73,7 @@ def mine_claims_from_segment(
     prompt = deps.mine_claims_prompt_builder(
         task=task,
         hands_provider=hands_provider,
-        mindspec_base=mindspec_base if isinstance(mindspec_base, dict) else {},
+        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
         project_overlay=project_overlay if isinstance(project_overlay, dict) else {},
         thought_db_context=tdb_ctx_obj,
         segment_evidence=seg_evidence,

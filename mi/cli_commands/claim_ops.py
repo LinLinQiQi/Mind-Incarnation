@@ -511,7 +511,7 @@ def handle_claim_commands(
             prompt = mine_claims_prompt(
                 task=str("(manual claim mine) " + (seg.get("task_hint") if isinstance(seg, dict) else "")).strip(),
                 hands_provider=str(cfg.get("hands", {}).get("provider") or ""),
-                mindspec_base=runtime_cfg,
+                runtime_cfg=runtime_cfg,
                 project_overlay=overlay2,
                 thought_db_context=tdb_ctx_obj,
                 segment_evidence=seg_records,

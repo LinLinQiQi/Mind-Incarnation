@@ -12,7 +12,7 @@ class CheckPlanWiringDeps:
 
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     evidence_window: list[dict[str, Any]]
     thread_id_getter: Callable[[], str | None]
@@ -45,7 +45,7 @@ def plan_checks_and_record_wired(
         tag=str(tag or ""),
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+        runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
         recent_evidence=deps.evidence_window if isinstance(deps.evidence_window, list) else [],

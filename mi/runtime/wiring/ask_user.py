@@ -19,7 +19,7 @@ class AskUserAutoAnswerAttemptWiringDeps:
 
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     recent_evidence: list[dict[str, Any]]
 
@@ -64,7 +64,7 @@ def ask_user_auto_answer_attempt_wired(
         note_error=str(note_error or ""),
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+        runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         recent_evidence=deps.recent_evidence if isinstance(deps.recent_evidence, list) else [],
         deps=AskUserAutoAnswerAttemptDeps(
@@ -86,7 +86,7 @@ class AskUserRedecideWithInputWiringDeps:
 
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     workflow_run: dict[str, Any]
     workflow_load_effective: Callable[[], list[dict[str, Any]]]
@@ -124,7 +124,7 @@ def ask_user_redecide_with_input_wired(
         batch_idx=int(batch_idx),
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+        runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         workflow_run=deps.workflow_run if isinstance(deps.workflow_run, dict) else {},
         workflow_load_effective=deps.workflow_load_effective,

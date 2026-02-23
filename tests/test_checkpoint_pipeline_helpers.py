@@ -39,7 +39,7 @@ class CheckpointPipelineHelpersTests(unittest.TestCase):
             thread_id="t1",
             task="task",
             hands_provider="codex",
-            mindspec_base={},
+            runtime_cfg={},
             project_overlay={},
             evidence_window=[],
             deps=CheckpointPipelineDeps(
@@ -82,7 +82,7 @@ class CheckpointPipelineHelpersTests(unittest.TestCase):
             thread_id="tid_1",
             task="task",
             hands_provider="codex",
-            mindspec_base={},
+            runtime_cfg={},
             project_overlay={},
             evidence_window=[],
             deps=CheckpointPipelineDeps(
@@ -129,7 +129,7 @@ class CheckpointPipelineHelpersTests(unittest.TestCase):
             thread_id="tid_1",
             task="task",
             hands_provider="codex",
-            mindspec_base={},
+            runtime_cfg={},
             project_overlay={},
             evidence_window=window,
             deps=CheckpointPipelineDeps(

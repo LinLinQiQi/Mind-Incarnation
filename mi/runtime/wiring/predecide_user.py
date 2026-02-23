@@ -21,7 +21,7 @@ class PredecideUserWiringDeps:
 
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     recent_evidence: list[dict[str, Any]]
 
@@ -56,7 +56,7 @@ def retry_auto_answer_after_recall_wired(
         question=str(question or ""),
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+        runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
         repo_obs=repo_obs if isinstance(repo_obs, dict) else {},

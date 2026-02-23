@@ -56,7 +56,7 @@ def ask_user_redecide_with_input(
     batch_idx: int,
     task: str,
     hands_provider: str,
-    mindspec_base: dict[str, Any],
+    runtime_cfg: dict[str, Any],
     project_overlay: dict[str, Any],
     workflow_run: dict[str, Any],
     workflow_load_effective: Callable[[], list[dict[str, Any]]],
@@ -80,7 +80,7 @@ def ask_user_redecide_with_input(
     decision_prompt2 = deps.decide_next_prompt_builder(
         task=task,
         hands_provider=hands_provider,
-        mindspec_base=mindspec_base if isinstance(mindspec_base, dict) else {},
+        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
         project_overlay=project_overlay if isinstance(project_overlay, dict) else {},
         thought_db_context=tdb_ctx2_obj,
         active_workflow=deps.load_active_workflow(
@@ -192,7 +192,7 @@ def ask_user_auto_answer_attempt(
     note_error: str,
     task: str,
     hands_provider: str,
-    mindspec_base: dict[str, Any],
+    runtime_cfg: dict[str, Any],
     project_overlay: dict[str, Any],
     recent_evidence: list[dict[str, Any]],
     deps: AskUserAutoAnswerAttemptDeps,
@@ -206,7 +206,7 @@ def ask_user_auto_answer_attempt(
     aa_prompt = deps.auto_answer_prompt_builder(
         task=task,
         hands_provider=hands_provider,
-        mindspec_base=mindspec_base if isinstance(mindspec_base, dict) else {},
+        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
         project_overlay=project_overlay if isinstance(project_overlay, dict) else {},
         thought_db_context=tdb_ctx_aa_obj if isinstance(tdb_ctx_aa_obj, dict) else {},
         repo_observation=repo_obs if isinstance(repo_obs, dict) else {},

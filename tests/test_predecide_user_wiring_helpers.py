@@ -33,7 +33,7 @@ class PredecideUserWiringHelpersTests(unittest.TestCase):
         deps = PredecideUserWiringDeps(
             task="task",
             hands_provider="codex",
-            mindspec_base_getter=lambda: {"runtime": True},
+            runtime_cfg_getter=lambda: {"runtime": True},
             project_overlay={"k": "v"},
             recent_evidence=[{"kind": "e"}],
             empty_auto_answer=lambda: {"should_answer": False, "needs_user_input": False, "confidence": 0.0},
@@ -74,7 +74,7 @@ class PredecideUserWiringHelpersTests(unittest.TestCase):
         self.assertIsInstance(prompt_kwargs, dict)
         self.assertEqual(prompt_kwargs.get("task"), "task")
         self.assertEqual(prompt_kwargs.get("hands_provider"), "codex")
-        self.assertEqual(prompt_kwargs.get("mindspec_base"), {"runtime": True})
+        self.assertEqual(prompt_kwargs.get("runtime_cfg"), {"runtime": True})
         self.assertEqual(prompt_kwargs.get("project_overlay"), {"k": "v"})
         self.assertEqual(prompt_kwargs.get("thought_db_context"), {"claims": []})
         self.assertEqual(prompt_kwargs.get("repo_observation"), {"r": 1})
@@ -105,7 +105,7 @@ class PredecideUserWiringHelpersTests(unittest.TestCase):
         deps = PredecideUserWiringDeps(
             task="task",
             hands_provider="codex",
-            mindspec_base_getter=lambda: {},
+            runtime_cfg_getter=lambda: {},
             project_overlay={},
             recent_evidence=[],
             empty_auto_answer=lambda: {},

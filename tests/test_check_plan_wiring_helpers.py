@@ -40,7 +40,7 @@ class CheckPlanWiringHelpersTests(unittest.TestCase):
         deps = CheckPlanWiringDeps(
             task="t1",
             hands_provider="codex",
-            mindspec_base_getter=lambda: {"x": 1},
+            runtime_cfg_getter=lambda: {"x": 1},
             project_overlay={"o": 1},
             evidence_window=evidence_window,
             thread_id_getter=lambda: None,
@@ -80,7 +80,7 @@ class CheckPlanWiringHelpersTests(unittest.TestCase):
         self.assertIsInstance(prompt_kwargs, dict)
         self.assertEqual(prompt_kwargs.get("task"), "t1")
         self.assertEqual(prompt_kwargs.get("hands_provider"), "codex")
-        self.assertEqual(prompt_kwargs.get("mindspec_base"), {"x": 1})
+        self.assertEqual(prompt_kwargs.get("runtime_cfg"), {"x": 1})
         self.assertEqual(prompt_kwargs.get("project_overlay"), {"o": 1})
         self.assertEqual(prompt_kwargs.get("thought_db_context"), {"a": 1})
         self.assertEqual(prompt_kwargs.get("repo_observation"), {"r": 1})

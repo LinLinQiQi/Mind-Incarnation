@@ -79,11 +79,11 @@ def run_autopilot(
     runtime_cfg = boot.runtime_cfg
     state_warnings = boot.state_warnings
 
-    def _mindspec_base_runtime() -> dict[str, Any]:
+    def _runtime_cfg_for_prompts() -> dict[str, Any]:
         """Runtime knobs context for Mind prompts.
 
-        Historical name: "MindSpec base". Canonical values/preferences and operational defaults
-        are in Thought DB Claims; this object is only runtime knobs (budgets/feature switches).
+        Canonical values/preferences and operational defaults live in Thought DB Claims.
+        This object is only non-canonical runtime knobs (budgets/feature switches).
         """
 
         return runtime_cfg if isinstance(runtime_cfg, dict) else {}
@@ -333,7 +333,7 @@ def run_autopilot(
     check_plan_wiring = W.CheckPlanWiringDeps(
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         evidence_window=evidence_window,
         thread_id_getter=lambda: thread_id,
@@ -493,7 +493,7 @@ def run_autopilot(
         notes_getter=_get_notes,
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         thread_id_getter=_cur_thread_id,
         wf_sigs_counted_in_run=wf_sigs_counted_in_run,
@@ -528,7 +528,7 @@ def run_autopilot(
         notes_getter=_get_notes,
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         thread_id_getter=_cur_thread_id,
         project_id=str(project_paths.project_id or ""),
@@ -556,7 +556,7 @@ def run_autopilot(
         notes_getter=_get_notes,
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         thread_id_getter=_cur_thread_id,
         segment_id_getter=_get_segment_id,
@@ -636,7 +636,7 @@ def run_autopilot(
         checkpoint_enabled=bool(checkpoint_enabled),
         task=task,
         hands_provider=cur_provider,
-        mindspec_base=_mindspec_base_runtime,
+        runtime_cfg=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         evidence_window=evidence_window,
         thread_id_getter=_cur_thread_id,
@@ -722,7 +722,7 @@ def run_autopilot(
             deps=W.NextInputWiringDeps(
                 task=task,
                 hands_provider=cur_provider,
-                mindspec_base_getter=_mindspec_base_runtime,
+                runtime_cfg_getter=_runtime_cfg_for_prompts,
                 project_overlay=overlay if isinstance(overlay, dict) else {},
                 evidence_window=evidence_window,
                 thread_id_getter=_cur_thread_id,
@@ -825,7 +825,7 @@ def run_autopilot(
     ask_user_auto_answer_wiring = W.AskUserAutoAnswerAttemptWiringDeps(
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         recent_evidence=evidence_window,
         empty_auto_answer=AP._empty_auto_answer,
@@ -895,7 +895,7 @@ def run_autopilot(
             deps=W.AskUserRedecideWithInputWiringDeps(
                 task=task,
                 hands_provider=cur_provider,
-                mindspec_base_getter=_mindspec_base_runtime,
+                runtime_cfg_getter=_runtime_cfg_for_prompts,
                 project_overlay=overlay if isinstance(overlay, dict) else {},
                 workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
                 workflow_load_effective=wf_registry.load_effective,
@@ -961,7 +961,7 @@ def run_autopilot(
     decide_next_query_wiring = W.DecideNextQueryWiringDeps(
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
         workflow_load_effective=wf_registry.load_effective,
@@ -1111,7 +1111,7 @@ def run_autopilot(
     predecide_user_deps = W.PredecideUserWiringDeps(
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         recent_evidence=evidence_window,
         empty_auto_answer=AP._empty_auto_answer,
@@ -1238,7 +1238,7 @@ def run_autopilot(
     workflow_progress_wiring = W.WorkflowProgressWiringDeps(
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
         workflow_load_effective=wf_registry.load_effective,
@@ -1288,7 +1288,7 @@ def run_autopilot(
     risk_judge_wiring = W.RiskJudgeWiringDeps(
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         maybe_cross_project_recall=_maybe_cross_project_recall,
         risk_judge_prompt_builder=P.risk_judge_prompt,
@@ -1466,7 +1466,7 @@ def run_autopilot(
     auto_answer_query_wiring = W.AutoAnswerQueryWiringDeps(
         task=task,
         hands_provider=cur_provider,
-        mindspec_base_getter=_mindspec_base_runtime,
+        runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         recent_evidence=evidence_window,
         auto_answer_prompt_builder=P.auto_answer_to_hands_prompt,
@@ -1598,7 +1598,6 @@ def run_autopilot(
 
     def _run_learn_update() -> None:
         AP.maybe_run_learn_update_on_run_end(
-            runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
             executed_batches=int(executed_batches),
             last_batch_id=str(last_batch_id or ""),
             learn_suggested_records_this_run=learn_suggested_records_this_run,
@@ -1609,7 +1608,7 @@ def run_autopilot(
             truncate=AP._truncate,
             task=task,
             hands_provider=cur_provider,
-            mindspec_base=_mindspec_base_runtime(),
+            runtime_cfg=_runtime_cfg_for_prompts(),
             project_overlay=overlay if isinstance(overlay, dict) else {},
             status=str(status or ""),
             notes=str(notes or ""),

@@ -27,7 +27,7 @@ class AutoAnswerWiringHelpersTests(unittest.TestCase):
         deps = AutoAnswerQueryWiringDeps(
             task="task1",
             hands_provider="codex",
-            mindspec_base_getter=lambda: {"runtime": True},
+            runtime_cfg_getter=lambda: {"runtime": True},
             project_overlay={"overlay": True},
             recent_evidence=[{"kind": "e"}],
             auto_answer_prompt_builder=_prompt_builder,
@@ -53,7 +53,7 @@ class AutoAnswerWiringHelpersTests(unittest.TestCase):
         self.assertIsInstance(prompt_kwargs, dict)
         self.assertEqual(prompt_kwargs.get("task"), "task1")
         self.assertEqual(prompt_kwargs.get("hands_provider"), "codex")
-        self.assertEqual(prompt_kwargs.get("mindspec_base"), {"runtime": True})
+        self.assertEqual(prompt_kwargs.get("runtime_cfg"), {"runtime": True})
         self.assertEqual(prompt_kwargs.get("project_overlay"), {"overlay": True})
         self.assertEqual(prompt_kwargs.get("thought_db_context"), {"claims": []})
         self.assertEqual(prompt_kwargs.get("repo_observation"), {"dirty": True})

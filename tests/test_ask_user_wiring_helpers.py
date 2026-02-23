@@ -31,7 +31,7 @@ class AskUserWiringHelpersTests(unittest.TestCase):
         deps = AskUserAutoAnswerAttemptWiringDeps(
             task="task1",
             hands_provider="codex",
-            mindspec_base_getter=lambda: {"x": 1},
+            runtime_cfg_getter=lambda: {"x": 1},
             project_overlay={"o": 1},
             recent_evidence=[{"kind": "e"}],
             empty_auto_answer=lambda: {"should_answer": False, "needs_user_input": False, "confidence": 0.0},
@@ -68,7 +68,7 @@ class AskUserWiringHelpersTests(unittest.TestCase):
         self.assertIsInstance(prompt_kwargs, dict)
         self.assertEqual(prompt_kwargs.get("task"), "task1")
         self.assertEqual(prompt_kwargs.get("hands_provider"), "codex")
-        self.assertEqual(prompt_kwargs.get("mindspec_base"), {"x": 1})
+        self.assertEqual(prompt_kwargs.get("runtime_cfg"), {"x": 1})
         self.assertEqual(prompt_kwargs.get("project_overlay"), {"o": 1})
 
         mind_kwargs = calls.get("mind_kwargs")

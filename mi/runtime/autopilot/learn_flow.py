@@ -8,7 +8,6 @@ from ...runtime.prompts import learn_update_prompt
 
 def maybe_run_learn_update_on_run_end(
     *,
-    runtime_cfg: dict[str, Any],
     executed_batches: int,
     last_batch_id: str,
     learn_suggested_records_this_run: list[dict[str, Any]],
@@ -19,7 +18,7 @@ def maybe_run_learn_update_on_run_end(
     truncate: Callable[[str, int], str],
     task: str,
     hands_provider: str,
-    mindspec_base: dict[str, Any],
+    runtime_cfg: dict[str, Any],
     project_overlay: dict[str, Any],
     status: str,
     notes: str,
@@ -138,7 +137,7 @@ def maybe_run_learn_update_on_run_end(
     prompt = learn_update_prompt(
         task=task,
         hands_provider=hands_provider,
-        mindspec_base=mindspec_base,
+        runtime_cfg=runtime_cfg,
         project_overlay=project_overlay,
         recent_learn_suggested=recent_ls,
         existing_learned_claims=existing_learned,

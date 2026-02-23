@@ -13,7 +13,7 @@ class CheckpointWiringDeps:
     checkpoint_enabled: bool
     task: str
     hands_provider: str
-    mindspec_base: Callable[[], dict[str, Any]]
+    runtime_cfg: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     evidence_window: list[dict[str, Any]]
     thread_id_getter: Callable[[], str]
@@ -56,7 +56,7 @@ def run_checkpoint_pipeline_wired(
         thread_id=str(deps.thread_id_getter() or ""),
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base() if callable(deps.mindspec_base) else {},
+        runtime_cfg=deps.runtime_cfg() if callable(deps.runtime_cfg) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         evidence_window=deps.evidence_window if isinstance(deps.evidence_window, list) else [],
         deps=CheckpointPipelineDeps(

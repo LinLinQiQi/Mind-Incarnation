@@ -13,7 +13,7 @@ class RiskJudgeWiringDeps:
 
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     maybe_cross_project_recall: Callable[..., None]
     risk_judge_prompt_builder: Callable[..., str]
@@ -40,7 +40,7 @@ def query_risk_judge_wired(
         tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+        runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         maybe_cross_project_recall=deps.maybe_cross_project_recall,
         risk_judge_prompt_builder=deps.risk_judge_prompt_builder,

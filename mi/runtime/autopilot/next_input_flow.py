@@ -115,7 +115,7 @@ def apply_loop_guard(
     sent_sigs: list[str],
     task: str,
     hands_provider: str,
-    mindspec_base: dict[str, Any],
+    runtime_cfg: dict[str, Any],
     project_overlay: dict[str, Any],
     thought_db_context: dict[str, Any] | None,
     repo_observation: dict[str, Any] | None,
@@ -157,7 +157,7 @@ def apply_loop_guard(
     lb_prompt = deps.loop_break_prompt_builder(
         task=task,
         hands_provider=hands_provider,
-        mindspec_base=mindspec_base if isinstance(mindspec_base, dict) else {},
+        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
         project_overlay=project_overlay if isinstance(project_overlay, dict) else {},
         thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
         recent_evidence=evidence_window,

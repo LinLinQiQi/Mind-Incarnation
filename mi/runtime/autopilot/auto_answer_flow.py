@@ -19,7 +19,7 @@ def query_auto_answer_to_hands(
     batch_id: str,
     task: str,
     hands_provider: str,
-    mindspec_base: dict[str, Any],
+    runtime_cfg: dict[str, Any],
     project_overlay: dict[str, Any],
     thought_db_context: dict[str, Any],
     repo_observation: dict[str, Any],
@@ -33,7 +33,7 @@ def query_auto_answer_to_hands(
     prompt = deps.auto_answer_prompt_builder(
         task=task,
         hands_provider=hands_provider,
-        mindspec_base=mindspec_base if isinstance(mindspec_base, dict) else {},
+        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
         project_overlay=project_overlay if isinstance(project_overlay, dict) else {},
         thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
         repo_observation=repo_observation if isinstance(repo_observation, dict) else {},

@@ -18,7 +18,7 @@ class WorkflowProgressWiringDeps:
 
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     workflow_run: dict[str, Any]
     workflow_load_effective: Callable[..., Any]
@@ -68,7 +68,7 @@ def apply_workflow_progress_wired(
         batch_id=str(batch_id or ""),
         task=str(deps.task or ""),
         hands_provider=str(deps.hands_provider or ""),
-        mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+        runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
         project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
         active_workflow=active_wf,
         workflow_run=deps.workflow_run if isinstance(deps.workflow_run, dict) else {},

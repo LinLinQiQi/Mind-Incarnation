@@ -15,7 +15,7 @@ class WorkflowProgressWiringHelpersTests(unittest.TestCase):
         deps = WorkflowProgressWiringDeps(
             task="t",
             hands_provider="codex",
-            mindspec_base_getter=lambda: {},
+            runtime_cfg_getter=lambda: {},
             project_overlay={},
             workflow_run={},
             workflow_load_effective=lambda *_a, **_k: None,
@@ -78,7 +78,7 @@ class WorkflowProgressWiringHelpersTests(unittest.TestCase):
         deps = WorkflowProgressWiringDeps(
             task="task",
             hands_provider="codex",
-            mindspec_base_getter=lambda: {"runtime": True},
+            runtime_cfg_getter=lambda: {"runtime": True},
             project_overlay=project_overlay,  # mutated in-place for persistence
             workflow_run=workflow_run,
             workflow_load_effective=lambda wid=None: {"id": str(wid), "name": "WF"},
@@ -114,7 +114,7 @@ class WorkflowProgressWiringHelpersTests(unittest.TestCase):
         self.assertIsInstance(prompt_kwargs, dict)
         self.assertEqual(prompt_kwargs.get("task"), "task")
         self.assertEqual(prompt_kwargs.get("hands_provider"), "codex")
-        self.assertEqual(prompt_kwargs.get("mindspec_base"), {"runtime": True})
+        self.assertEqual(prompt_kwargs.get("runtime_cfg"), {"runtime": True})
         self.assertEqual(prompt_kwargs.get("project_overlay"), project_overlay)
         self.assertEqual(prompt_kwargs.get("thought_db_context"), {"claims": []})
         self.assertEqual(prompt_kwargs.get("workflow"), {"id": "wf_1", "name": "WF"})

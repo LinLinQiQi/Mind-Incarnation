@@ -21,7 +21,7 @@ def retry_auto_answer_after_recall(
     question: str,
     task: str,
     hands_provider: str,
-    mindspec_base: dict[str, Any],
+    runtime_cfg: dict[str, Any],
     project_overlay: dict[str, Any],
     tdb_ctx_batch_obj: dict[str, Any],
     repo_obs: dict[str, Any],
@@ -40,7 +40,7 @@ def retry_auto_answer_after_recall(
     aa_prompt_retry = deps.auto_answer_prompt_builder(
         task=task,
         hands_provider=hands_provider,
-        mindspec_base=mindspec_base if isinstance(mindspec_base, dict) else {},
+        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
         project_overlay=project_overlay if isinstance(project_overlay, dict) else {},
         thought_db_context=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
         repo_observation=repo_obs if isinstance(repo_obs, dict) else {},

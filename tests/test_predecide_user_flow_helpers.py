@@ -23,7 +23,7 @@ class PredecideUserFlowHelpersTests(unittest.TestCase):
             question="old question",
             task="task",
             hands_provider="codex",
-            mindspec_base={},
+            runtime_cfg={},
             project_overlay={},
             tdb_ctx_batch_obj={},
             repo_obs={},

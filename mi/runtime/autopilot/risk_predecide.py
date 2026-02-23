@@ -21,7 +21,7 @@ def query_risk_judge(
     tdb_ctx_batch_obj: dict[str, Any],
     task: str,
     hands_provider: str,
-    mindspec_base: dict[str, Any],
+    runtime_cfg: dict[str, Any],
     project_overlay: dict[str, Any],
     maybe_cross_project_recall: Callable[..., None],
     risk_judge_prompt_builder: Callable[..., str],
@@ -39,7 +39,7 @@ def query_risk_judge(
     risk_prompt = risk_judge_prompt_builder(
         task=task,
         hands_provider=hands_provider,
-        mindspec_base=mindspec_base if isinstance(mindspec_base, dict) else {},
+        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
         project_overlay=project_overlay if isinstance(project_overlay, dict) else {},
         thought_db_context=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
         risk_signals=signals,

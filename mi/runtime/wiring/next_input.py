@@ -19,7 +19,7 @@ class NextInputWiringDeps:
 
     task: str
     hands_provider: str
-    mindspec_base_getter: Callable[[], dict[str, Any]]
+    runtime_cfg_getter: Callable[[], dict[str, Any]]
     project_overlay: dict[str, Any]
     evidence_window: list[dict[str, Any]]
     thread_id_getter: Callable[[], str]
@@ -63,7 +63,7 @@ def queue_next_input_wired(
             sent_sigs=kwargs.get("sent_sigs") if isinstance(kwargs.get("sent_sigs"), list) else [],
             task=str(deps.task or ""),
             hands_provider=str(deps.hands_provider or ""),
-            mindspec_base=deps.mindspec_base_getter() if callable(deps.mindspec_base_getter) else {},
+            runtime_cfg=deps.runtime_cfg_getter() if callable(deps.runtime_cfg_getter) else {},
             project_overlay=deps.project_overlay if isinstance(deps.project_overlay, dict) else {},
             thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
             repo_observation=repo_observation if isinstance(repo_observation, dict) else {},

@@ -313,9 +313,9 @@ MI uses the following internal prompts (all should return strict JSON):
 
 ## Data Models (Minimal Schemas)
 
-### RuntimeConfig + ProjectOverlay (prompt context; historical name: "MindSpec")
+### RuntimeConfig + ProjectOverlay (prompt context)
 
-In V1 code and schemas, the runtime knobs object passed into Mind prompts is historically named `mindspec_base`.
+In V1 code and schemas, the runtime knobs object passed into Mind prompts is named `runtime_cfg`.
 It is **not** canonical for values/preferences (those live in Thought DB).
 
 Prompt context is the merge of:

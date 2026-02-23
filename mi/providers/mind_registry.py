@@ -7,17 +7,19 @@ from ..core.config import resolve_api_key
 from .llm import MiLlm
 from .mind_anthropic import AnthropicMindProvider
 from .mind_openai_compat import OpenAICompatibleMindProvider
+from .types import MindProvider
 
 
-MindProviderFactory = Callable[[Dict[str, Any], Path, Path], Any]
+# Use typing.* here (not built-in generics) since this alias is evaluated at import time.
+MindProviderFactory = Callable[[Dict[str, Any], Path, Path], MindProvider]
 
 
-def _build_codex_schema(cfg: Dict[str, Any], project_root: Path, transcripts_dir: Path) -> Any:
+def _build_codex_schema(cfg: dict[str, Any], project_root: Path, transcripts_dir: Path) -> MindProvider:
     # V1 default: call Codex itself with a JSON schema and parse the JSON from the response.
     return MiLlm(project_root=project_root, transcripts_dir=transcripts_dir)
 
 
-def _build_openai_compatible(cfg: Dict[str, Any], _project_root: Path, transcripts_dir: Path) -> Any:
+def _build_openai_compatible(cfg: dict[str, Any], _project_root: Path, transcripts_dir: Path) -> MindProvider:
     mind = cfg.get("mind") if isinstance(cfg.get("mind"), dict) else {}
     oc = mind.get("openai_compatible") if isinstance(mind.get("openai_compatible"), dict) else {}
     api_key = resolve_api_key(oc if isinstance(oc, dict) else {})
@@ -31,7 +33,7 @@ def _build_openai_compatible(cfg: Dict[str, Any], _project_root: Path, transcrip
     )
 
 
-def _build_anthropic(cfg: Dict[str, Any], _project_root: Path, transcripts_dir: Path) -> Any:
+def _build_anthropic(cfg: dict[str, Any], _project_root: Path, transcripts_dir: Path) -> MindProvider:
     mind = cfg.get("mind") if isinstance(cfg.get("mind"), dict) else {}
     ac = mind.get("anthropic") if isinstance(mind.get("anthropic"), dict) else {}
     api_key = resolve_api_key(ac if isinstance(ac, dict) else {})
@@ -58,7 +60,7 @@ def mind_provider_names() -> list[str]:
     return sorted(_MIND_FACTORIES.keys())
 
 
-def make_mind_provider(cfg: Dict[str, Any], *, project_root: Path, transcripts_dir: Path) -> Any:
+def make_mind_provider(cfg: dict[str, Any], *, project_root: Path, transcripts_dir: Path) -> MindProvider:
     mind = cfg.get("mind") if isinstance(cfg.get("mind"), dict) else {}
     provider = str(mind.get("provider") or "codex_schema").strip()
     fn = _MIND_FACTORIES.get(provider)

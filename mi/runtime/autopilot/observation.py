@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from ...providers.codex_runner import CodexRunResult
+from ...providers.types import HandsRunResult
 from ..risk import detect_risk_signals_from_command, detect_risk_signals_from_text_line
 from ..transcript import summarize_codex_events, summarize_hands_transcript, open_transcript_text
 
@@ -17,7 +17,7 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 3] + "..."
 
 
-def _batch_summary(result: CodexRunResult) -> dict[str, Any]:
+def _batch_summary(result: HandsRunResult) -> dict[str, Any]:
     commands: list[dict[str, Any]] = []
     for item in result.iter_command_executions():
         commands.append(
@@ -44,7 +44,7 @@ def _batch_summary(result: CodexRunResult) -> dict[str, Any]:
     }
 
 
-def _detect_risk_signals(result: CodexRunResult) -> list[str]:
+def _detect_risk_signals(result: HandsRunResult) -> list[str]:
     signals: list[str] = []
     for item in result.iter_command_executions():
         cmd = str(item.get("command") or "")

@@ -4,7 +4,6 @@ import json
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,6 +14,7 @@ from .mind_utils import append_jsonl as _append_jsonl
 from .mind_utils import extract_json as _extract_json
 from .mind_utils import new_mind_transcript_path
 from .mind_utils import schema_path as _schema_path
+from .types import MindProviderResult
 
 
 def _extract_text_from_openai_like(payload: dict[str, Any]) -> str:
@@ -31,12 +31,6 @@ def _extract_text_from_openai_like(payload: dict[str, Any]) -> str:
         pass
 
     return ""
-
-
-@dataclass(frozen=True)
-class MindResult:
-    obj: dict[str, Any]
-    transcript_path: Path
 
 
 class OpenAICompatibleMindProvider:
@@ -82,7 +76,7 @@ class OpenAICompatibleMindProvider:
             raise RuntimeError("response JSON was not an object")
         return obj
 
-    def call(self, *, schema_filename: str, prompt: str, tag: str) -> MindResult:
+    def call(self, *, schema_filename: str, prompt: str, tag: str) -> MindProviderResult:
         if not self._model.strip():
             raise MindCallError(
                 "openai_compatible mind provider requires mind.openai_compatible.model",
@@ -187,7 +181,7 @@ class OpenAICompatibleMindProvider:
                 if isinstance(obj, dict):
                     errs = validate_json_schema(obj, schema_obj)
                     if not errs:
-                        return MindResult(obj=obj, transcript_path=transcript_path)
+                        return MindProviderResult(obj=obj, transcript_path=transcript_path)
                     last_errors = errs
                 else:
                     if not last_errors:

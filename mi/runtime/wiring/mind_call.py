@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..autopilot.mind_call_flow import MindCallDeps, MindCallState, run_mind_call
+from ...providers.types import MindCallFn
 
 
 @dataclass
@@ -14,7 +15,7 @@ class MindCaller:
     later Mind calls are skipped without raising and without calling the model.
     """
 
-    llm_call: Callable[..., Any]
+    llm_call: MindCallFn
     evidence_append: Callable[[dict[str, Any]], Any]
     now_ts: Callable[[], str]
     truncate: Callable[[str, int], str]
@@ -64,4 +65,3 @@ class MindCaller:
             str(res.mind_transcript_ref or ""),
             str(res.state or ""),
         )
-

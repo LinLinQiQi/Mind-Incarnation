@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -9,12 +8,7 @@ from .mind_utils import extract_json as _extract_json
 from .mind_utils import new_mind_transcript_path
 from .mind_utils import schema_path as _schema_path
 from .mind_errors import MindCallError
-
-
-@dataclass(frozen=True)
-class MiPromptResult:
-    obj: dict[str, Any]
-    transcript_path: Path
+from .types import MindProviderResult
 
 
 class MiLlm:
@@ -27,7 +21,7 @@ class MiLlm:
         self._project_root = project_root
         self._transcripts_dir = transcripts_dir
 
-    def call(self, *, schema_filename: str, prompt: str, tag: str) -> MiPromptResult:
+    def call(self, *, schema_filename: str, prompt: str, tag: str) -> MindProviderResult:
         schema_path = _schema_path(schema_filename)
         transcript_path = new_mind_transcript_path(self._transcripts_dir, tag)
         try:
@@ -68,4 +62,4 @@ class MiLlm:
                 transcript_path=transcript_path,
             )
 
-        return MiPromptResult(obj=obj, transcript_path=transcript_path)
+        return MindProviderResult(obj=obj, transcript_path=transcript_path)

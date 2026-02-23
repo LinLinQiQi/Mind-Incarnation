@@ -190,6 +190,8 @@ Context isolation (important): Mind and Hands do **not** share a session/thread 
 
 Implementation note (behavior-preserving): shared Mind provider helpers (schema path resolution, JSON extraction, JSONL transcript append, transcript filename stamping via `filename_safe_ts`) live under `mi/providers/mind_utils.py`.
 
+Implementation note (behavior-preserving): provider contracts (Mind result payload + Hands result payload + minimal call signatures) are centralized under `mi/providers/types.py` so new adapters can plug in without changing runtime semantics.
+
 Schema note (Codex `--output-schema`): Codex's `--output-schema` is effectively strict. For object schemas, every key in `properties` must appear in `required`. Optional fields must be expressed via `null` (e.g., `{"anyOf":[{"type":"null"},{...}]}`), not by omitting the key.
 
 ## Transparency

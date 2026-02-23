@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ...providers.mind_errors import MindCallError
+from ...providers.types import MindCallFn
 from .batch_effects import append_evidence_window
 
 
@@ -21,7 +22,7 @@ class MindCallState:
 class MindCallDeps:
     """Dependencies for Mind call execution + side effects."""
 
-    llm_call: Callable[..., Any]
+    llm_call: MindCallFn
     evidence_append: Callable[[dict[str, Any]], Any]
     now_ts: Callable[[], str]
     truncate: Callable[[str, int], str]

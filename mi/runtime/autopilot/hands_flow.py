@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ...providers.types import HandsExecFn, HandsResumeFn, HandsRunResult
 from .batch_context import BatchExecutionContext
 from .run_deps import RunDeps
 from .run_state import RunState
@@ -20,8 +21,8 @@ class HandsFlowDeps:
     no_mi_prompt: bool
     interrupt_cfg: Any
     overlay: dict[str, Any]
-    hands_exec: Callable[..., Any]
-    hands_resume: Any | None
+    hands_exec: HandsExecFn
+    hands_resume: HandsResumeFn | None
     write_overlay: Callable[[dict[str, Any]], None]
 
 
@@ -38,7 +39,7 @@ def _emit_batch_start(*, ctx: BatchExecutionContext, state: RunState, deps: Hand
     deps.run_deps.emit_prefixed("[mi->hands]", ctx.batch_input.rstrip("\n"))
 
 
-def _exec_once(*, ctx: BatchExecutionContext, deps: HandsFlowDeps) -> Any:
+def _exec_once(*, ctx: BatchExecutionContext, deps: HandsFlowDeps) -> HandsRunResult:
     return deps.hands_exec(
         prompt=ctx.hands_prompt,
         project_root=deps.project_root,
@@ -50,7 +51,7 @@ def _exec_once(*, ctx: BatchExecutionContext, deps: HandsFlowDeps) -> Any:
     )
 
 
-def _resume_once(*, ctx: BatchExecutionContext, state: RunState, deps: HandsFlowDeps) -> Any:
+def _resume_once(*, ctx: BatchExecutionContext, state: RunState, deps: HandsFlowDeps) -> HandsRunResult:
     return deps.hands_resume(
         thread_id=state.thread_id,
         prompt=ctx.hands_prompt,
@@ -63,7 +64,9 @@ def _resume_once(*, ctx: BatchExecutionContext, state: RunState, deps: HandsFlow
     )
 
 
-def _maybe_fallback_after_resume_failure(*, ctx: BatchExecutionContext, state: RunState, result: Any, deps: HandsFlowDeps) -> Any:
+def _maybe_fallback_after_resume_failure(
+    *, ctx: BatchExecutionContext, state: RunState, result: HandsRunResult, deps: HandsFlowDeps
+) -> HandsRunResult:
     if not bool(ctx.attempted_overlay_resume):
         return result
     if int(getattr(result, "exit_code", 0) or 0) == 0:
@@ -109,7 +112,7 @@ def _persist_overlay_hands_state(*, state: RunState, deps: HandsFlowDeps) -> Non
         deps.write_overlay(deps.overlay)
 
 
-def run_hands_batch(*, ctx: BatchExecutionContext, state: RunState, deps: HandsFlowDeps) -> tuple[Any, RunState]:
+def run_hands_batch(*, ctx: BatchExecutionContext, state: RunState, deps: HandsFlowDeps) -> tuple[HandsRunResult, RunState]:
     """Execute one Hands batch and return updated runtime state."""
 
     _emit_batch_start(ctx=ctx, state=state, deps=deps)

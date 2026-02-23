@@ -1052,7 +1052,7 @@ Transcript archiving (optional): `mi gc transcripts` can gzip older transcripts 
 {"type":"mi.transcript.archived","archived_path":".../archive/<name>.jsonl.gz", "...":"..."}
 ```
 
-Thought DB compaction (optional): `mi gc thoughtdb` archives Thought DB JSONL files into `thoughtdb/archive/<ts>/` as `.gz`, then rewrites compacted JSONL files (still append-only from that point onward). It also deletes `view.snapshot.json` and rebuilds it on the next load.
+Thought DB compaction (optional): `mi gc thoughtdb` archives Thought DB JSONL files into `thoughtdb/archive/<ts>/` as `.gz`, then rewrites compacted JSONL files (still append-only from that point onward). It also deletes `view.snapshot.json` and rebuilds it on the next load. Implementation: `mi/thoughtdb/compaction.py` (behavior-preserving detail).
 
 Crash-safe state (V1): MI writes MI-owned JSON state files using atomic replace (to avoid partial writes). If an MI-owned state file is unreadable/corrupt (e.g., JSON parse error), MI quarantines it as `*.corrupt.<ts>` and continues with defaults (best-effort). `mi run` records a `kind=state_corrupt` EvidenceLog record when this happens. By default, low-level state reads only print to stderr when no warning collector is used; you can force printing with `$MI_STATE_WARNINGS_STDERR=1` or force silence with `$MI_STATE_WARNINGS_STDERR=0`.
 

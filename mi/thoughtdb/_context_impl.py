@@ -5,6 +5,7 @@ from typing import Any
 
 from ..memory.service import MemoryService
 from ..memory.text import tokenize_query, truncate
+from .compact import compact_claim_for_context, compact_edge_for_context, compact_node_for_context
 from .store import ThoughtDbStore, ThoughtDbView
 from .values import VALUES_BASE_TAG, VALUES_RAW_TAG, VALUES_SUMMARY_TAG
 from .pins import PINNED_PREF_GOAL_TAGS
@@ -65,60 +66,15 @@ def _score_tokens(tokens: list[str], *, text: str) -> int:
 
 
 def _compact_claim(c: dict[str, Any], *, view: ThoughtDbView) -> dict[str, Any]:
-    cid = str(c.get("claim_id") or "").strip()
-    refs = c.get("source_refs") if isinstance(c.get("source_refs"), list) else []
-    ev_ids: list[str] = []
-    for r in refs:
-        if isinstance(r, dict) and r.get("event_id"):
-            ev_ids.append(str(r.get("event_id")))
-    ev_ids = [x for x in ev_ids if x.strip()][:6]
-    return {
-        "claim_id": cid,
-        "canonical_id": view.resolve_id(cid),
-        "status": view.claim_status(cid),
-        "claim_type": str(c.get("claim_type") or "").strip(),
-        "scope": str(c.get("scope") or "").strip(),
-        "visibility": str(c.get("visibility") or "").strip(),
-        "valid_from": c.get("valid_from"),
-        "valid_to": c.get("valid_to"),
-        "text": truncate(str(c.get("text") or "").strip(), 480),
-        "tags": [str(x) for x in (c.get("tags") or []) if str(x).strip()][:16] if isinstance(c.get("tags"), list) else [],
-        "source_event_ids": ev_ids,
-    }
+    return compact_claim_for_context(c, view=view)
 
 
 def _compact_edge(e: dict[str, Any], *, scope: str) -> dict[str, Any]:
-    return {
-        "edge_type": str(e.get("edge_type") or "").strip(),
-        "from_id": str(e.get("from_id") or "").strip(),
-        "to_id": str(e.get("to_id") or "").strip(),
-        "scope": scope,
-        "notes": truncate(str(e.get("notes") or "").strip(), 160),
-    }
+    return compact_edge_for_context(e, scope=scope)
 
 
 def _compact_node(n: dict[str, Any], *, view: ThoughtDbView) -> dict[str, Any]:
-    nid = str(n.get("node_id") or "").strip()
-    refs = n.get("source_refs") if isinstance(n.get("source_refs"), list) else []
-    ev_ids: list[str] = []
-    for r in refs:
-        if isinstance(r, dict) and r.get("event_id"):
-            ev_ids.append(str(r.get("event_id")))
-    ev_ids = [x for x in ev_ids if x.strip()][:6]
-    tags = n.get("tags") if isinstance(n.get("tags"), list) else []
-    return {
-        "node_id": nid,
-        "canonical_id": view.resolve_id(nid),
-        "status": view.node_status(nid),
-        "node_type": str(n.get("node_type") or "").strip(),
-        "scope": str(n.get("scope") or "").strip(),
-        "visibility": str(n.get("visibility") or "").strip(),
-        "asserted_ts": str(n.get("asserted_ts") or "").strip(),
-        "title": truncate(str(n.get("title") or "").strip(), 160),
-        "text": truncate(str(n.get("text") or "").strip(), 560),
-        "tags": [str(x) for x in tags if str(x).strip()][:16] if isinstance(tags, list) else [],
-        "source_event_ids": ev_ids,
-    }
+    return compact_node_for_context(n, view=view)
 
 
 @dataclass(frozen=True)

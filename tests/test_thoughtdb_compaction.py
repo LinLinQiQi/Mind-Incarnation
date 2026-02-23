@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mi.core.paths import ProjectPaths
 from mi.thoughtdb import ThoughtDbStore
-from mi.thoughtdb.compact import compact_thoughtdb_dir
+from mi.thoughtdb.compaction import compact_thoughtdb_dir
 
 
 class TestThoughtDbCompaction(unittest.TestCase):

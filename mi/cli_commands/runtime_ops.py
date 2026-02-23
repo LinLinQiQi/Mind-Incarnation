@@ -10,7 +10,7 @@ from ..providers.provider_factory import make_hands_functions, make_mind_provide
 from ..runtime.gc import archive_project_transcripts
 from ..runtime.runner import run_autopilot
 from ..thoughtdb import ThoughtDbStore
-from ..thoughtdb.compact import compact_thoughtdb_dir
+from ..thoughtdb.compaction import compact_thoughtdb_dir
 
 
 def handle_run_memory_gc_commands(

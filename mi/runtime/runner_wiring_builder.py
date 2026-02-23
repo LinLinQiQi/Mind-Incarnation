@@ -14,6 +14,7 @@ from . import prompts as P
 from .runner_wiring_checkpoint import build_checkpoint_mining_wiring_bundle
 from .runner_wiring_decide import build_decide_wiring_bundle
 from .runner_wiring_hands import build_hands_runner_bundle
+from .runner_wiring_interaction import build_interaction_record_wiring_bundle
 from .runner_wiring_next_input import build_next_input_wiring_bundle
 from .runner_wiring_preaction import build_preaction_wiring_bundle
 from .runner_wiring_predecide import build_predecide_wiring_bundle
@@ -391,36 +392,14 @@ def run_autopilot_from_boot(
         state.last_checkpoint_key = str(res.last_checkpoint_key or "")
         if bool(res.persist_segment_state):
             _persist_segment_state()
-
-    interaction_record_wiring = W.InteractionRecordWiringDeps(
+    interaction = build_interaction_record_wiring_bundle(
         evidence_window=evidence_window,
         evidence_append=evw.append,
-        append_window=AP.append_evidence_window,
         segment_add=_segment_add,
         persist_segment_state=_persist_segment_state,
         now_ts=now_rfc3339,
         thread_id_getter=lambda: state.thread_id,
     )
-
-    def _append_user_input_record(*, batch_id: str, question: str, answer: str) -> dict[str, Any]:
-        """Append user input evidence and keep segment/evidence windows in sync."""
-
-        return W.append_user_input_record_wired(
-            batch_id=str(batch_id),
-            question=question,
-            answer=answer,
-            deps=interaction_record_wiring,
-        )
-
-    def _append_auto_answer_record(*, batch_id: str, mind_transcript_ref: str, auto_answer: dict[str, Any]) -> dict[str, Any]:
-        """Append auto_answer evidence and keep segment/evidence windows in sync."""
-
-        return W.append_auto_answer_record_wired(
-            batch_id=str(batch_id),
-            mind_transcript_ref=str(mind_transcript_ref or ""),
-            auto_answer=auto_answer if isinstance(auto_answer, dict) else {},
-            deps=interaction_record_wiring,
-        )
 
     next_input = build_next_input_wiring_bundle(
         task=task,
@@ -434,7 +413,7 @@ def run_autopilot_from_boot(
         evidence_append=evw.append,
         mind_call=_mind_call,
         read_user_answer=_read_user_answer,
-        append_user_input_record=_append_user_input_record,
+        append_user_input_record=interaction.append_user_input_record,
         append_segment_record=lambda rec: AP.segment_add_and_persist(
             segment_add=_segment_add,
             persist_segment_state=_persist_segment_state,
@@ -463,12 +442,12 @@ def run_autopilot_from_boot(
         evidence_window=evidence_window,
         maybe_cross_project_recall=_maybe_cross_project_recall,
         mind_call=_mind_call,
-        append_auto_answer_record=_append_auto_answer_record,
+        append_auto_answer_record=interaction.append_auto_answer_record,
         get_check_input=_get_check_input,
         join_hands_inputs=AP.join_hands_inputs,
         queue_next_input=next_input.queue_next_input,
         read_user_answer=_read_user_answer,
-        append_user_input_record=_append_user_input_record,
+        append_user_input_record=interaction.append_user_input_record,
         set_blocked=lambda blocked_note: (
             _set_status("blocked"),
             _set_notes(str(blocked_note or "").strip()),
@@ -498,8 +477,8 @@ def run_autopilot_from_boot(
         resolve_ask_when_uncertain=lambda: bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain),
         looks_like_user_question=AP._looks_like_user_question,
         read_user_answer=_read_user_answer,
-        append_user_input_record=_append_user_input_record,
-        append_auto_answer_record=_append_auto_answer_record,
+        append_user_input_record=interaction.append_user_input_record,
+        append_auto_answer_record=interaction.append_auto_answer_record,
         queue_next_input=next_input.queue_next_input,
         maybe_cross_project_recall=_maybe_cross_project_recall,
         get_check_input=_get_check_input,
@@ -551,7 +530,7 @@ def run_autopilot_from_boot(
         emit_prefixed=_emit_prefixed,
         set_last_evidence_rec=_set_last_evidence_rec,
         plan_checks_and_record=_plan_checks_and_record,
-        append_auto_answer_record=_append_auto_answer_record,
+        append_auto_answer_record=interaction.append_auto_answer_record,
     )
 
     def _risk_set_status(value: str) -> None:

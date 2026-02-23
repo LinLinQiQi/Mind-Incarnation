@@ -5,6 +5,7 @@ from typing import Any
 
 from ..memory.service import MemoryService
 from ..memory.types import MemoryItem
+from .predicates import claim_active_and_valid, edges_adjacent, node_active
 from .store import ThoughtDbView
 
 
@@ -124,44 +125,18 @@ def seed_ids_from_memory(
 
 
 def _claim_active_and_valid(view: ThoughtDbView, claim_id: str, *, as_of_ts: str) -> bool:
-    cid = str(claim_id or "").strip()
-    if not cid:
-        return False
-    if cid in view.redirects_same_as:
-        return False
-    if view.claim_status(cid) != "active":
-        return False
-    c = view.claims_by_id.get(cid)
-    if not isinstance(c, dict):
-        return False
-    t = str(as_of_ts or "").strip()
-    if t:
-        vf = c.get("valid_from")
-        vt = c.get("valid_to")
-        if isinstance(vf, str) and vf.strip() and vf.strip() > t:
-            return False
-        if isinstance(vt, str) and vt.strip() and t >= vt.strip():
-            return False
-    return True
+    # Backward-compatible wrapper; prefer importing from mi.thoughtdb.predicates.
+    return claim_active_and_valid(view, claim_id, as_of_ts=as_of_ts)
 
 
 def _node_active(view: ThoughtDbView, node_id: str) -> bool:
-    nid = str(node_id or "").strip()
-    if not nid:
-        return False
-    if nid in view.redirects_same_as:
-        return False
-    return view.node_status(nid) == "active"
+    # Backward-compatible wrapper; prefer importing from mi.thoughtdb.predicates.
+    return node_active(view, node_id)
 
 
 def _edges_adjacent(view: ThoughtDbView, node_id: str) -> list[dict[str, Any]]:
-    nid = str(node_id or "").strip()
-    if not nid:
-        return []
-    out: list[dict[str, Any]] = []
-    out.extend([x for x in (view.edges_by_from.get(nid) or []) if isinstance(x, dict)])
-    out.extend([x for x in (view.edges_by_to.get(nid) or []) if isinstance(x, dict)])
-    return out
+    # Backward-compatible wrapper; prefer importing from mi.thoughtdb.predicates.
+    return edges_adjacent(view, node_id)
 
 
 def expand_one_hop(

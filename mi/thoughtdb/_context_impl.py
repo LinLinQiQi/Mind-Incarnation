@@ -9,11 +9,10 @@ from .store import ThoughtDbStore, ThoughtDbView
 from .values import VALUES_BASE_TAG, VALUES_RAW_TAG, VALUES_SUMMARY_TAG
 from .pins import PINNED_PREF_GOAL_TAGS
 from .retrieval import (
-    _claim_active_and_valid as _claim_active_and_valid_view,
-    _node_active as _node_active_view,
     expand_one_hop,
     seed_ids_from_memory,
 )
+from .predicates import claim_active_and_valid, node_active
 
 
 def _safe_list_str(items: Any, *, limit: int) -> list[str]:
@@ -179,10 +178,10 @@ def build_decide_next_thoughtdb_context(
         seed_notes = seeds.notes
 
     def _claim_active_and_valid(view: ThoughtDbView, claim_id: str) -> bool:
-        return _claim_active_and_valid_view(view, claim_id, as_of_ts=t)
+        return claim_active_and_valid(view, claim_id, as_of_ts=t)
 
     def _node_active(view: ThoughtDbView, node_id: str) -> bool:
-        return _node_active_view(view, node_id)
+        return node_active(view, node_id)
 
     # Nodes: include a small set of recent/high-signal Decision/Action/Summary nodes so
     # decide_next can benefit from past decisions/steps without replaying the full transcript.

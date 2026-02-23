@@ -21,6 +21,7 @@ from .runner_wiring_preaction import build_preaction_wiring_bundle
 from .runner_wiring_predecide import build_predecide_wiring_bundle
 from .runner_wiring_risk import build_risk_predecide_wiring_bundle
 from .runner_wiring_testless import build_testless_wiring_bundle
+from .runner_wiring_workflow_risk import build_workflow_risk_wiring_bundle
 from ..core.storage import now_rfc3339, read_json_best_effort, write_json_atomic
 from ..thoughtdb import claim_signature
 from ..thoughtdb.operational_defaults import resolve_operational_defaults
@@ -559,36 +560,11 @@ def run_autopilot_from_boot(
         handle_learn_suggested=_handle_learn_suggested,
     )
 
-    def _predecide_apply_workflow_and_risk(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        result: Any,
-        summary: dict[str, Any],
-        evidence_obj: dict[str, Any],
-        repo_obs: dict[str, Any],
-        hands_last: str,
-        tdb_ctx_batch_obj: dict[str, Any],
-        ctx: AP.BatchExecutionContext,
-    ) -> bool | None:
-        """Apply workflow progress and risk handling before checks/auto-answer."""
-
-        return AP.run_workflow_and_risk_phase(
-            batch_idx=batch_idx,
-            batch_id=batch_id,
-            result=result,
-            summary=summary if isinstance(summary, dict) else {},
-            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            hands_last=hands_last,
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            ctx=ctx,
-            deps=AP.WorkflowRiskPhaseDeps(
-                apply_workflow_progress=predecide.apply_workflow_progress,
-                detect_risk_signals=risk.detect_risk_signals,
-                judge_and_handle_risk=risk.judge_and_handle_risk,
-            ),
-        )
+    workflow_risk = build_workflow_risk_wiring_bundle(
+        apply_workflow_progress=predecide.apply_workflow_progress,
+        detect_risk_signals=risk.detect_risk_signals,
+        judge_and_handle_risk=risk.judge_and_handle_risk,
+    )
 
     def _dict_or_empty(obj: Any) -> dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
@@ -612,11 +588,7 @@ def run_autopilot_from_boot(
                 observe_repo=lambda: AP._observe_repo(project_path),
                 dict_or_empty=_dict_or_empty,
                 extract_deps=AP.ExtractEvidenceDeps(extract_context=predecide.extract_evidence_and_context),
-                workflow_risk_deps=AP.WorkflowRiskPhaseDeps(
-                    apply_workflow_progress=predecide.apply_workflow_progress,
-                    detect_risk_signals=risk.detect_risk_signals,
-                    judge_and_handle_risk=risk.judge_and_handle_risk,
-                ),
+                workflow_risk_deps=workflow_risk.deps,
                 checks_deps=AP.PlanChecksAutoAnswerDeps(
                     plan_checks=predecide.plan_checks,
                     maybe_auto_answer=predecide.maybe_auto_answer,

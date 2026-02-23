@@ -22,6 +22,7 @@ from .runner_wiring_predecide import build_predecide_wiring_bundle
 from .runner_wiring_risk import build_risk_predecide_wiring_bundle
 from .runner_wiring_testless import build_testless_wiring_bundle
 from .runner_wiring_workflow_risk import build_workflow_risk_wiring_bundle
+from .runner_helpers import dict_or_empty, get_check_input
 from ..core.storage import now_rfc3339, read_json_best_effort, write_json_atomic
 from ..thoughtdb import claim_signature
 from ..thoughtdb.operational_defaults import resolve_operational_defaults
@@ -312,14 +313,7 @@ def run_autopilot_from_boot(
     _resolve_tls_for_checks = testless.resolve_tls_for_checks
     _apply_set_testless_strategy_overlay_update = testless.apply_set_testless_strategy_overlay_update
 
-    def _get_check_input(checks_obj: dict[str, Any] | None) -> str:
-        """Return hands_check_input when should_run_checks=true (best-effort)."""
-
-        if not isinstance(checks_obj, dict):
-            return ""
-        if not bool(checks_obj.get("should_run_checks", False)):
-            return ""
-        return str(checks_obj.get("hands_check_input") or "").strip()
+    _get_check_input = get_check_input
 
 
     def _get_executed_batches() -> int:
@@ -566,8 +560,7 @@ def run_autopilot_from_boot(
         judge_and_handle_risk=risk.judge_and_handle_risk,
     )
 
-    def _dict_or_empty(obj: Any) -> dict[str, Any]:
-        return obj if isinstance(obj, dict) else {}
+    _dict_or_empty = dict_or_empty
 
     batch_ctx = build_batch_context_wiring_bundle(
         transcripts_dir=project_paths.transcripts_dir,

@@ -4,12 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import autopilot as AP
-from ..project.overlay_store import write_project_overlay
+from mi.runtime import autopilot as AP
+from mi.project.overlay_store import write_project_overlay
 
 
 @dataclass(frozen=True)
-class HandsRunnerBundle:
+class HandsRunnerWiringBundle:
     """Runner wiring bundle for one Hands batch execution (behavior-preserving)."""
 
     run_hands_batch: Callable[..., Any]
@@ -33,7 +33,7 @@ def build_hands_runner_bundle(
     set_thread_id: Callable[[str | None], None],
     get_executed_batches: Callable[[], int],
     set_executed_batches: Callable[[int], None],
-) -> HandsRunnerBundle:
+) -> HandsRunnerWiringBundle:
     """Build the Hands execution closure used by the predecide phase."""
 
     def run_hands_batch(*, ctx: AP.BatchExecutionContext) -> Any:
@@ -61,5 +61,4 @@ def build_hands_runner_bundle(
         set_executed_batches(int(hs_state.executed_batches or 0))
         return result
 
-    return HandsRunnerBundle(run_hands_batch=run_hands_batch)
-
+    return HandsRunnerWiringBundle(run_hands_batch=run_hands_batch)

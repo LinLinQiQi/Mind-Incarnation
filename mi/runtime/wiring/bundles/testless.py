@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import wiring as W
-from . import autopilot as AP
-from .autopilot import services as APS
-from . import prompts as P
+import mi.runtime.wiring as W
+from mi.runtime import autopilot as AP
+from mi.runtime.autopilot import services as APS
+from mi.runtime import prompts as P
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ def build_testless_wiring_bundle(
 ) -> TestlessWiringBundle:
     """Build testless-strategy related wiring + convenience wrappers.
 
-    This exists to keep `runner_wiring_builder.py` smaller and reduce drift risk.
+    This exists to keep `mi/runtime/wiring/run_from_boot.py` smaller and reduce drift risk.
     """
 
     def _parse_testless_strategy_from_claim_text(text: str) -> str:

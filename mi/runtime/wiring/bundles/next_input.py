@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import autopilot as AP
-from . import prompts as P
-from . import wiring as W
+from mi.runtime import autopilot as AP
+from mi.runtime import prompts as P
+import mi.runtime.wiring as W
 
 
 @dataclass(frozen=True)
@@ -121,4 +121,3 @@ def build_next_input_wiring_bundle(
         return True
 
     return NextInputWiringBundle(queue_next_input=queue_next_input)
-

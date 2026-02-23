@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import autopilot as AP
+from mi.runtime import autopilot as AP
 
 
 @dataclass(frozen=True)
@@ -54,4 +54,3 @@ def build_workflow_risk_wiring_bundle(
         )
 
     return WorkflowRiskWiringBundle(deps=deps, apply_phase=apply_phase)
-

@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import autopilot as AP
-from . import prompts as P
-from . import wiring as W
-from .autopilot import risk_predecide as RP
+from mi.runtime import autopilot as AP
+from mi.runtime import prompts as P
+import mi.runtime.wiring as W
+from mi.runtime.autopilot import risk_predecide as RP
 
 
 @dataclass(frozen=True)
@@ -165,4 +165,3 @@ def build_risk_predecide_wiring_bundle(
         detect_risk_signals=detect_risk_signals,
         judge_and_handle_risk=judge_and_handle_risk,
     )
-

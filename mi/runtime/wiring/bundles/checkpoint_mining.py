@@ -3,13 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import prompts as P
-from . import wiring as W
-from ..memory.ingest import thoughtdb_node_item
-from ..thoughtdb import claim_signature
-from ..workflows import load_workflow_candidates, new_workflow_id, write_workflow_candidates
-from ..workflows.hosts import sync_hosts_from_overlay
-from ..workflows.preferences import load_preference_candidates, preference_signature, write_preference_candidates
+from mi.runtime import prompts as P
+import mi.runtime.wiring as W
+from mi.memory.ingest import thoughtdb_node_item
+from mi.thoughtdb import claim_signature
+from mi.workflows import load_workflow_candidates, new_workflow_id, write_workflow_candidates
+from mi.workflows.hosts import sync_hosts_from_overlay
+from mi.workflows.preferences import load_preference_candidates, preference_signature, write_preference_candidates
 
 
 @dataclass(frozen=True)

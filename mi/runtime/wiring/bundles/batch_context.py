@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import autopilot as AP
-from .injection import build_light_injection
+from mi.runtime import autopilot as AP
+from mi.runtime.injection import build_light_injection
 
 
 @dataclass(frozen=True)
@@ -40,4 +40,3 @@ def build_batch_context_wiring_bundle(
         )
 
     return BatchContextWiringBundle(build_context=build_context)
-

@@ -4,7 +4,7 @@ import sys
 
 from . import autopilot as AP
 from . import wiring as W
-from .runner_wiring_builder import run_autopilot_from_boot
+from .wiring.run_from_boot import run_autopilot_from_boot
 from ..providers.types import HandsExecFn, HandsResumeFn, MindProvider
 
 

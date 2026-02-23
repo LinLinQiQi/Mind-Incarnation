@@ -4,30 +4,32 @@ import secrets
 import time
 from typing import Any
 
-from . import wiring as W
-from . import autopilot as AP
-from .autopilot import learn_suggested_flow as LS
-from .autopilot import recall_flow as RF
-from .autopilot import segment_state as SS
-from . import prompts as P
-from .runner_wiring_checkpoint import build_checkpoint_mining_wiring_bundle
-from .runner_wiring_batch_context import build_batch_context_wiring_bundle
-from .runner_wiring_decide import build_decide_wiring_bundle
-from .runner_wiring_hands import build_hands_runner_bundle
-from .runner_wiring_interaction import build_interaction_record_wiring_bundle
-from .runner_wiring_next_input import build_next_input_wiring_bundle
-from .runner_wiring_preaction import build_preaction_wiring_bundle
-from .runner_wiring_predecide import build_predecide_wiring_bundle
-from .runner_wiring_risk import build_risk_predecide_wiring_bundle
-from .runner_wiring_testless import build_testless_wiring_bundle
-from .runner_wiring_workflow_risk import build_workflow_risk_wiring_bundle
-from .runner_helpers import dict_or_empty, get_check_input
-from .composition import build_run_loop_orchestrator
-from .runner_state import RunnerStateAccess, RunnerWiringState
-from ..core.storage import now_rfc3339, read_json_best_effort, write_json_atomic
-from ..thoughtdb import claim_signature
-from ..thoughtdb.operational_defaults import resolve_operational_defaults
-from ..project.overlay_store import write_project_overlay
+import mi.runtime.wiring as W
+from mi.runtime import autopilot as AP
+from mi.runtime.autopilot import learn_suggested_flow as LS
+from mi.runtime.autopilot import recall_flow as RF
+from mi.runtime.autopilot import segment_state as SS
+from mi.runtime import prompts as P
+from .bundles import (
+    build_batch_context_wiring_bundle,
+    build_checkpoint_mining_wiring_bundle,
+    build_decide_wiring_bundle,
+    build_hands_runner_bundle,
+    build_interaction_record_wiring_bundle,
+    build_next_input_wiring_bundle,
+    build_preaction_wiring_bundle,
+    build_predecide_wiring_bundle,
+    build_risk_predecide_wiring_bundle,
+    build_testless_wiring_bundle,
+    build_workflow_risk_wiring_bundle,
+)
+from mi.runtime.runner_helpers import dict_or_empty, get_check_input
+from mi.runtime.composition import build_run_loop_orchestrator
+from mi.runtime.runner_state import RunnerStateAccess, RunnerWiringState
+from mi.core.storage import now_rfc3339, read_json_best_effort, write_json_atomic
+from mi.thoughtdb import claim_signature
+from mi.thoughtdb.operational_defaults import resolve_operational_defaults
+from mi.project.overlay_store import write_project_overlay
 
 
 def run_autopilot_from_boot(

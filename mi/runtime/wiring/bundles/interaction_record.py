@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import autopilot as AP
-from . import wiring as W
+from mi.runtime import autopilot as AP
+import mi.runtime.wiring as W
 
 
 @dataclass(frozen=True)
@@ -60,4 +60,3 @@ def build_interaction_record_wiring_bundle(
         append_user_input_record=append_user_input_record,
         append_auto_answer_record=append_auto_answer_record,
     )
-

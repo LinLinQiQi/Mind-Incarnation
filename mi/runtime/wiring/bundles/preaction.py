@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import autopilot as AP
-from . import prompts as P
-from . import wiring as W
+from mi.runtime import autopilot as AP
+from mi.runtime import prompts as P
+import mi.runtime.wiring as W
 
 
 @dataclass(frozen=True)
@@ -112,4 +112,3 @@ def build_preaction_wiring_bundle(
         return None, checks_obj2 if isinstance(checks_obj2, dict) else AP._empty_check_plan()
 
     return PreactionWiringBundle(apply_preactions=apply_preactions)
-

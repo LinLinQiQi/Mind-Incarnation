@@ -4,7 +4,7 @@ from __future__ import annotations
 
 The implementation entrypoint is kept in `mi/runtime/runner_core.py` to keep this
 module small and stable (reduces import/wiring drift and merge conflicts).
-Most of the post-bootstrap wiring assembly lives in `mi/runtime/runner_wiring_builder.py`.
+Most of the post-bootstrap wiring assembly lives in `mi/runtime/wiring/run_from_boot.py`.
 """
 
 from . import runner_core as _core

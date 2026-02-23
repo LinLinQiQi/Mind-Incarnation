@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import mi.runtime.wiring as W
 from mi.runtime import autopilot as AP
@@ -49,6 +49,14 @@ class PhaseAssembly:
     decide: Any
     batch_predecide_deps: AP.BatchPredecideDeps
     checkpoint_callbacks: CheckpointCallbacks
+
+
+@dataclass(frozen=True)
+class RunEndCallbacks:
+    """Run-end callbacks wired into the orchestrator (behavior-preserving)."""
+
+    learn_runner: Callable[[], None]
+    why_runner: Callable[[], None]
 
 
 def _build_runtime_cfg_for_prompts(runtime_cfg: Any) -> dict[str, Any]:
@@ -179,6 +187,71 @@ def _build_mind_call(
         evidence_window=evidence_window,
         threshold=2,
     ).call
+
+
+def _build_run_end_callbacks(
+    *,
+    enabled_why_trace: bool,
+    learn_suggested_records_this_run: list[dict[str, Any]],
+    tdb: Any,
+    evw: Any,
+    mem: Any,
+    project_paths: Any,
+    why_top_k: int,
+    why_write_edges: bool,
+    why_min_write_conf: float,
+    mind_call: Any,
+    emit_prefixed: Any,
+    truncate: Any,
+    task: str,
+    hands_provider: str,
+    runtime_cfg_for_prompts: Callable[[], dict[str, Any]],
+    project_overlay: Any,
+    state_access: RunnerStateAccess,
+    state: RunnerWiringState,
+) -> RunEndCallbacks:
+    """Build run-end callbacks (learn update + why trace) for the orchestrator."""
+
+    overlay_obj = dict_or_empty(project_overlay)
+
+    def _run_learn_update() -> None:
+        AP.maybe_run_learn_update_on_run_end(
+            executed_batches=state_access.get_executed_batches(),
+            last_batch_id=state_access.get_last_batch_id(),
+            learn_suggested_records_this_run=learn_suggested_records_this_run,
+            tdb=tdb,
+            evw=evw,
+            mind_call=mind_call,
+            emit_prefixed=emit_prefixed,
+            truncate=truncate,
+            task=task,
+            hands_provider=hands_provider,
+            runtime_cfg=runtime_cfg_for_prompts(),
+            project_overlay=overlay_obj,
+            status=state_access.get_status(),
+            notes=state_access.get_notes(),
+            thread_id=state_access.get_thread_id(),
+        )
+
+    def _run_why_trace() -> None:
+        AP.maybe_run_why_trace_on_run_end(
+            enabled=bool(enabled_why_trace),
+            executed_batches=state_access.get_executed_batches(),
+            last_batch_id=state_access.get_last_batch_id(),
+            last_decide_next_rec=state.last_decide_next_rec if isinstance(state.last_decide_next_rec, dict) else None,
+            last_evidence_rec=state.last_evidence_rec if isinstance(state.last_evidence_rec, dict) else None,
+            tdb=tdb,
+            mem_service=mem.service,
+            project_paths=project_paths,
+            why_top_k=int(why_top_k),
+            why_write_edges=bool(why_write_edges),
+            why_min_write_conf=float(why_min_write_conf),
+            mind_call=mind_call,
+            evw=evw,
+            thread_id=state_access.get_thread_id(),
+        )
+
+    return RunEndCallbacks(learn_runner=_run_learn_update, why_runner=_run_why_trace)
 
 
 def run_autopilot_from_boot(
@@ -705,42 +778,26 @@ def run_autopilot_from_boot(
             auto_answer_obj=preaction.auto_answer_obj if isinstance(preaction.auto_answer_obj, dict) else AP._empty_auto_answer(),
         )
 
-    def _run_learn_update() -> None:
-        AP.maybe_run_learn_update_on_run_end(
-            executed_batches=state_access.get_executed_batches(),
-            last_batch_id=state_access.get_last_batch_id(),
-            learn_suggested_records_this_run=learn_suggested_records_this_run,
-            tdb=tdb,
-            evw=evw,
-            mind_call=_mind_call,
-            emit_prefixed=_emit_prefixed,
-            truncate=AP._truncate,
-            task=task,
-            hands_provider=cur_provider,
-            runtime_cfg=_runtime_cfg_for_prompts(),
-            project_overlay=overlay if isinstance(overlay, dict) else {},
-            status=state_access.get_status(),
-            notes=state_access.get_notes(),
-            thread_id=state_access.get_thread_id(),
-        )
-
-    def _run_why_trace() -> None:
-        AP.maybe_run_why_trace_on_run_end(
-            enabled=bool(auto_why_on_end),
-            executed_batches=state_access.get_executed_batches(),
-            last_batch_id=state_access.get_last_batch_id(),
-            last_decide_next_rec=state.last_decide_next_rec if isinstance(state.last_decide_next_rec, dict) else None,
-            last_evidence_rec=state.last_evidence_rec if isinstance(state.last_evidence_rec, dict) else None,
-            tdb=tdb,
-            mem_service=mem.service,
-            project_paths=project_paths,
-            why_top_k=int(why_top_k),
-            why_write_edges=bool(why_write_edges),
-            why_min_write_conf=float(why_min_write_conf),
-            mind_call=_mind_call,
-            evw=evw,
-            thread_id=state_access.get_thread_id(),
-        )
+    run_end = _build_run_end_callbacks(
+        enabled_why_trace=bool(auto_why_on_end),
+        learn_suggested_records_this_run=learn_suggested_records_this_run,
+        tdb=tdb,
+        evw=evw,
+        mem=mem,
+        project_paths=project_paths,
+        why_top_k=int(why_top_k),
+        why_write_edges=bool(why_write_edges),
+        why_min_write_conf=float(why_min_write_conf),
+        mind_call=_mind_call,
+        emit_prefixed=_emit_prefixed,
+        truncate=AP._truncate,
+        task=task,
+        hands_provider=cur_provider,
+        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+        project_overlay=overlay,
+        state_access=state_access,
+        state=state,
+    )
 
     orchestrator = build_run_loop_orchestrator(
         max_batches=int(max_batches),
@@ -748,8 +805,8 @@ def run_autopilot_from_boot(
         run_decide_phase=_run_decide_via_service,
         checkpoint_enabled=bool(checkpoint_enabled),
         checkpoint_runner=checkpoint_callbacks.runner,
-        learn_runner=_run_learn_update,
-        why_runner=_run_why_trace,
+        learn_runner=run_end.learn_runner,
+        why_runner=run_end.why_runner,
         snapshot_flusher=tdb.flush_snapshots_best_effort,
         state_warning_flusher=_flush_state_warnings,
         state=state_access,

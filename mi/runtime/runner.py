@@ -2,8 +2,9 @@ from __future__ import annotations
 
 """Public entrypoint for the MI runtime loop.
 
-The main implementation is kept in `mi/runtime/runner_core.py` to keep this
+The implementation entrypoint is kept in `mi/runtime/runner_core.py` to keep this
 module small and stable (reduces import/wiring drift and merge conflicts).
+Most of the post-bootstrap wiring assembly lives in `mi/runtime/runner_wiring_builder.py`.
 """
 
 from typing import Any

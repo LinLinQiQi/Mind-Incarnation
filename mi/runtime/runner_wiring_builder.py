@@ -7,13 +7,13 @@ from typing import Any
 
 from . import wiring as W
 from . import autopilot as AP
-from .autopilot import services as APS
 from .autopilot import decide_actions as AD
 from .autopilot import risk_predecide as RP
 from .autopilot import learn_suggested_flow as LS
 from .autopilot import recall_flow as RF
 from .autopilot import segment_state as SS
 from . import prompts as P
+from .runner_wiring_testless import build_testless_wiring_bundle
 from ..core.storage import now_rfc3339, read_json_best_effort, write_json_atomic
 from ..workflows import (
     load_workflow_candidates,
@@ -272,32 +272,28 @@ def run_autopilot_from_boot(
             ),
         )
 
-    def _parse_testless_strategy_from_claim_text(text: str) -> str:
-        return APS.parse_testless_strategy_from_claim_text(text)
-
-    def _find_testless_strategy_claim(*, as_of_ts: str) -> dict[str, Any] | None:
-        return APS.find_testless_strategy_claim(tdb=tdb, as_of_ts=as_of_ts)
-
-    def _upsert_testless_strategy_claim(*, strategy_text: str, source_event_id: str, source: str, rationale: str) -> str:
-        return APS.upsert_testless_strategy_claim(
-            tdb=tdb,
-            project_id=project_paths.project_id,
-            strategy_text=strategy_text,
-            source_event_id=source_event_id,
-            source=source,
-            rationale=rationale,
-        )
-
-    tls_strategy_wiring = W.MiTestlessStrategyWiringDeps(
+    testless = build_testless_wiring_bundle(
+        project_id=str(project_paths.project_id or ""),
+        task=task,
+        hands_provider=cur_provider,
+        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+        overlay=overlay if isinstance(overlay, dict) else {},
+        evidence_window=evidence_window,
+        tdb=tdb,
         now_ts=now_rfc3339,
         thread_id_getter=lambda: state.thread_id,
         evidence_append=evw.append,
-        overlay=overlay if isinstance(overlay, dict) else {},
-        find_testless_strategy_claim=lambda ts: _find_testless_strategy_claim(as_of_ts=ts),
-        parse_testless_strategy_from_claim_text=_parse_testless_strategy_from_claim_text,
-        upsert_testless_strategy_claim=_upsert_testless_strategy_claim,
-        write_overlay=lambda obj: write_project_overlay(home_dir=home, project_root=project_path, overlay=obj),
         refresh_overlay_refs=_refresh_overlay_refs,
+        write_project_overlay=lambda obj: write_project_overlay(home_dir=home, project_root=project_path, overlay=obj),
+        segment_add=_segment_add,
+        persist_segment_state=_persist_segment_state,
+        read_user_answer=_read_user_answer,
+        build_thought_db_context_obj=lambda hlm, recs: _build_decide_context(
+            hands_last_message=hlm,
+            recent_evidence=recs if isinstance(recs, list) else [],
+        ).to_prompt_obj(),
+        mind_call=_mind_call,
+        empty_check_plan=AP._empty_check_plan,
     )
 
     W.run_run_start_seeds(
@@ -307,88 +303,15 @@ def run_autopilot_from_boot(
             overlay=overlay,
             now_ts=now_rfc3339,
             evidence_append=evw.append,
-            mk_testless_strategy_flow_deps=lambda: W.mk_testless_strategy_flow_deps_wired(deps=tls_strategy_wiring),
+            mk_testless_strategy_flow_deps=lambda: W.mk_testless_strategy_flow_deps_wired(deps=testless.tls_strategy_wiring),
             maybe_cross_project_recall=_maybe_cross_project_recall,
             task=task,
         )
     )
 
-    check_plan_wiring = W.CheckPlanWiringDeps(
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_getter=_runtime_cfg_for_prompts,
-        project_overlay=overlay if isinstance(overlay, dict) else {},
-        evidence_window=evidence_window,
-        thread_id_getter=lambda: state.thread_id,
-        now_ts=now_rfc3339,
-        evidence_append=evw.append,
-        segment_add=_segment_add,
-        persist_segment_state=_persist_segment_state,
-        plan_min_checks_prompt_builder=P.plan_min_checks_prompt,
-        mind_call=_mind_call,
-        empty_check_plan=AP._empty_check_plan,
-    )
-
-    def _plan_checks_and_record(
-        *,
-        batch_id: str,
-        tag: str,
-        thought_db_context: dict[str, Any],
-        repo_observation: dict[str, Any],
-        should_plan: bool,
-        notes_on_skip: str,
-        notes_on_skipped: str,
-        notes_on_error: str,
-        postprocess: Any | None = None,
-    ) -> tuple[dict[str, Any], str, str]:
-        """Plan minimal checks and always record a check_plan event (best-effort)."""
-
-        return W.plan_checks_and_record_wired(
-            batch_id=batch_id,
-            tag=tag,
-            thought_db_context=thought_db_context if isinstance(thought_db_context, dict) else {},
-            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-            should_plan=bool(should_plan),
-            notes_on_skip=notes_on_skip,
-            notes_on_skipped=notes_on_skipped,
-            notes_on_error=notes_on_error,
-            postprocess=postprocess,
-            deps=check_plan_wiring,
-        )
-
-    tls_resolution_wiring = W.MiTestlessResolutionWiringDeps(
-        strategy=tls_strategy_wiring,
-        read_user_answer=_read_user_answer,
-        segment_add=lambda item: _segment_add(item if isinstance(item, dict) else {}),
-        persist_segment_state=_persist_segment_state,
-        build_thought_db_context_obj=lambda hlm, recs: _build_decide_context(
-            hands_last_message=hlm,
-            recent_evidence=recs if isinstance(recs, list) else [],
-        ).to_prompt_obj(),
-        plan_checks_and_record=lambda **kwargs: _plan_checks_and_record(
-            batch_id=str(kwargs.get("batch_id") or ""),
-            tag=str(kwargs.get("tag") or ""),
-            thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
-            repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
-            should_plan=bool(kwargs.get("should_plan")),
-            notes_on_skip=str(kwargs.get("notes_on_skip") or ""),
-            notes_on_skipped=str(kwargs.get("notes_on_skipped") or ""),
-            notes_on_error=str(kwargs.get("notes_on_error") or ""),
-            postprocess=None,
-        ),
-        plan_checks_and_record2=lambda **kwargs: _plan_checks_and_record(
-            batch_id=str(kwargs.get("batch_id") or ""),
-            tag=str(kwargs.get("tag") or ""),
-            thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
-            repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
-            should_plan=bool(kwargs.get("should_plan")),
-            notes_on_skip=str(kwargs.get("notes_on_skip") or ""),
-            notes_on_skipped=str(kwargs.get("notes_on_skipped") or ""),
-            notes_on_error=str(kwargs.get("notes_on_error") or ""),
-            postprocess=kwargs.get("postprocess"),
-        ),
-        empty_check_plan=AP._empty_check_plan,
-    )
+    _plan_checks_and_record = testless.plan_checks_and_record
+    _resolve_tls_for_checks = testless.resolve_tls_for_checks
+    _apply_set_testless_strategy_overlay_update = testless.apply_set_testless_strategy_overlay_update
 
     def _get_check_input(checks_obj: dict[str, Any] | None) -> str:
         """Return hands_check_input when should_run_checks=true (best-effort)."""
@@ -399,60 +322,6 @@ def run_autopilot_from_boot(
             return ""
         return str(checks_obj.get("hands_check_input") or "").strip()
 
-
-    def _resolve_tls_for_checks(
-        *,
-        checks_obj: dict[str, Any],
-        hands_last_message: str,
-        repo_observation: dict[str, Any],
-        user_input_batch_id: str,
-        batch_id_after_testless: str,
-        batch_id_after_tls_claim: str,
-        tag_after_testless: str,
-        tag_after_tls_claim: str,
-        notes_prefix: str,
-        source: str,
-        rationale: str,
-    ) -> tuple[dict[str, Any], str]:
-        """Resolve testless strategy for a check plan (ask once + re-plan; best-effort).
-
-        Returns: (final_checks_obj, block_reason). block_reason=="" means OK.
-        """
-
-        return W.resolve_tls_for_checks_wired(
-            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            hands_last_message=hands_last_message,
-            repo_observation=repo_observation if isinstance(repo_observation, dict) else {},
-            user_input_batch_id=user_input_batch_id,
-            batch_id_after_testless=batch_id_after_testless,
-            batch_id_after_tls_claim=batch_id_after_tls_claim,
-            tag_after_testless=tag_after_testless,
-            tag_after_tls_claim=tag_after_tls_claim,
-            notes_prefix=notes_prefix,
-            source=source,
-            rationale=rationale,
-            evidence_window=evidence_window,
-            deps=tls_resolution_wiring,
-        )
-
-    def _apply_set_testless_strategy_overlay_update(
-        *,
-        set_tls: Any,
-        decide_event_id: str,
-        fallback_batch_id: str,
-        default_rationale: str,
-        source: str,
-    ) -> None:
-        """Apply update_project_overlay.set_testless_strategy (canonicalized via Thought DB)."""
-
-        W.apply_set_testless_strategy_overlay_update_wired(
-            set_tls=set_tls,
-            decide_event_id=decide_event_id,
-            fallback_batch_id=fallback_batch_id,
-            default_rationale=default_rationale,
-            source=source,
-            deps=tls_strategy_wiring,
-        )
 
     def _get_executed_batches() -> int:
         return int(state.executed_batches)

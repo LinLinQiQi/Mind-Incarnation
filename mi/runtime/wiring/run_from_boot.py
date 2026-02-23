@@ -32,10 +32,85 @@ from mi.thoughtdb.operational_defaults import resolve_operational_defaults
 from mi.project.overlay_store import write_project_overlay
 
 
+class CheckpointCallbacks:
+    """Checkpoint callbacks used by both the runner loop and loop-break helpers."""
+
+    def __init__(self, *, before_continue: Any, runner: Any) -> None:
+        self.before_continue = before_continue
+        self.runner = runner
+
+
 def _build_runtime_cfg_for_prompts(runtime_cfg: Any) -> dict[str, Any]:
     """Return non-canonical runtime knobs for prompts (best-effort)."""
 
     return runtime_cfg if isinstance(runtime_cfg, dict) else {}
+
+
+def _build_batch_predecide_deps(
+    *,
+    project_path: Any,
+    batch_ctx: Any,
+    hands_runner: Any,
+    workflow_risk: Any,
+    predecide: Any,
+    preaction: Any,
+) -> AP.BatchPredecideDeps:
+    """Build AP.BatchPredecideDeps for AP.run_batch_predecide (behavior-preserving)."""
+
+    return AP.BatchPredecideDeps(
+        build_context=batch_ctx.build_context,
+        run_hands=hands_runner.run_hands_batch,
+        observe_repo=lambda: AP._observe_repo(project_path),
+        dict_or_empty=dict_or_empty,
+        extract_deps=AP.ExtractEvidenceDeps(extract_context=predecide.extract_evidence_and_context),
+        workflow_risk_deps=workflow_risk.deps,
+        checks_deps=AP.PlanChecksAutoAnswerDeps(
+            plan_checks=predecide.plan_checks,
+            maybe_auto_answer=predecide.maybe_auto_answer,
+        ),
+        preaction_deps=AP.PreactionPhaseDeps(
+            apply_preactions=preaction.apply_preactions,
+            empty_auto_answer=AP._empty_auto_answer,
+        ),
+    )
+
+
+def _build_checkpoint_runner(
+    *,
+    checkpoint_bundle: Any,
+    state: RunnerWiringState,
+    persist_segment_state: Any,
+) -> Any:
+    """Build a loop-request checkpoint callback (behavior-preserving)."""
+
+    def _maybe_checkpoint_and_mine(*, batch_id: str, planned_next_input: str, status_hint: str, note: str) -> None:
+        """LLM-judged checkpoint: may mine workflows/preferences/claims and reset segment buffer."""
+
+        res = checkpoint_bundle.run_checkpoint_pipeline(
+            segment_state=state.segment_state if isinstance(state.segment_state, dict) else {},
+            segment_records=state.segment_records if isinstance(state.segment_records, list) else [],
+            last_checkpoint_key=str(state.last_checkpoint_key or ""),
+            batch_id=batch_id,
+            planned_next_input=planned_next_input,
+            status_hint=status_hint,
+            note=note,
+        )
+
+        state.segment_state = res.segment_state if isinstance(res.segment_state, dict) else {}
+        state.segment_records = res.segment_records if isinstance(res.segment_records, list) else []
+        state.last_checkpoint_key = str(res.last_checkpoint_key or "")
+        if bool(res.persist_segment_state):
+            persist_segment_state()
+
+    def _run_checkpoint_request(request: Any) -> None:
+        _maybe_checkpoint_and_mine(
+            batch_id=str(request.batch_id or ""),
+            planned_next_input=str(request.planned_next_input or ""),
+            status_hint=str(request.status_hint or ""),
+            note=str(request.note or ""),
+        )
+
+    return CheckpointCallbacks(before_continue=_maybe_checkpoint_and_mine, runner=_run_checkpoint_request)
 
 
 def _build_segment_state_io(*, project_paths: Any, task: str, state_warnings: list[dict[str, Any]]) -> W.SegmentStateIO:
@@ -401,24 +476,11 @@ def run_autopilot_from_boot(
         new_segment_state=_new_segment_state,
     )
 
-    def _maybe_checkpoint_and_mine(*, batch_id: str, planned_next_input: str, status_hint: str, note: str) -> None:
-        """LLM-judged checkpoint: may mine workflows/preferences and reset segment buffer."""
-
-        res = checkpoint_bundle.run_checkpoint_pipeline(
-            segment_state=state.segment_state if isinstance(state.segment_state, dict) else {},
-            segment_records=state.segment_records if isinstance(state.segment_records, list) else [],
-            last_checkpoint_key=str(state.last_checkpoint_key or ""),
-            batch_id=batch_id,
-            planned_next_input=planned_next_input,
-            status_hint=status_hint,
-            note=note,
-        )
-
-        state.segment_state = res.segment_state if isinstance(res.segment_state, dict) else {}
-        state.segment_records = res.segment_records if isinstance(res.segment_records, list) else []
-        state.last_checkpoint_key = str(res.last_checkpoint_key or "")
-        if bool(res.persist_segment_state):
-            _persist_segment_state()
+    checkpoint_callbacks = _build_checkpoint_runner(
+        checkpoint_bundle=checkpoint_bundle,
+        state=state,
+        persist_segment_state=_persist_segment_state,
+    )
     interaction = build_interaction_record_wiring_bundle(
         evidence_window=evidence_window,
         evidence_append=evw.append,
@@ -447,7 +509,7 @@ def run_autopilot_from_boot(
             item=rec,
         ),
         resolve_ask_when_uncertain=lambda: bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain),
-        checkpoint_before_continue=_maybe_checkpoint_and_mine,
+        checkpoint_before_continue=checkpoint_callbacks.before_continue,
         get_check_input=_get_check_input,
         plan_checks_and_record=_plan_checks_and_record,
         resolve_tls_for_checks=_resolve_tls_for_checks,
@@ -580,8 +642,6 @@ def run_autopilot_from_boot(
         judge_and_handle_risk=risk.judge_and_handle_risk,
     )
 
-    _dict_or_empty = dict_or_empty
-
     batch_ctx = build_batch_context_wiring_bundle(
         transcripts_dir=project_paths.transcripts_dir,
         tdb=tdb,
@@ -592,25 +652,19 @@ def run_autopilot_from_boot(
         thread_id_getter=state_access.get_thread_id_opt,
     )
 
+    batch_predecide_deps = _build_batch_predecide_deps(
+        project_path=project_path,
+        batch_ctx=batch_ctx,
+        hands_runner=hands_runner,
+        workflow_risk=workflow_risk,
+        predecide=predecide,
+        preaction=preaction,
+    )
+
     def _run_predecide_via_service(req: AP.BatchRunRequest) -> bool | AP.PreactionDecision:
         out = AP.run_batch_predecide(
             batch_idx=int(req.batch_idx),
-            deps=AP.BatchPredecideDeps(
-                build_context=batch_ctx.build_context,
-                run_hands=hands_runner.run_hands_batch,
-                observe_repo=lambda: AP._observe_repo(project_path),
-                dict_or_empty=_dict_or_empty,
-                extract_deps=AP.ExtractEvidenceDeps(extract_context=predecide.extract_evidence_and_context),
-                workflow_risk_deps=workflow_risk.deps,
-                checks_deps=AP.PlanChecksAutoAnswerDeps(
-                    plan_checks=predecide.plan_checks,
-                    maybe_auto_answer=predecide.maybe_auto_answer,
-                ),
-                preaction_deps=AP.PreactionPhaseDeps(
-                    apply_preactions=preaction.apply_preactions,
-                    empty_auto_answer=AP._empty_auto_answer,
-                ),
-            ),
+            deps=batch_predecide_deps,
         )
         state_access.set_last_batch_id(str(out.batch_id or f"b{int(req.batch_idx)}"))
         return out.out
@@ -662,20 +716,12 @@ def run_autopilot_from_boot(
             thread_id=state_access.get_thread_id(),
         )
 
-    def _run_checkpoint_request(request: Any) -> None:
-        _maybe_checkpoint_and_mine(
-            batch_id=str(request.batch_id or ""),
-            planned_next_input=str(request.planned_next_input or ""),
-            status_hint=str(request.status_hint or ""),
-            note=str(request.note or ""),
-        )
-
     orchestrator = build_run_loop_orchestrator(
         max_batches=int(max_batches),
         run_predecide_phase=_run_predecide_via_service,
         run_decide_phase=_run_decide_via_service,
         checkpoint_enabled=bool(checkpoint_enabled),
-        checkpoint_runner=_run_checkpoint_request,
+        checkpoint_runner=checkpoint_callbacks.runner,
         learn_runner=_run_learn_update,
         why_runner=_run_why_trace,
         snapshot_flusher=tdb.flush_snapshots_best_effort,

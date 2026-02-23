@@ -12,6 +12,7 @@ from .autopilot import recall_flow as RF
 from .autopilot import segment_state as SS
 from . import prompts as P
 from .runner_wiring_checkpoint import build_checkpoint_mining_wiring_bundle
+from .runner_wiring_batch_context import build_batch_context_wiring_bundle
 from .runner_wiring_decide import build_decide_wiring_bundle
 from .runner_wiring_hands import build_hands_runner_bundle
 from .runner_wiring_interaction import build_interaction_record_wiring_bundle
@@ -21,7 +22,6 @@ from .runner_wiring_predecide import build_predecide_wiring_bundle
 from .runner_wiring_risk import build_risk_predecide_wiring_bundle
 from .runner_wiring_testless import build_testless_wiring_bundle
 from ..core.storage import now_rfc3339, read_json_best_effort, write_json_atomic
-from .injection import build_light_injection
 from ..thoughtdb import claim_signature
 from ..thoughtdb.operational_defaults import resolve_operational_defaults
 from ..project.overlay_store import write_project_overlay
@@ -593,23 +593,21 @@ def run_autopilot_from_boot(
     def _dict_or_empty(obj: Any) -> dict[str, Any]:
         return obj if isinstance(obj, dict) else {}
 
-    def _build_batch_execution_context(*, batch_idx: int) -> AP.BatchExecutionContext:
-        return AP.build_batch_execution_context(
-            batch_idx=batch_idx,
-            transcripts_dir=project_paths.transcripts_dir,
-            next_input=state.next_input,
-            thread_id=state.thread_id,
-            hands_resume=hands_resume,
-            resumed_from_overlay=bool(resumed_from_overlay),
-            now_ts=now_rfc3339,
-            build_light_injection_for_ts=lambda as_of_ts: build_light_injection(tdb=tdb, as_of_ts=as_of_ts),
-        )
+    batch_ctx = build_batch_context_wiring_bundle(
+        transcripts_dir=project_paths.transcripts_dir,
+        tdb=tdb,
+        now_ts=now_rfc3339,
+        hands_resume=hands_resume,
+        resumed_from_overlay=bool(resumed_from_overlay),
+        next_input_getter=lambda: str(state.next_input or ""),
+        thread_id_getter=lambda: state.thread_id,
+    )
 
     def _run_predecide_via_service(req: AP.BatchRunRequest) -> bool | AP.PreactionDecision:
         out = AP.run_batch_predecide(
             batch_idx=int(req.batch_idx),
             deps=AP.BatchPredecideDeps(
-                build_context=_build_batch_execution_context,
+                build_context=batch_ctx.build_context,
                 run_hands=hands_runner.run_hands_batch,
                 observe_repo=lambda: AP._observe_repo(project_path),
                 dict_or_empty=_dict_or_empty,

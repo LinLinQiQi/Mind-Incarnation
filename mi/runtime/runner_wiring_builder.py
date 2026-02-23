@@ -8,12 +8,12 @@ from typing import Any
 from . import wiring as W
 from . import autopilot as AP
 from .autopilot import decide_actions as AD
-from .autopilot import risk_predecide as RP
 from .autopilot import learn_suggested_flow as LS
 from .autopilot import recall_flow as RF
 from .autopilot import segment_state as SS
 from . import prompts as P
 from .runner_wiring_checkpoint import build_checkpoint_mining_wiring_bundle
+from .runner_wiring_risk import build_risk_predecide_wiring_bundle
 from .runner_wiring_testless import build_testless_wiring_bundle
 from ..core.storage import now_rfc3339, read_json_best_effort, write_json_atomic
 from .injection import build_light_injection
@@ -975,125 +975,31 @@ def run_autopilot_from_boot(
             deps=workflow_progress_wiring,
         )
 
-    def _predecide_detect_risk_signals(*, result: Any, ctx: AP.BatchExecutionContext) -> list[str]:
-        """Detect risk signals from structured events, then transcript fallback when needed."""
+    def _risk_set_status(value: str) -> None:
+        state.status = str(value or "")
 
-        risk_signals = AP._detect_risk_signals(result)
-        if not risk_signals and not (isinstance(getattr(result, "events", None), list) and result.events):
-            risk_signals = AP._detect_risk_signals_from_transcript(ctx.hands_transcript)
-        return [str(x) for x in risk_signals if str(x).strip()]
+    def _risk_set_notes(value: str) -> None:
+        state.notes = str(value or "")
 
-    risk_judge_wiring = W.RiskJudgeWiringDeps(
+    risk = build_risk_predecide_wiring_bundle(
         task=task,
         hands_provider=cur_provider,
-        runtime_cfg_getter=_runtime_cfg_for_prompts,
-        project_overlay=overlay if isinstance(overlay, dict) else {},
+        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+        overlay=overlay if isinstance(overlay, dict) else {},
         maybe_cross_project_recall=_maybe_cross_project_recall,
-        risk_judge_prompt_builder=P.risk_judge_prompt,
         mind_call=_mind_call,
-        build_risk_fallback=AP.build_risk_fallback,
-    )
-
-    risk_event_wiring = W.RiskEventRecordWiringDeps(
         evidence_window=evidence_window,
         evidence_append=evw.append,
-        append_window=AP.append_evidence_window,
         segment_add=_segment_add,
         persist_segment_state=_persist_segment_state,
         now_ts=now_rfc3339,
         thread_id_getter=_cur_thread_id,
+        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
+        read_user_answer=_read_user_answer,
+        set_status=_risk_set_status,
+        set_notes=_risk_set_notes,
+        handle_learn_suggested=_handle_learn_suggested,
     )
-
-    def _predecide_query_risk_judge(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        risk_signals: list[str],
-        hands_last: str,
-        tdb_ctx_batch_obj: dict[str, Any],
-    ) -> tuple[dict[str, Any], str]:
-        """Run recall + risk_judge and normalize fallback output."""
-        return W.query_risk_judge_wired(
-            batch_idx=batch_idx,
-            batch_id=batch_id,
-            risk_signals=risk_signals,
-            hands_last=hands_last,
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            deps=risk_judge_wiring,
-        )
-
-    def _predecide_record_risk_event(
-        *,
-        batch_idx: int,
-        risk_signals: list[str],
-        risk_obj: dict[str, Any],
-        risk_mind_ref: str,
-    ) -> dict[str, Any]:
-        """Persist risk event to EvidenceLog + segment + evidence window."""
-
-        return W.append_risk_event_wired(
-            batch_idx=batch_idx,
-            risk_signals=risk_signals,
-            risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
-            risk_mind_ref=risk_mind_ref,
-            deps=risk_event_wiring,
-        )
-
-    def _predecide_apply_risk_learn_suggested(
-        *,
-        batch_idx: int,
-        risk_obj: dict[str, Any],
-        risk_mind_ref: str,
-        risk_event_id: str,
-    ) -> None:
-        """Apply learn_suggested emitted by risk_judge."""
-
-        _handle_learn_suggested(
-            learn_suggested=(risk_obj if isinstance(risk_obj, dict) else {}).get("learn_suggested"),
-            batch_id=f"b{batch_idx}",
-            source="risk_judge",
-            mind_transcript_ref=risk_mind_ref,
-            source_event_ids=[str(risk_event_id or "").strip()],
-        )
-
-    def _predecide_maybe_prompt_risk_continue(*, risk_obj: dict[str, Any]) -> bool | None:
-        """Apply runtime violation policy; return False when user blocks run."""
-
-        vr = runtime_cfg.get("violation_response") if isinstance(runtime_cfg.get("violation_response"), dict) else {}
-        out = RP.maybe_prompt_risk_continue(
-            risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
-            should_prompt_risk_user=AP.should_prompt_risk_user,
-            violation_response_cfg=vr if isinstance(vr, dict) else {},
-            read_user_answer=_read_user_answer,
-        )
-        if out is False:
-            state.status = "blocked"
-            state.notes = "stopped after risk event"
-            return False
-        return out
-
-    def _predecide_judge_and_handle_risk(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        risk_signals: list[str],
-        hands_last: str,
-        tdb_ctx_batch_obj: dict[str, Any],
-    ) -> bool | None:
-        """Run risk_judge, record evidence, and enforce runtime violation policy."""
-        return RP.run_risk_predecide(
-            batch_idx=batch_idx,
-            batch_id=batch_id,
-            risk_signals=risk_signals,
-            hands_last=hands_last,
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            deps=RP.RiskPredecideDeps(
-                query_risk=_predecide_query_risk_judge,
-                record_risk=_predecide_record_risk_event,
-                apply_learn_suggested=_predecide_apply_risk_learn_suggested,
-                maybe_prompt_continue=_predecide_maybe_prompt_risk_continue,
-            ),
-        )
 
     def _predecide_apply_workflow_and_risk(
         *,
@@ -1121,8 +1027,8 @@ def run_autopilot_from_boot(
             ctx=ctx,
             deps=AP.WorkflowRiskPhaseDeps(
                 apply_workflow_progress=_predecide_apply_workflow_progress,
-                detect_risk_signals=_predecide_detect_risk_signals,
-                judge_and_handle_risk=_predecide_judge_and_handle_risk,
+                detect_risk_signals=risk.detect_risk_signals,
+                judge_and_handle_risk=risk.judge_and_handle_risk,
             ),
         )
 
@@ -1260,8 +1166,8 @@ def run_autopilot_from_boot(
                 extract_deps=AP.ExtractEvidenceDeps(extract_context=_predecide_extract_evidence_and_context),
                 workflow_risk_deps=AP.WorkflowRiskPhaseDeps(
                     apply_workflow_progress=_predecide_apply_workflow_progress,
-                    detect_risk_signals=_predecide_detect_risk_signals,
-                    judge_and_handle_risk=_predecide_judge_and_handle_risk,
+                    detect_risk_signals=risk.detect_risk_signals,
+                    judge_and_handle_risk=risk.judge_and_handle_risk,
                 ),
                 checks_deps=AP.PlanChecksAutoAnswerDeps(
                     plan_checks=_predecide_plan_checks,

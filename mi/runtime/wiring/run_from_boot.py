@@ -32,6 +32,69 @@ from mi.thoughtdb.operational_defaults import resolve_operational_defaults
 from mi.project.overlay_store import write_project_overlay
 
 
+def _build_runtime_cfg_for_prompts(runtime_cfg: Any) -> dict[str, Any]:
+    """Return non-canonical runtime knobs for prompts (best-effort)."""
+
+    return runtime_cfg if isinstance(runtime_cfg, dict) else {}
+
+
+def _build_segment_state_io(*, project_paths: Any, task: str, state_warnings: list[dict[str, Any]]) -> W.SegmentStateIO:
+    return W.SegmentStateIO(
+        path=project_paths.segment_state_path,
+        task=task,
+        now_ts=now_rfc3339,
+        truncate=AP._truncate,
+        read_json_best_effort=read_json_best_effort,
+        write_json_atomic=write_json_atomic,
+        state_warnings=state_warnings,
+        segment_max_records=40,
+    )
+
+
+def _bootstrap_segment_state_if_enabled(
+    *,
+    checkpoint_enabled: bool,
+    segment_io: W.SegmentStateIO,
+    continue_hands: bool,
+    reset_hands: bool,
+    thread_hint: str,
+    evidence_window: list[dict[str, Any]],
+    matched_workflow: bool,
+    state: RunnerWiringState,
+    flush_state_warnings: Any,
+) -> None:
+    if not checkpoint_enabled:
+        return
+    seg_state, seg_records = segment_io.bootstrap(
+        enabled=True,
+        continue_hands=continue_hands,
+        reset_hands=reset_hands,
+        thread_hint=thread_hint,
+        workflow_marker=(evidence_window[-1] if matched_workflow else None),
+    )
+    state.segment_state = seg_state if isinstance(seg_state, dict) else {}
+    state.segment_records = seg_records if isinstance(seg_records, list) else []
+    flush_state_warnings()
+
+
+def _build_mind_call(
+    *,
+    llm: Any,
+    evidence_append: Any,
+    evidence_window: list[dict[str, Any]],
+    thread_id_getter: Any,
+) -> Any:
+    return W.MindCaller(
+        llm_call=llm.call,
+        evidence_append=evidence_append,
+        now_ts=now_rfc3339,
+        truncate=AP._truncate,
+        thread_id_getter=thread_id_getter,
+        evidence_window=evidence_window,
+        threshold=2,
+    ).call
+
+
 def run_autopilot_from_boot(
     *,
     boot: W.BootstrappedAutopilotRun,
@@ -51,13 +114,9 @@ def run_autopilot_from_boot(
     state_warnings = boot.state_warnings
 
     def _runtime_cfg_for_prompts() -> dict[str, Any]:
-        """Runtime knobs context for Mind prompts.
+        """Runtime knobs context for Mind prompts (non-canonical; best-effort)."""
 
-        Canonical values/preferences and operational defaults live in Thought DB Claims.
-        This object is only non-canonical runtime knobs (budgets/feature switches).
-        """
-
-        return runtime_cfg if isinstance(runtime_cfg, dict) else {}
+        return _build_runtime_cfg_for_prompts(runtime_cfg)
 
     # Cross-run Hands session persistence is stored in ProjectOverlay but only used when explicitly enabled.
     overlay = boot.overlay
@@ -123,16 +182,7 @@ def run_autopilot_from_boot(
         hands_state=hands_state,
     ).flush
 
-    segment_io = W.SegmentStateIO(
-        path=project_paths.segment_state_path,
-        task=task,
-        now_ts=now_rfc3339,
-        truncate=AP._truncate,
-        read_json_best_effort=read_json_best_effort,
-        write_json_atomic=write_json_atomic,
-        state_warnings=state_warnings,
-        segment_max_records=40,
-    )
+    segment_io = _build_segment_state_io(project_paths=project_paths, task=task, state_warnings=state_warnings)
     segment_max_records = int(segment_io.segment_max_records)
     # Avoid inflating mined occurrence counts within a single `mi run` invocation.
     wf_sigs_counted_in_run: set[str] = set()
@@ -144,31 +194,28 @@ def run_autopilot_from_boot(
     def _persist_segment_state() -> None:
         segment_io.persist(enabled=checkpoint_enabled, segment_state=state.segment_state)
 
-    if checkpoint_enabled:
-        seg_state, seg_records = segment_io.bootstrap(
-            enabled=True,
-            continue_hands=continue_hands,
-            reset_hands=reset_hands,
-            thread_hint=state_access.get_thread_id(),
-            workflow_marker=(evidence_window[-1] if matched else None),
-        )
-        state.segment_state = seg_state if isinstance(seg_state, dict) else {}
-        state.segment_records = seg_records if isinstance(seg_records, list) else []
-        _flush_state_warnings()
+    _bootstrap_segment_state_if_enabled(
+        checkpoint_enabled=checkpoint_enabled,
+        segment_io=segment_io,
+        continue_hands=continue_hands,
+        reset_hands=reset_hands,
+        thread_hint=state_access.get_thread_id(),
+        evidence_window=evidence_window,
+        matched_workflow=bool(matched),
+        state=state,
+        flush_state_warnings=_flush_state_warnings,
+    )
 
     interrupt_cfg = feats.interrupt_cfg
 
     learn_suggested_records_this_run: list[dict[str, Any]] = []
 
-    _mind_call = W.MindCaller(
-        llm_call=llm.call,
+    _mind_call = _build_mind_call(
+        llm=llm,
         evidence_append=evw.append,
-        now_ts=now_rfc3339,
-        truncate=AP._truncate,
-        thread_id_getter=_cur_thread_id,
         evidence_window=evidence_window,
-        threshold=2,
-    ).call
+        thread_id_getter=_cur_thread_id,
+    )
 
     def _log_decide_next(
         *,

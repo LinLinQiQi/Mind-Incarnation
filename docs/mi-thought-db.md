@@ -1,7 +1,7 @@
 # MI Thought DB (Design Notes)
 
 Status: implemented (partial, V1)
-Last updated: 2026-02-21
+Last updated: 2026-02-23
 
 This document captures the "Thought DB" direction for Mind Incarnation (MI):
 
@@ -28,7 +28,7 @@ Implemented in V1 (incremental; safe foundation):
 - Checkpoint-only, high-threshold claim mining during `mi run` (no per-step protocol; no user prompts)
 - Deterministic checkpoint materialization of `Decision` / `Action` / `Summary` nodes during `mi run` (no extra model calls; best-effort; append-only)
 - Persisted `view.snapshot.json` for faster cold loads; during `mi run`, MI keeps a hot in-memory view and updates it incrementally after Thought DB appends, then flushes the snapshot at run end (best-effort).
-- Internal code layering: `ThoughtDbStore` is a facade over append/view/service components (`mi/thoughtdb/append_store.py`, `mi/thoughtdb/view_store.py`, `mi/thoughtdb/service_store.py`) to keep storage, materialization, and mined-output rules decoupled while preserving behavior.
+- Internal code layering: `ThoughtDbStore` is a facade over append/view/service components (`mi/thoughtdb/append_store.py`, `mi/thoughtdb/view_store.py`, `mi/thoughtdb/service_store.py`) to keep storage, materialization, and mined-output rules decoupled while preserving behavior. The "query helpers" entrypoints (`mi/thoughtdb/context.py`, `mi/thoughtdb/graph.py`, `mi/thoughtdb/view_store.py`) are stable wrappers; implementation details may live in sibling `mi/thoughtdb/_*_impl.py` modules (behavior-preserving).
 - Application-layer facade: `mi/thoughtdb/app_service.py` (`ThoughtDbApplicationService`) centralizes common usage paths for runner + CLI (`show` / `workflow` / `claim` / `node` / `why`) and run-end WhyTrace candidate assembly, including effective lookup, subgraph building, WhyTrace candidate flow, and decide-context assembly.
 - When the model outputs high-confidence edges, MI also appends `Edge` records (best-effort; scoped to project/global).
 - On-demand mining + basic management via CLI (`mi claim ...`)

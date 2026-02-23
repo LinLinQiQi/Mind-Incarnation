@@ -13,6 +13,7 @@ from .autopilot import recall_flow as RF
 from .autopilot import segment_state as SS
 from . import prompts as P
 from .runner_wiring_checkpoint import build_checkpoint_mining_wiring_bundle
+from .runner_wiring_predecide import build_predecide_wiring_bundle
 from .runner_wiring_risk import build_risk_predecide_wiring_bundle
 from .runner_wiring_testless import build_testless_wiring_bundle
 from ..core.storage import now_rfc3339, read_json_best_effort, write_json_atomic
@@ -890,90 +891,30 @@ def run_autopilot_from_boot(
             return queued, checks_obj
         return None, checks_obj
 
-    evidence_record_wiring = W.EvidenceRecordWiringDeps(
+    def _set_last_evidence_rec(rec: dict[str, Any] | None) -> None:
+        state.last_evidence_rec = rec if isinstance(rec, dict) else None
+
+    predecide = build_predecide_wiring_bundle(
+        task=task,
+        hands_provider=cur_provider,
+        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+        overlay=overlay if isinstance(overlay, dict) else {},
+        workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
+        workflow_load_effective=wf_registry.load_effective,
+        write_project_overlay=lambda ov: write_project_overlay(home_dir=home, project_root=project_path, overlay=ov),
         evidence_window=evidence_window,
         evidence_append=evw.append,
-        append_window=AP.append_evidence_window,
         segment_add=_segment_add,
         persist_segment_state=_persist_segment_state,
         now_ts=now_rfc3339,
         thread_id_getter=_cur_thread_id,
-    )
-    extract_evidence_wiring = W.ExtractEvidenceContextWiringDeps(
-        task=task,
-        hands_provider=cur_provider,
-        batch_summary_fn=AP._batch_summary,
-        extract_evidence_prompt_builder=P.extract_evidence_prompt,
-        mind_call=_mind_call,
-        empty_evidence_obj=AP._empty_evidence_obj,
-        extract_evidence_counts=AP.extract_evidence_counts,
-        emit_prefixed=_emit_prefixed,
-        evidence_record_deps=evidence_record_wiring,
         build_decide_context=_build_decide_context,
-    )
-
-    def _predecide_extract_evidence_and_context(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        ctx: AP.BatchExecutionContext,
-        result: Any,
-        repo_obs: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
-        """Run extract_evidence and build Thought DB context for this batch."""
-
-        out = W.extract_evidence_and_context_wired(
-            batch_idx=int(batch_idx),
-            batch_id=str(batch_id or ""),
-            ctx=ctx,
-            result=result,
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            deps=extract_evidence_wiring,
-        )
-        state.last_evidence_rec = out.evidence_rec
-        return out.summary, out.evidence_obj, out.hands_last, out.tdb_ctx_batch_obj
-
-    workflow_progress_wiring = W.WorkflowProgressWiringDeps(
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_getter=_runtime_cfg_for_prompts,
-        project_overlay=overlay if isinstance(overlay, dict) else {},
-        workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-        workflow_load_effective=wf_registry.load_effective,
-        load_active_workflow=AP.load_active_workflow,
-        workflow_progress_prompt_builder=P.workflow_progress_prompt,
         mind_call=_mind_call,
-        evidence_append=evw.append,
-        now_ts=now_rfc3339,
-        thread_id_getter=_cur_thread_id,
-        apply_workflow_progress_output_fn=AP.apply_workflow_progress_output,
-        write_project_overlay=lambda ov: write_project_overlay(home_dir=home, project_root=project_path, overlay=ov),
+        emit_prefixed=_emit_prefixed,
+        set_last_evidence_rec=_set_last_evidence_rec,
+        plan_checks_and_record=_plan_checks_and_record,
+        append_auto_answer_record=_append_auto_answer_record,
     )
-
-    def _predecide_apply_workflow_progress(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        summary: dict[str, Any],
-        evidence_obj: dict[str, Any],
-        repo_obs: dict[str, Any],
-        hands_last: str,
-        tdb_ctx_batch_obj: dict[str, Any],
-        ctx: AP.BatchExecutionContext,
-    ) -> None:
-        """Update workflow cursor/state using workflow_progress output (best-effort)."""
-
-        W.apply_workflow_progress_wired(
-            batch_idx=batch_idx,
-            batch_id=batch_id,
-            summary=summary if isinstance(summary, dict) else {},
-            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            hands_last=hands_last,
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            last_batch_input=str(ctx.batch_input or ""),
-            deps=workflow_progress_wiring,
-        )
 
     def _risk_set_status(value: str) -> None:
         state.status = str(value or "")
@@ -1026,118 +967,10 @@ def run_autopilot_from_boot(
             tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
             ctx=ctx,
             deps=AP.WorkflowRiskPhaseDeps(
-                apply_workflow_progress=_predecide_apply_workflow_progress,
+                apply_workflow_progress=predecide.apply_workflow_progress,
                 detect_risk_signals=risk.detect_risk_signals,
                 judge_and_handle_risk=risk.judge_and_handle_risk,
             ),
-        )
-
-    def _predecide_plan_checks(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        summary: dict[str, Any],
-        evidence_obj: dict[str, Any],
-        repo_obs: dict[str, Any],
-        hands_last: str,
-        tdb_ctx_batch_obj: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Plan minimal checks and emit check-plan log."""
-
-        should_plan_checks = AP._should_plan_checks(
-            summary=summary if isinstance(summary, dict) else {},
-            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
-            hands_last_message=hands_last,
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-        )
-        checks_obj, _, _ = _plan_checks_and_record(
-            batch_id=batch_id,
-            tag=f"checks_b{batch_idx}",
-            thought_db_context=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            should_plan=should_plan_checks,
-            notes_on_skip="skipped: no uncertainty/risk/question detected",
-            notes_on_skipped="skipped: mind_circuit_open (plan_min_checks)",
-            notes_on_error="mind_error: plan_min_checks failed; see EvidenceLog kind=mind_error",
-        )
-        if isinstance(checks_obj, dict):
-            _emit_prefixed("[mi]", AP.compose_check_plan_log(checks_obj))
-            return checks_obj
-        return AP._empty_check_plan()
-
-    auto_answer_query_wiring = W.AutoAnswerQueryWiringDeps(
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_getter=_runtime_cfg_for_prompts,
-        project_overlay=overlay if isinstance(overlay, dict) else {},
-        recent_evidence=evidence_window,
-        auto_answer_prompt_builder=P.auto_answer_to_hands_prompt,
-        mind_call=_mind_call,
-        empty_auto_answer=AP._empty_auto_answer,
-    )
-
-    def _predecide_maybe_auto_answer(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        hands_last: str,
-        repo_obs: dict[str, Any],
-        checks_obj: dict[str, Any],
-        tdb_ctx_batch_obj: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Auto-answer Hands only when last message looks like a direct question."""
-
-        if not AP._looks_like_user_question(hands_last):
-            return AP._empty_auto_answer()
-
-        auto_answer_obj, auto_answer_mind_ref, aa_state = W.query_auto_answer_to_hands_wired(
-            batch_idx=batch_idx,
-            batch_id=batch_id,
-            hands_last=hands_last,
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            deps=auto_answer_query_wiring,
-        )
-        _emit_prefixed(
-            "[mi]",
-            AP.compose_auto_answer_log(state=str(aa_state or ""), auto_answer_obj=auto_answer_obj if isinstance(auto_answer_obj, dict) else {}),
-        )
-        _append_auto_answer_record(
-            batch_id=f"b{batch_idx}",
-            mind_transcript_ref=auto_answer_mind_ref,
-            auto_answer=auto_answer_obj if isinstance(auto_answer_obj, dict) else {},
-        )
-        return auto_answer_obj if isinstance(auto_answer_obj, dict) else AP._empty_auto_answer()
-
-    def _predecide_plan_checks_and_auto_answer(
-        *,
-        batch_idx: int,
-        batch_id: str,
-        summary: dict[str, Any],
-        evidence_obj: dict[str, Any],
-        repo_obs: dict[str, Any],
-        hands_last: str,
-        tdb_ctx_batch_obj: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Plan checks and optionally auto-answer Hands questions."""
-
-        checks_obj, auto_answer_obj = AP.run_plan_checks_and_auto_answer(
-            batch_idx=batch_idx,
-            batch_id=batch_id,
-            summary=summary if isinstance(summary, dict) else {},
-            evidence_obj=evidence_obj if isinstance(evidence_obj, dict) else {},
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            hands_last=hands_last,
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj if isinstance(tdb_ctx_batch_obj, dict) else {},
-            deps=AP.PlanChecksAutoAnswerDeps(
-                plan_checks=_predecide_plan_checks,
-                maybe_auto_answer=_predecide_maybe_auto_answer,
-            ),
-        )
-        return (
-            checks_obj if isinstance(checks_obj, dict) else AP._empty_check_plan(),
-            auto_answer_obj if isinstance(auto_answer_obj, dict) else AP._empty_auto_answer(),
         )
 
     def _dict_or_empty(obj: Any) -> dict[str, Any]:
@@ -1163,15 +996,15 @@ def run_autopilot_from_boot(
                 run_hands=_predecide_run_hands,
                 observe_repo=lambda: AP._observe_repo(project_path),
                 dict_or_empty=_dict_or_empty,
-                extract_deps=AP.ExtractEvidenceDeps(extract_context=_predecide_extract_evidence_and_context),
+                extract_deps=AP.ExtractEvidenceDeps(extract_context=predecide.extract_evidence_and_context),
                 workflow_risk_deps=AP.WorkflowRiskPhaseDeps(
-                    apply_workflow_progress=_predecide_apply_workflow_progress,
+                    apply_workflow_progress=predecide.apply_workflow_progress,
                     detect_risk_signals=risk.detect_risk_signals,
                     judge_and_handle_risk=risk.judge_and_handle_risk,
                 ),
                 checks_deps=AP.PlanChecksAutoAnswerDeps(
-                    plan_checks=_predecide_plan_checks,
-                    maybe_auto_answer=_predecide_maybe_auto_answer,
+                    plan_checks=predecide.plan_checks,
+                    maybe_auto_answer=predecide.maybe_auto_answer,
                 ),
                 preaction_deps=AP.PreactionPhaseDeps(
                     apply_preactions=_predecide_apply_preactions,

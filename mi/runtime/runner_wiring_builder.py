@@ -13,6 +13,7 @@ from .autopilot import segment_state as SS
 from . import prompts as P
 from .runner_wiring_checkpoint import build_checkpoint_mining_wiring_bundle
 from .runner_wiring_decide import build_decide_wiring_bundle
+from .runner_wiring_next_input import build_next_input_wiring_bundle
 from .runner_wiring_predecide import build_predecide_wiring_bundle
 from .runner_wiring_risk import build_risk_predecide_wiring_bundle
 from .runner_wiring_testless import build_testless_wiring_bundle
@@ -389,84 +390,6 @@ def run_autopilot_from_boot(
         if bool(res.persist_segment_state):
             _persist_segment_state()
 
-    loop_break_checks_wiring = W.LoopBreakChecksWiringDeps(
-        get_check_input=_get_check_input,
-        plan_checks_and_record=_plan_checks_and_record,
-        resolve_tls_for_checks=_resolve_tls_for_checks,
-        empty_check_plan=AP._empty_check_plan,
-        notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
-        notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
-    )
-
-    def _loop_break_get_checks_input(**kwargs: Any) -> tuple[str, str]:
-        """Wiring adapter for loop-break check computation."""
-
-        return W.loop_break_get_checks_input_wired(
-            base_batch_id=str(kwargs.get("base_batch_id") or ""),
-            hands_last_message=str(kwargs.get("hands_last_message") or ""),
-            thought_db_context=(kwargs.get("thought_db_context") if isinstance(kwargs.get("thought_db_context"), dict) else {}),
-            repo_observation=(kwargs.get("repo_observation") if isinstance(kwargs.get("repo_observation"), dict) else {}),
-            existing_check_plan=(kwargs.get("existing_check_plan") if isinstance(kwargs.get("existing_check_plan"), dict) else None),
-            deps=loop_break_checks_wiring,
-        )
-
-    def _queue_next_input(
-        *,
-        nxt: str,
-        hands_last_message: str,
-        batch_id: str,
-        reason: str,
-        repo_observation: dict[str, Any] | None = None,
-        thought_db_context: dict[str, Any] | None = None,
-        check_plan: dict[str, Any] | None = None,
-    ) -> bool:
-        """Set next_input for the next Hands batch, with loop-guard + loop-break (best-effort)."""
-
-        out = W.queue_next_input_wired(
-            nxt=nxt,
-            hands_last_message=hands_last_message,
-            batch_id=batch_id,
-            reason=reason,
-            sent_sigs=state.sent_sigs,
-            repo_observation=repo_observation,
-            thought_db_context=thought_db_context,
-            check_plan=check_plan,
-            deps=W.NextInputWiringDeps(
-                task=task,
-                hands_provider=cur_provider,
-                runtime_cfg_getter=_runtime_cfg_for_prompts,
-                project_overlay=overlay if isinstance(overlay, dict) else {},
-                evidence_window=evidence_window,
-                thread_id_getter=_cur_thread_id,
-                loop_sig=AP._loop_sig,
-                loop_pattern=AP._loop_pattern,
-                now_ts=now_rfc3339,
-                truncate=AP._truncate,
-                evidence_append=evw.append,
-                append_segment_record=lambda rec: AP.segment_add_and_persist(
-                    segment_add=_segment_add,
-                    persist_segment_state=_persist_segment_state,
-                    item=rec,
-                ),
-                resolve_ask_when_uncertain=lambda: bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain),
-                loop_break_prompt_builder=P.loop_break_prompt,
-                mind_call=_mind_call,
-                loop_break_get_checks_input=_loop_break_get_checks_input,
-                read_user_answer=_read_user_answer,
-                append_user_input_record=_append_user_input_record,
-                checkpoint_before_continue=_maybe_checkpoint_and_mine,
-            ),
-        )
-        state.sent_sigs = list(out.sent_sigs)
-        if not bool(out.queued):
-            state.status = str(out.status or "blocked")
-            state.notes = str(out.notes or "")
-            return False
-        state.next_input = str(out.next_input or "")
-        state.status = str(out.status or "not_done")
-        state.notes = str(out.notes or "")
-        return True
-
     interaction_record_wiring = W.InteractionRecordWiringDeps(
         evidence_window=evidence_window,
         evidence_append=evw.append,
@@ -497,6 +420,39 @@ def run_autopilot_from_boot(
             deps=interaction_record_wiring,
         )
 
+    next_input = build_next_input_wiring_bundle(
+        task=task,
+        hands_provider=cur_provider,
+        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+        overlay=overlay if isinstance(overlay, dict) else {},
+        evidence_window=evidence_window,
+        thread_id_getter=_cur_thread_id,
+        now_ts=now_rfc3339,
+        truncate=AP._truncate,
+        evidence_append=evw.append,
+        mind_call=_mind_call,
+        read_user_answer=_read_user_answer,
+        append_user_input_record=_append_user_input_record,
+        append_segment_record=lambda rec: AP.segment_add_and_persist(
+            segment_add=_segment_add,
+            persist_segment_state=_persist_segment_state,
+            item=rec,
+        ),
+        resolve_ask_when_uncertain=lambda: bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain),
+        checkpoint_before_continue=_maybe_checkpoint_and_mine,
+        get_check_input=_get_check_input,
+        plan_checks_and_record=_plan_checks_and_record,
+        resolve_tls_for_checks=_resolve_tls_for_checks,
+        empty_check_plan=AP._empty_check_plan,
+        notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
+        notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
+        get_sent_sigs=lambda: list(state.sent_sigs),
+        set_sent_sigs=lambda xs: setattr(state, "sent_sigs", list(xs)),
+        set_next_input=lambda v: setattr(state, "next_input", str(v or "")),
+        set_status=lambda v: setattr(state, "status", str(v or "")),
+        set_notes=lambda v: setattr(state, "notes", str(v or "")),
+    )
+
     def _set_last_decide_rec(rec: dict[str, Any] | None) -> None:
         state.last_decide_next_rec = rec if isinstance(rec, dict) else None
 
@@ -521,7 +477,7 @@ def run_autopilot_from_boot(
         read_user_answer=_read_user_answer,
         append_user_input_record=_append_user_input_record,
         append_auto_answer_record=_append_auto_answer_record,
-        queue_next_input=_queue_next_input,
+        queue_next_input=next_input.queue_next_input,
         maybe_cross_project_recall=_maybe_cross_project_recall,
         get_check_input=_get_check_input,
         join_hands_inputs=AP.join_hands_inputs,
@@ -571,7 +527,7 @@ def run_autopilot_from_boot(
         append_auto_answer_record=_append_auto_answer_record,
         get_check_input=_get_check_input,
         join_hands_inputs=AP.join_hands_inputs,
-        queue_next_input=_queue_next_input,
+        queue_next_input=next_input.queue_next_input,
         read_user_answer=_read_user_answer,
         append_user_input_record=_append_user_input_record,
         set_blocked=lambda blocked_note: (

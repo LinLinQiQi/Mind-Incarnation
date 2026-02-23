@@ -192,6 +192,8 @@ Implementation note (behavior-preserving): shared Mind provider helpers (schema 
 
 Implementation note (behavior-preserving): provider contracts (Mind result payload + Hands result payload + minimal call signatures) are centralized under `mi/providers/types.py` so new adapters can plug in without changing runtime semantics.
 
+Implementation note (behavior-preserving): runtime bootstrap + run session wiring (`mi/runtime/wiring/bootstrap.py`, `mi/runtime/autopilot/run_context.py`) uses these contracts to reduce `Any` drift while keeping runtime behavior unchanged.
+
 Schema note (Codex `--output-schema`): Codex's `--output-schema` is effectively strict. For object schemas, every key in `properties` must appear in `required`. Optional fields must be expressed via `null` (e.g., `{"anyOf":[{"type":"null"},{...}]}`), not by omitting the key.
 
 ## Transparency

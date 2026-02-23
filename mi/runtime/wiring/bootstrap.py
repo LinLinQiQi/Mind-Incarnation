@@ -13,6 +13,7 @@ from ...memory.facade import MemoryFacade
 from ...project.overlay_store import load_project_overlay, write_project_overlay
 from ...providers.codex_runner import run_codex_exec, run_codex_resume
 from ...providers.llm import MiLlm
+from ...providers.types import HandsExecFn, HandsResumeFn, MindProvider
 from ...thoughtdb import ThoughtDbStore
 from ...thoughtdb.app_service import ThoughtDbApplicationService
 from ...workflows import (
@@ -43,9 +44,9 @@ class BootstrappedAutopilotRun:
     tdb: ThoughtDbStore
     tdb_app: ThoughtDbApplicationService
     evw: EvidenceWriter
-    llm: Any
-    hands_exec: Any
-    hands_resume: Any
+    llm: MindProvider
+    hands_exec: HandsExecFn
+    hands_resume: HandsResumeFn | None
     run_session: RunSession
     live_enabled: bool
     emit_prefixed: Callable[[str, str], None]
@@ -64,9 +65,9 @@ def bootstrap_autopilot_run(
     hands_provider: str,
     continue_hands: bool,
     reset_hands: bool,
-    llm: Any | None,
-    hands_exec: Any | None,
-    hands_resume: Any,
+    llm: MindProvider | None,
+    hands_exec: HandsExecFn | None,
+    hands_resume: HandsResumeFn | None | object,
     hands_resume_default_sentinel: object,
     live: bool,
     quiet: bool,

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import sys
-from typing import Any
 
 from . import autopilot as AP
 from . import wiring as W
 from .runner_wiring_builder import run_autopilot_from_boot
+from ..providers.types import HandsExecFn, HandsResumeFn, MindProvider
 
 
 _DEFAULT = object()
@@ -23,9 +23,9 @@ def run_autopilot(
     project_root: str,
     home_dir: str | None,
     max_batches: int,
-    hands_exec: Any | None = None,
-    hands_resume: Any = _DEFAULT,
-    llm: Any | None = None,
+    hands_exec: HandsExecFn | None = None,
+    hands_resume: HandsResumeFn | None | object = _DEFAULT,
+    llm: MindProvider | None = None,
     hands_provider: str = "",
     continue_hands: bool = False,
     reset_hands: bool = False,

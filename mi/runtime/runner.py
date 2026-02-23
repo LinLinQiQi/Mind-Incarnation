@@ -7,9 +7,8 @@ module small and stable (reduces import/wiring drift and merge conflicts).
 Most of the post-bootstrap wiring assembly lives in `mi/runtime/runner_wiring_builder.py`.
 """
 
-from typing import Any
-
 from . import runner_core as _core
+from ..providers.types import HandsExecFn, HandsResumeFn, MindProvider
 
 def run_autopilot(
     *,
@@ -17,9 +16,9 @@ def run_autopilot(
     project_root: str,
     home_dir: str | None,
     max_batches: int,
-    hands_exec: Any | None = None,
-    hands_resume: Any = _core._DEFAULT,
-    llm: Any | None = None,
+    hands_exec: HandsExecFn | None = None,
+    hands_resume: HandsResumeFn | None | object = _core._DEFAULT,
+    llm: MindProvider | None = None,
     hands_provider: str = "",
     continue_hands: bool = False,
     reset_hands: bool = False,

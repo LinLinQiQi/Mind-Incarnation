@@ -13,6 +13,7 @@ from .autopilot import segment_state as SS
 from . import prompts as P
 from .runner_wiring_checkpoint import build_checkpoint_mining_wiring_bundle
 from .runner_wiring_decide import build_decide_wiring_bundle
+from .runner_wiring_hands import build_hands_runner_bundle
 from .runner_wiring_next_input import build_next_input_wiring_bundle
 from .runner_wiring_preaction import build_preaction_wiring_bundle
 from .runner_wiring_predecide import build_predecide_wiring_bundle
@@ -509,32 +510,24 @@ def run_autopilot_from_boot(
         set_last_decide_rec=_set_last_decide_rec,
     )
 
-    def _predecide_run_hands(*, ctx: AP.BatchExecutionContext) -> Any:
-        """Execute Hands for one batch and persist session/input records."""
-
-        result, hs_state = AP.run_hands_batch(
-            ctx=ctx,
-            state=AP.RunState(thread_id=state.thread_id, executed_batches=state.executed_batches),
-            deps=AP.HandsFlowDeps(
-                run_deps=AP.RunDeps(
-                    emit_prefixed=_emit_prefixed,
-                    now_ts=now_rfc3339,
-                    evidence_append=evw.append,
-                ),
-                project_root=project_path,
-                transcripts_dir=project_paths.transcripts_dir,
-                cur_provider=cur_provider,
-                no_mi_prompt=bool(no_mi_prompt),
-                interrupt_cfg=interrupt_cfg,
-                overlay=overlay,
-                hands_exec=hands_exec,
-                hands_resume=hands_resume,
-                write_overlay=lambda ov: write_project_overlay(home_dir=home, project_root=project_path, overlay=ov),
-            ),
-        )
-        state.thread_id = hs_state.thread_id
-        state.executed_batches = int(hs_state.executed_batches or 0)
-        return result
+    hands_runner = build_hands_runner_bundle(
+        project_root=project_path,
+        transcripts_dir=project_paths.transcripts_dir,
+        cur_provider=cur_provider,
+        interrupt_cfg=interrupt_cfg,
+        overlay=overlay if isinstance(overlay, dict) else {},
+        hands_exec=hands_exec,
+        hands_resume=hands_resume,
+        home_dir=home,
+        now_ts=now_rfc3339,
+        emit_prefixed=_emit_prefixed,
+        evidence_append=evw.append,
+        no_mi_prompt=bool(no_mi_prompt),
+        get_thread_id=lambda: state.thread_id,
+        set_thread_id=lambda v: setattr(state, "thread_id", v),
+        get_executed_batches=lambda: int(state.executed_batches),
+        set_executed_batches=lambda v: setattr(state, "executed_batches", int(v or 0)),
+    )
 
     def _set_last_evidence_rec(rec: dict[str, Any] | None) -> None:
         state.last_evidence_rec = rec if isinstance(rec, dict) else None
@@ -638,7 +631,7 @@ def run_autopilot_from_boot(
             batch_idx=int(req.batch_idx),
             deps=AP.BatchPredecideDeps(
                 build_context=_build_batch_execution_context,
-                run_hands=_predecide_run_hands,
+                run_hands=hands_runner.run_hands_batch,
                 observe_repo=lambda: AP._observe_repo(project_path),
                 dict_or_empty=_dict_or_empty,
                 extract_deps=AP.ExtractEvidenceDeps(extract_context=predecide.extract_evidence_and_context),

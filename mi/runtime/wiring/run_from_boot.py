@@ -30,6 +30,7 @@ from mi.core.storage import now_rfc3339, read_json_best_effort, write_json_atomi
 from mi.thoughtdb import claim_signature
 from mi.thoughtdb.operational_defaults import resolve_operational_defaults
 from mi.project.overlay_store import write_project_overlay
+from .phase_inputs import normalize_phase_dicts
 
 
 class CheckpointCallbacks:
@@ -380,11 +381,13 @@ def run_autopilot_from_boot(
         )
 
     def _build_phase_bundles() -> tuple[Any, AP.BatchPredecideDeps, CheckpointCallbacks]:
-        overlay_obj = overlay if isinstance(overlay, dict) else {}
-        workflow_run_obj = workflow_run if isinstance(workflow_run, dict) else {}
-        wf_cfg_obj = wf_cfg if isinstance(wf_cfg, dict) else {}
-        pref_cfg_obj = pref_cfg if isinstance(pref_cfg, dict) else {}
-        runtime_cfg_obj = runtime_cfg if isinstance(runtime_cfg, dict) else {}
+        phase_dicts = normalize_phase_dicts(
+            overlay=overlay,
+            workflow_run=workflow_run,
+            wf_cfg=wf_cfg,
+            pref_cfg=pref_cfg,
+            runtime_cfg=runtime_cfg,
+        )
 
         def _write_overlay(ov: dict[str, Any]) -> None:
             write_project_overlay(home_dir=home, project_root=project_path, overlay=ov)
@@ -397,7 +400,7 @@ def run_autopilot_from_boot(
             task=task,
             hands_provider=cur_provider,
             runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-            overlay=overlay_obj,
+            overlay=phase_dicts.overlay,
             evidence_window=evidence_window,
             tdb=tdb,
             now_ts=now_rfc3339,
@@ -420,7 +423,7 @@ def run_autopilot_from_boot(
             deps=W.RunStartSeedsDeps(
                 home_dir=home,
                 tdb=tdb,
-                overlay=overlay_obj,
+                overlay=phase_dicts.overlay,
                 now_ts=now_rfc3339,
                 evidence_append=evw.append,
                 mk_testless_strategy_flow_deps=lambda: W.mk_testless_strategy_flow_deps_wired(deps=testless.tls_strategy_wiring),
@@ -447,12 +450,12 @@ def run_autopilot_from_boot(
             tdb_auto_nodes=bool(tdb_auto_nodes),
             tdb_min_conf=float(tdb_min_conf),
             tdb_max_claims=int(tdb_max_claims),
-            wf_cfg=wf_cfg_obj,
-            pref_cfg=pref_cfg_obj,
+            wf_cfg=phase_dicts.wf_cfg,
+            pref_cfg=phase_dicts.pref_cfg,
             task=task,
             hands_provider=cur_provider,
             runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-            overlay=overlay_obj,
+            overlay=phase_dicts.overlay,
             evidence_window=evidence_window,
             project_paths=project_paths,
             state_warnings=state_warnings,
@@ -496,7 +499,7 @@ def run_autopilot_from_boot(
             task=task,
             hands_provider=cur_provider,
             runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-            overlay=overlay_obj,
+            overlay=phase_dicts.overlay,
             evidence_window=evidence_window,
             thread_id_getter=_cur_thread_id,
             now_ts=now_rfc3339,
@@ -529,7 +532,7 @@ def run_autopilot_from_boot(
             task=task,
             hands_provider=cur_provider,
             runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-            overlay=overlay_obj,
+            overlay=phase_dicts.overlay,
             evidence_window=evidence_window,
             maybe_cross_project_recall=_maybe_cross_project_recall,
             mind_call=_mind_call,
@@ -550,8 +553,8 @@ def run_autopilot_from_boot(
             task=task,
             hands_provider=cur_provider,
             runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-            overlay=overlay_obj,
-            workflow_run=workflow_run_obj,
+            overlay=phase_dicts.overlay,
+            workflow_run=phase_dicts.workflow_run,
             workflow_load_effective=wf_registry.load_effective,
             evidence_window=evidence_window,
             build_decide_context=_build_decide_context,
@@ -582,7 +585,7 @@ def run_autopilot_from_boot(
             transcripts_dir=project_paths.transcripts_dir,
             cur_provider=cur_provider,
             interrupt_cfg=interrupt_cfg,
-            overlay=overlay_obj,
+            overlay=phase_dicts.overlay,
             hands_exec=hands_exec,
             hands_resume=hands_resume,
             home_dir=home,
@@ -600,8 +603,8 @@ def run_autopilot_from_boot(
             task=task,
             hands_provider=cur_provider,
             runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-            overlay=overlay_obj,
-            workflow_run=workflow_run_obj,
+            overlay=phase_dicts.overlay,
+            workflow_run=phase_dicts.workflow_run,
             workflow_load_effective=wf_registry.load_effective,
             write_project_overlay=_write_overlay,
             evidence_window=evidence_window,
@@ -622,7 +625,7 @@ def run_autopilot_from_boot(
             task=task,
             hands_provider=cur_provider,
             runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-            overlay=overlay_obj,
+            overlay=phase_dicts.overlay,
             maybe_cross_project_recall=_maybe_cross_project_recall,
             mind_call=_mind_call,
             evidence_window=evidence_window,
@@ -631,7 +634,7 @@ def run_autopilot_from_boot(
             persist_segment_state=_persist_segment_state,
             now_ts=now_rfc3339,
             thread_id_getter=_cur_thread_id,
-            runtime_cfg=runtime_cfg_obj,
+            runtime_cfg=phase_dicts.runtime_cfg,
             read_user_answer=_read_user_answer,
             set_status=state_access.set_status,
             set_notes=state_access.set_notes,

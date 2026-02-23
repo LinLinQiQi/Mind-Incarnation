@@ -379,287 +379,293 @@ def run_autopilot_from_boot(
             ),
         )
 
-    testless = build_testless_wiring_bundle(
-        project_id=str(project_paths.project_id or ""),
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-        overlay=overlay if isinstance(overlay, dict) else {},
-        evidence_window=evidence_window,
-        tdb=tdb,
-        now_ts=now_rfc3339,
-        thread_id_getter=state_access.get_thread_id_opt,
-        evidence_append=evw.append,
-        refresh_overlay_refs=_refresh_overlay_refs,
-        write_project_overlay=lambda obj: write_project_overlay(home_dir=home, project_root=project_path, overlay=obj),
-        segment_add=_segment_add,
-        persist_segment_state=_persist_segment_state,
-        read_user_answer=_read_user_answer,
-        build_thought_db_context_obj=lambda hlm, recs: _build_decide_context(
-            hands_last_message=hlm,
-            recent_evidence=recs if isinstance(recs, list) else [],
-        ).to_prompt_obj(),
-        mind_call=_mind_call,
-        empty_check_plan=AP._empty_check_plan,
-    )
+    def _build_phase_bundles() -> tuple[Any, AP.BatchPredecideDeps, CheckpointCallbacks]:
+        overlay_obj = overlay if isinstance(overlay, dict) else {}
+        workflow_run_obj = workflow_run if isinstance(workflow_run, dict) else {}
+        wf_cfg_obj = wf_cfg if isinstance(wf_cfg, dict) else {}
+        pref_cfg_obj = pref_cfg if isinstance(pref_cfg, dict) else {}
+        runtime_cfg_obj = runtime_cfg if isinstance(runtime_cfg, dict) else {}
 
-    W.run_run_start_seeds(
-        deps=W.RunStartSeedsDeps(
-            home_dir=home,
-            tdb=tdb,
-            overlay=overlay,
-            now_ts=now_rfc3339,
-            evidence_append=evw.append,
-            mk_testless_strategy_flow_deps=lambda: W.mk_testless_strategy_flow_deps_wired(deps=testless.tls_strategy_wiring),
-            maybe_cross_project_recall=_maybe_cross_project_recall,
+        def _write_overlay(ov: dict[str, Any]) -> None:
+            write_project_overlay(home_dir=home, project_root=project_path, overlay=ov)
+
+        def _resolve_ask_when_uncertain() -> bool:
+            return bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain)
+
+        testless = build_testless_wiring_bundle(
+            project_id=str(project_paths.project_id or ""),
             task=task,
-        )
-    )
-
-    _plan_checks_and_record = testless.plan_checks_and_record
-    _resolve_tls_for_checks = testless.resolve_tls_for_checks
-    _apply_set_testless_strategy_overlay_update = testless.apply_set_testless_strategy_overlay_update
-
-    _get_check_input = get_check_input
-
-
-    def _get_executed_batches() -> int:
-        return state_access.get_executed_batches()
-
-    def _get_status() -> str:
-        return state_access.get_status()
-
-    def _get_notes() -> str:
-        return state_access.get_notes()
-
-    def _get_segment_id() -> str:
-        if not isinstance(state.segment_state, dict):
-            return ""
-        return str(state.segment_state.get("segment_id") or "")
-
-    checkpoint_bundle = build_checkpoint_mining_wiring_bundle(
-        checkpoint_enabled=bool(checkpoint_enabled),
-        wf_auto_mine=bool(wf_auto_mine),
-        pref_auto_mine=bool(pref_auto_mine),
-        tdb_enabled=bool(tdb_enabled),
-        tdb_auto_mine=bool(tdb_auto_mine),
-        tdb_auto_nodes=bool(tdb_auto_nodes),
-        tdb_min_conf=float(tdb_min_conf),
-        tdb_max_claims=int(tdb_max_claims),
-        wf_cfg=wf_cfg if isinstance(wf_cfg, dict) else {},
-        pref_cfg=pref_cfg if isinstance(pref_cfg, dict) else {},
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-        overlay=overlay if isinstance(overlay, dict) else {},
-        evidence_window=evidence_window,
-        project_paths=project_paths,
-        state_warnings=state_warnings,
-        flush_state_warnings=_flush_state_warnings,
-        wf_registry=wf_registry,
-        wf_store=wf_store,
-        mem=mem,
-        tdb=tdb,
-        now_ts=now_rfc3339,
-        truncate=AP._truncate,
-        thread_id_getter=_cur_thread_id,
-        segment_id_getter=_get_segment_id,
-        executed_batches_getter=_get_executed_batches,
-        status_getter=_get_status,
-        notes_getter=_get_notes,
-        wf_sigs_counted_in_run=wf_sigs_counted_in_run,
-        pref_sigs_counted_in_run=pref_sigs_counted_in_run,
-        build_decide_context=_build_decide_context,
-        mind_call=_mind_call,
-        evidence_append=evw.append,
-        handle_learn_suggested=_handle_learn_suggested,
-        new_segment_state=_new_segment_state,
-    )
-
-    checkpoint_callbacks = _build_checkpoint_runner(
-        checkpoint_bundle=checkpoint_bundle,
-        state=state,
-        persist_segment_state=_persist_segment_state,
-    )
-    interaction = build_interaction_record_wiring_bundle(
-        evidence_window=evidence_window,
-        evidence_append=evw.append,
-        segment_add=_segment_add,
-        persist_segment_state=_persist_segment_state,
-        now_ts=now_rfc3339,
-        thread_id_getter=state_access.get_thread_id_opt,
-    )
-
-    next_input = build_next_input_wiring_bundle(
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-        overlay=overlay if isinstance(overlay, dict) else {},
-        evidence_window=evidence_window,
-        thread_id_getter=_cur_thread_id,
-        now_ts=now_rfc3339,
-        truncate=AP._truncate,
-        evidence_append=evw.append,
-        mind_call=_mind_call,
-        read_user_answer=_read_user_answer,
-        append_user_input_record=interaction.append_user_input_record,
-        append_segment_record=lambda rec: AP.segment_add_and_persist(
+            hands_provider=cur_provider,
+            runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+            overlay=overlay_obj,
+            evidence_window=evidence_window,
+            tdb=tdb,
+            now_ts=now_rfc3339,
+            thread_id_getter=state_access.get_thread_id_opt,
+            evidence_append=evw.append,
+            refresh_overlay_refs=_refresh_overlay_refs,
+            write_project_overlay=_write_overlay,
             segment_add=_segment_add,
             persist_segment_state=_persist_segment_state,
-            item=rec,
-        ),
-        resolve_ask_when_uncertain=lambda: bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain),
-        checkpoint_before_continue=checkpoint_callbacks.before_continue,
-        get_check_input=_get_check_input,
-        plan_checks_and_record=_plan_checks_and_record,
-        resolve_tls_for_checks=_resolve_tls_for_checks,
-        empty_check_plan=AP._empty_check_plan,
-        notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
-        notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
-        get_sent_sigs=state_access.get_sent_sigs,
-        set_sent_sigs=state_access.set_sent_sigs,
-        set_next_input=state_access.set_next_input,
-        set_status=state_access.set_status,
-        set_notes=state_access.set_notes,
-    )
+            read_user_answer=_read_user_answer,
+            build_thought_db_context_obj=lambda hlm, recs: _build_decide_context(
+                hands_last_message=hlm,
+                recent_evidence=recs if isinstance(recs, list) else [],
+            ).to_prompt_obj(),
+            mind_call=_mind_call,
+            empty_check_plan=AP._empty_check_plan,
+        )
 
-    preaction = build_preaction_wiring_bundle(
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-        overlay=overlay if isinstance(overlay, dict) else {},
-        evidence_window=evidence_window,
-        maybe_cross_project_recall=_maybe_cross_project_recall,
-        mind_call=_mind_call,
-        append_auto_answer_record=interaction.append_auto_answer_record,
-        get_check_input=_get_check_input,
-        join_hands_inputs=AP.join_hands_inputs,
-        queue_next_input=next_input.queue_next_input,
-        read_user_answer=_read_user_answer,
-        append_user_input_record=interaction.append_user_input_record,
-        set_blocked=lambda blocked_note: (
-            state_access.set_status("blocked"),
-            state_access.set_notes(str(blocked_note or "").strip()),
-        ),
-        resolve_tls_for_checks=_resolve_tls_for_checks,
-    )
+        W.run_run_start_seeds(
+            deps=W.RunStartSeedsDeps(
+                home_dir=home,
+                tdb=tdb,
+                overlay=overlay_obj,
+                now_ts=now_rfc3339,
+                evidence_append=evw.append,
+                mk_testless_strategy_flow_deps=lambda: W.mk_testless_strategy_flow_deps_wired(deps=testless.tls_strategy_wiring),
+                maybe_cross_project_recall=_maybe_cross_project_recall,
+                task=task,
+            )
+        )
 
-    decide = build_decide_wiring_bundle(
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-        overlay=overlay if isinstance(overlay, dict) else {},
-        workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-        workflow_load_effective=wf_registry.load_effective,
-        evidence_window=evidence_window,
-        build_decide_context=_build_decide_context,
-        mind_call=_mind_call,
-        log_decide_next=_log_decide_next,
-        segment_add=_segment_add,
-        persist_segment_state=_persist_segment_state,
-        apply_set_testless_strategy_overlay_update=_apply_set_testless_strategy_overlay_update,
-        handle_learn_suggested=_handle_learn_suggested,
-        emit_prefixed=_emit_prefixed,
-        resolve_ask_when_uncertain=lambda: bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain),
-        looks_like_user_question=AP._looks_like_user_question,
-        read_user_answer=_read_user_answer,
-        append_user_input_record=interaction.append_user_input_record,
-        append_auto_answer_record=interaction.append_auto_answer_record,
-        queue_next_input=next_input.queue_next_input,
-        maybe_cross_project_recall=_maybe_cross_project_recall,
-        get_check_input=_get_check_input,
-        join_hands_inputs=AP.join_hands_inputs,
-        load_active_workflow=AP.load_active_workflow,
-        set_status=state_access.set_status,
-        set_notes=state_access.set_notes,
-        set_last_decide_rec=state_access.set_last_decide_rec,
-    )
+        _plan_checks_and_record = testless.plan_checks_and_record
+        _resolve_tls_for_checks = testless.resolve_tls_for_checks
+        _apply_set_testless_strategy_overlay_update = testless.apply_set_testless_strategy_overlay_update
 
-    hands_runner = build_hands_runner_bundle(
-        project_root=project_path,
-        transcripts_dir=project_paths.transcripts_dir,
-        cur_provider=cur_provider,
-        interrupt_cfg=interrupt_cfg,
-        overlay=overlay if isinstance(overlay, dict) else {},
-        hands_exec=hands_exec,
-        hands_resume=hands_resume,
-        home_dir=home,
-        now_ts=now_rfc3339,
-        emit_prefixed=_emit_prefixed,
-        evidence_append=evw.append,
-        no_mi_prompt=bool(no_mi_prompt),
-        get_thread_id=state_access.get_thread_id_opt,
-        set_thread_id=state_access.set_thread_id,
-        get_executed_batches=state_access.get_executed_batches,
-        set_executed_batches=state_access.set_executed_batches,
-    )
+        def _get_segment_id() -> str:
+            if not isinstance(state.segment_state, dict):
+                return ""
+            return str(state.segment_state.get("segment_id") or "")
 
-    predecide = build_predecide_wiring_bundle(
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-        overlay=overlay if isinstance(overlay, dict) else {},
-        workflow_run=workflow_run if isinstance(workflow_run, dict) else {},
-        workflow_load_effective=wf_registry.load_effective,
-        write_project_overlay=lambda ov: write_project_overlay(home_dir=home, project_root=project_path, overlay=ov),
-        evidence_window=evidence_window,
-        evidence_append=evw.append,
-        segment_add=_segment_add,
-        persist_segment_state=_persist_segment_state,
-        now_ts=now_rfc3339,
-        thread_id_getter=_cur_thread_id,
-        build_decide_context=_build_decide_context,
-        mind_call=_mind_call,
-        emit_prefixed=_emit_prefixed,
-        set_last_evidence_rec=state_access.set_last_evidence_rec,
-        plan_checks_and_record=_plan_checks_and_record,
-        append_auto_answer_record=interaction.append_auto_answer_record,
-    )
+        checkpoint_bundle = build_checkpoint_mining_wiring_bundle(
+            checkpoint_enabled=bool(checkpoint_enabled),
+            wf_auto_mine=bool(wf_auto_mine),
+            pref_auto_mine=bool(pref_auto_mine),
+            tdb_enabled=bool(tdb_enabled),
+            tdb_auto_mine=bool(tdb_auto_mine),
+            tdb_auto_nodes=bool(tdb_auto_nodes),
+            tdb_min_conf=float(tdb_min_conf),
+            tdb_max_claims=int(tdb_max_claims),
+            wf_cfg=wf_cfg_obj,
+            pref_cfg=pref_cfg_obj,
+            task=task,
+            hands_provider=cur_provider,
+            runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+            overlay=overlay_obj,
+            evidence_window=evidence_window,
+            project_paths=project_paths,
+            state_warnings=state_warnings,
+            flush_state_warnings=_flush_state_warnings,
+            wf_registry=wf_registry,
+            wf_store=wf_store,
+            mem=mem,
+            tdb=tdb,
+            now_ts=now_rfc3339,
+            truncate=AP._truncate,
+            thread_id_getter=_cur_thread_id,
+            segment_id_getter=_get_segment_id,
+            executed_batches_getter=state_access.get_executed_batches,
+            status_getter=state_access.get_status,
+            notes_getter=state_access.get_notes,
+            wf_sigs_counted_in_run=wf_sigs_counted_in_run,
+            pref_sigs_counted_in_run=pref_sigs_counted_in_run,
+            build_decide_context=_build_decide_context,
+            mind_call=_mind_call,
+            evidence_append=evw.append,
+            handle_learn_suggested=_handle_learn_suggested,
+            new_segment_state=_new_segment_state,
+        )
 
-    risk = build_risk_predecide_wiring_bundle(
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
-        overlay=overlay if isinstance(overlay, dict) else {},
-        maybe_cross_project_recall=_maybe_cross_project_recall,
-        mind_call=_mind_call,
-        evidence_window=evidence_window,
-        evidence_append=evw.append,
-        segment_add=_segment_add,
-        persist_segment_state=_persist_segment_state,
-        now_ts=now_rfc3339,
-        thread_id_getter=_cur_thread_id,
-        runtime_cfg=runtime_cfg if isinstance(runtime_cfg, dict) else {},
-        read_user_answer=_read_user_answer,
-        set_status=state_access.set_status,
-        set_notes=state_access.set_notes,
-        handle_learn_suggested=_handle_learn_suggested,
-    )
+        checkpoint_callbacks = _build_checkpoint_runner(
+            checkpoint_bundle=checkpoint_bundle,
+            state=state,
+            persist_segment_state=_persist_segment_state,
+        )
 
-    workflow_risk = build_workflow_risk_wiring_bundle(
-        apply_workflow_progress=predecide.apply_workflow_progress,
-        detect_risk_signals=risk.detect_risk_signals,
-        judge_and_handle_risk=risk.judge_and_handle_risk,
-    )
+        interaction = build_interaction_record_wiring_bundle(
+            evidence_window=evidence_window,
+            evidence_append=evw.append,
+            segment_add=_segment_add,
+            persist_segment_state=_persist_segment_state,
+            now_ts=now_rfc3339,
+            thread_id_getter=state_access.get_thread_id_opt,
+        )
 
-    batch_ctx = build_batch_context_wiring_bundle(
-        transcripts_dir=project_paths.transcripts_dir,
-        tdb=tdb,
-        now_ts=now_rfc3339,
-        hands_resume=hands_resume,
-        resumed_from_overlay=bool(resumed_from_overlay),
-        next_input_getter=state_access.get_next_input,
-        thread_id_getter=state_access.get_thread_id_opt,
-    )
+        next_input = build_next_input_wiring_bundle(
+            task=task,
+            hands_provider=cur_provider,
+            runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+            overlay=overlay_obj,
+            evidence_window=evidence_window,
+            thread_id_getter=_cur_thread_id,
+            now_ts=now_rfc3339,
+            truncate=AP._truncate,
+            evidence_append=evw.append,
+            mind_call=_mind_call,
+            read_user_answer=_read_user_answer,
+            append_user_input_record=interaction.append_user_input_record,
+            append_segment_record=lambda rec: AP.segment_add_and_persist(
+                segment_add=_segment_add,
+                persist_segment_state=_persist_segment_state,
+                item=rec,
+            ),
+            resolve_ask_when_uncertain=_resolve_ask_when_uncertain,
+            checkpoint_before_continue=checkpoint_callbacks.before_continue,
+            get_check_input=get_check_input,
+            plan_checks_and_record=_plan_checks_and_record,
+            resolve_tls_for_checks=_resolve_tls_for_checks,
+            empty_check_plan=AP._empty_check_plan,
+            notes_on_skipped="skipped: mind_circuit_open (plan_min_checks loop_break)",
+            notes_on_error="mind_error: plan_min_checks(loop_break) failed; see EvidenceLog kind=mind_error",
+            get_sent_sigs=state_access.get_sent_sigs,
+            set_sent_sigs=state_access.set_sent_sigs,
+            set_next_input=state_access.set_next_input,
+            set_status=state_access.set_status,
+            set_notes=state_access.set_notes,
+        )
 
-    batch_predecide_deps = _build_batch_predecide_deps(
-        project_path=project_path,
-        batch_ctx=batch_ctx,
-        hands_runner=hands_runner,
-        workflow_risk=workflow_risk,
-        predecide=predecide,
-        preaction=preaction,
-    )
+        preaction = build_preaction_wiring_bundle(
+            task=task,
+            hands_provider=cur_provider,
+            runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+            overlay=overlay_obj,
+            evidence_window=evidence_window,
+            maybe_cross_project_recall=_maybe_cross_project_recall,
+            mind_call=_mind_call,
+            append_auto_answer_record=interaction.append_auto_answer_record,
+            get_check_input=get_check_input,
+            join_hands_inputs=AP.join_hands_inputs,
+            queue_next_input=next_input.queue_next_input,
+            read_user_answer=_read_user_answer,
+            append_user_input_record=interaction.append_user_input_record,
+            set_blocked=lambda blocked_note: (
+                state_access.set_status("blocked"),
+                state_access.set_notes(str(blocked_note or "").strip()),
+            ),
+            resolve_tls_for_checks=_resolve_tls_for_checks,
+        )
+
+        decide = build_decide_wiring_bundle(
+            task=task,
+            hands_provider=cur_provider,
+            runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+            overlay=overlay_obj,
+            workflow_run=workflow_run_obj,
+            workflow_load_effective=wf_registry.load_effective,
+            evidence_window=evidence_window,
+            build_decide_context=_build_decide_context,
+            mind_call=_mind_call,
+            log_decide_next=_log_decide_next,
+            segment_add=_segment_add,
+            persist_segment_state=_persist_segment_state,
+            apply_set_testless_strategy_overlay_update=_apply_set_testless_strategy_overlay_update,
+            handle_learn_suggested=_handle_learn_suggested,
+            emit_prefixed=_emit_prefixed,
+            resolve_ask_when_uncertain=_resolve_ask_when_uncertain,
+            looks_like_user_question=AP._looks_like_user_question,
+            read_user_answer=_read_user_answer,
+            append_user_input_record=interaction.append_user_input_record,
+            append_auto_answer_record=interaction.append_auto_answer_record,
+            queue_next_input=next_input.queue_next_input,
+            maybe_cross_project_recall=_maybe_cross_project_recall,
+            get_check_input=get_check_input,
+            join_hands_inputs=AP.join_hands_inputs,
+            load_active_workflow=AP.load_active_workflow,
+            set_status=state_access.set_status,
+            set_notes=state_access.set_notes,
+            set_last_decide_rec=state_access.set_last_decide_rec,
+        )
+
+        hands_runner = build_hands_runner_bundle(
+            project_root=project_path,
+            transcripts_dir=project_paths.transcripts_dir,
+            cur_provider=cur_provider,
+            interrupt_cfg=interrupt_cfg,
+            overlay=overlay_obj,
+            hands_exec=hands_exec,
+            hands_resume=hands_resume,
+            home_dir=home,
+            now_ts=now_rfc3339,
+            emit_prefixed=_emit_prefixed,
+            evidence_append=evw.append,
+            no_mi_prompt=bool(no_mi_prompt),
+            get_thread_id=state_access.get_thread_id_opt,
+            set_thread_id=state_access.set_thread_id,
+            get_executed_batches=state_access.get_executed_batches,
+            set_executed_batches=state_access.set_executed_batches,
+        )
+
+        predecide = build_predecide_wiring_bundle(
+            task=task,
+            hands_provider=cur_provider,
+            runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+            overlay=overlay_obj,
+            workflow_run=workflow_run_obj,
+            workflow_load_effective=wf_registry.load_effective,
+            write_project_overlay=_write_overlay,
+            evidence_window=evidence_window,
+            evidence_append=evw.append,
+            segment_add=_segment_add,
+            persist_segment_state=_persist_segment_state,
+            now_ts=now_rfc3339,
+            thread_id_getter=_cur_thread_id,
+            build_decide_context=_build_decide_context,
+            mind_call=_mind_call,
+            emit_prefixed=_emit_prefixed,
+            set_last_evidence_rec=state_access.set_last_evidence_rec,
+            plan_checks_and_record=_plan_checks_and_record,
+            append_auto_answer_record=interaction.append_auto_answer_record,
+        )
+
+        risk = build_risk_predecide_wiring_bundle(
+            task=task,
+            hands_provider=cur_provider,
+            runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+            overlay=overlay_obj,
+            maybe_cross_project_recall=_maybe_cross_project_recall,
+            mind_call=_mind_call,
+            evidence_window=evidence_window,
+            evidence_append=evw.append,
+            segment_add=_segment_add,
+            persist_segment_state=_persist_segment_state,
+            now_ts=now_rfc3339,
+            thread_id_getter=_cur_thread_id,
+            runtime_cfg=runtime_cfg_obj,
+            read_user_answer=_read_user_answer,
+            set_status=state_access.set_status,
+            set_notes=state_access.set_notes,
+            handle_learn_suggested=_handle_learn_suggested,
+        )
+
+        workflow_risk = build_workflow_risk_wiring_bundle(
+            apply_workflow_progress=predecide.apply_workflow_progress,
+            detect_risk_signals=risk.detect_risk_signals,
+            judge_and_handle_risk=risk.judge_and_handle_risk,
+        )
+
+        batch_ctx = build_batch_context_wiring_bundle(
+            transcripts_dir=project_paths.transcripts_dir,
+            tdb=tdb,
+            now_ts=now_rfc3339,
+            hands_resume=hands_resume,
+            resumed_from_overlay=bool(resumed_from_overlay),
+            next_input_getter=state_access.get_next_input,
+            thread_id_getter=state_access.get_thread_id_opt,
+        )
+
+        batch_predecide_deps = _build_batch_predecide_deps(
+            project_path=project_path,
+            batch_ctx=batch_ctx,
+            hands_runner=hands_runner,
+            workflow_risk=workflow_risk,
+            predecide=predecide,
+            preaction=preaction,
+        )
+
+        return decide, batch_predecide_deps, checkpoint_callbacks
+
+    decide, batch_predecide_deps, checkpoint_callbacks = _build_phase_bundles()
 
     def _run_predecide_via_service(req: AP.BatchRunRequest) -> bool | AP.PreactionDecision:
         out = AP.run_batch_predecide(

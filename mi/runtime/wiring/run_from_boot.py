@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import mi.runtime.wiring as W
@@ -33,12 +34,21 @@ from mi.project.overlay_store import write_project_overlay
 from .phase_inputs import normalize_phase_dicts
 
 
+@dataclass(frozen=True)
 class CheckpointCallbacks:
     """Checkpoint callbacks used by both the runner loop and loop-break helpers."""
 
-    def __init__(self, *, before_continue: Any, runner: Any) -> None:
-        self.before_continue = before_continue
-        self.runner = runner
+    before_continue: Any
+    runner: Any
+
+
+@dataclass(frozen=True)
+class PhaseAssembly:
+    """Return type for phase wiring assembly (behavior-preserving)."""
+
+    decide: Any
+    batch_predecide_deps: AP.BatchPredecideDeps
+    checkpoint_callbacks: CheckpointCallbacks
 
 
 def _build_runtime_cfg_for_prompts(runtime_cfg: Any) -> dict[str, Any]:
@@ -380,7 +390,7 @@ def run_autopilot_from_boot(
             ),
         )
 
-    def _build_phase_bundles() -> tuple[Any, AP.BatchPredecideDeps, CheckpointCallbacks]:
+    def _build_phase_bundles() -> PhaseAssembly:
         phase_dicts = normalize_phase_dicts(
             overlay=overlay,
             workflow_run=workflow_run,
@@ -666,9 +676,16 @@ def run_autopilot_from_boot(
             preaction=preaction,
         )
 
-        return decide, batch_predecide_deps, checkpoint_callbacks
+        return PhaseAssembly(
+            decide=decide,
+            batch_predecide_deps=batch_predecide_deps,
+            checkpoint_callbacks=checkpoint_callbacks,
+        )
 
-    decide, batch_predecide_deps, checkpoint_callbacks = _build_phase_bundles()
+    assembly = _build_phase_bundles()
+    decide = assembly.decide
+    batch_predecide_deps = assembly.batch_predecide_deps
+    checkpoint_callbacks = assembly.checkpoint_callbacks
 
     def _run_predecide_via_service(req: AP.BatchRunRequest) -> bool | AP.PreactionDecision:
         out = AP.run_batch_predecide(

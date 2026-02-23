@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import secrets
 import time
 from typing import Any
@@ -26,6 +27,25 @@ from .injection import build_light_injection
 from ..thoughtdb import claim_signature
 from ..thoughtdb.operational_defaults import resolve_operational_defaults
 from ..project.overlay_store import write_project_overlay
+
+
+@dataclass
+class RunnerWiringState:
+    """Mutable run state owned by runner_wiring_builder (reduces closure drift)."""
+
+    thread_id: str | None = None
+    next_input: str = ""
+    status: str = "not_done"
+    notes: str = ""
+    executed_batches: int = 0
+    last_batch_id: str = ""
+    last_evidence_rec: dict[str, Any] | None = None
+    last_decide_next_rec: dict[str, Any] | None = None
+
+    sent_sigs: list[str] = field(default_factory=list)
+    segment_state: dict[str, Any] = field(default_factory=dict)
+    segment_records: list[dict[str, Any]] = field(default_factory=list)
+    last_checkpoint_key: str = ""
 
 
 def run_autopilot_from_boot(
@@ -75,13 +95,10 @@ def run_autopilot_from_boot(
     _emit_prefixed = boot.emit_prefixed
 
     evidence_window = boot.evidence_window
-    thread_id = boot.thread_id
     resumed_from_overlay = boot.resumed_from_overlay
-    next_input = boot.next_input
     matched = boot.matched_workflow
 
-    status = "not_done"
-    notes = ""
+    state = RunnerWiringState(thread_id=boot.thread_id, next_input=str(boot.next_input or ""))
 
     def _build_decide_context(*, hands_last_message: str, recent_evidence: list[dict[str, Any]]) -> Any:
         return tdb_app.build_decide_context(
@@ -111,7 +128,7 @@ def run_autopilot_from_boot(
     checkpoint_enabled = bool(feats.checkpoint_enabled)
 
     def _cur_thread_id() -> str:
-        return str(thread_id or "")
+        return str(state.thread_id or "")
 
     _flush_state_warnings = W.StateWarningsFlusher(
         state_warnings=state_warnings,
@@ -132,8 +149,6 @@ def run_autopilot_from_boot(
         segment_max_records=40,
     )
     segment_max_records = int(segment_io.segment_max_records)
-    segment_state: dict[str, Any] = {}
-    segment_records: list[dict[str, Any]] = []
     # Avoid inflating mined occurrence counts within a single `mi run` invocation.
     wf_sigs_counted_in_run: set[str] = set()
     pref_sigs_counted_in_run: set[str] = set()
@@ -142,21 +157,22 @@ def run_autopilot_from_boot(
         return segment_io.new_state(reason=reason, thread_hint=thread_hint)
 
     def _persist_segment_state() -> None:
-        segment_io.persist(enabled=checkpoint_enabled, segment_state=segment_state)
+        segment_io.persist(enabled=checkpoint_enabled, segment_state=state.segment_state)
 
     if checkpoint_enabled:
-        segment_state, segment_records = segment_io.bootstrap(
+        seg_state, seg_records = segment_io.bootstrap(
             enabled=True,
             continue_hands=continue_hands,
             reset_hands=reset_hands,
-            thread_hint=str(thread_id or ""),
+            thread_hint=str(state.thread_id or ""),
             workflow_marker=(evidence_window[-1] if matched else None),
         )
+        state.segment_state = seg_state if isinstance(seg_state, dict) else {}
+        state.segment_records = seg_records if isinstance(seg_records, list) else []
         _flush_state_warnings()
 
     interrupt_cfg = feats.interrupt_cfg
 
-    sent_sigs: list[str] = []
     learn_suggested_records_this_run: list[dict[str, Any]] = []
 
     _mind_call = W.MindCaller(
@@ -184,7 +200,7 @@ def run_autopilot_from_boot(
                 "kind": "decide_next",
                 "batch_id": batch_id,
                 "ts": now_rfc3339(),
-                "thread_id": thread_id,
+                "thread_id": state.thread_id,
                 "phase": phase,
                 "next_action": str(decision_obj.get("next_action") or ""),
                 "status": str(decision_obj.get("status") or ""),
@@ -221,7 +237,7 @@ def run_autopilot_from_boot(
                 now_ts=now_rfc3339,
                 new_suggestion_id=lambda: f"ls_{time.time_ns()}_{secrets.token_hex(4)}",
                 project_id=project_paths.project_id,
-                thread_id=str(thread_id or ""),
+                thread_id=str(state.thread_id or ""),
             ),
         )
         if isinstance(rec, dict):
@@ -232,7 +248,7 @@ def run_autopilot_from_boot(
         SS.add_segment_record(
             enabled=checkpoint_enabled,
             obj=obj,
-            segment_records=segment_records,
+            segment_records=state.segment_records,
             segment_max_records=segment_max_records,
             truncate=AP._truncate,
         )
@@ -246,7 +262,7 @@ def run_autopilot_from_boot(
             batch_id=batch_id,
             reason=reason,
             query=query,
-            thread_id=str(thread_id or ""),
+            thread_id=str(state.thread_id or ""),
             evidence_window=evidence_window,
             deps=RF.RecallDeps(
                 mem_recall=mem.maybe_cross_project_recall,
@@ -274,7 +290,7 @@ def run_autopilot_from_boot(
 
     tls_strategy_wiring = W.MiTestlessStrategyWiringDeps(
         now_ts=now_rfc3339,
-        thread_id_getter=lambda: thread_id,
+        thread_id_getter=lambda: state.thread_id,
         evidence_append=evw.append,
         overlay=overlay if isinstance(overlay, dict) else {},
         find_testless_strategy_claim=lambda ts: _find_testless_strategy_claim(as_of_ts=ts),
@@ -303,7 +319,7 @@ def run_autopilot_from_boot(
         runtime_cfg_getter=_runtime_cfg_for_prompts,
         project_overlay=overlay if isinstance(overlay, dict) else {},
         evidence_window=evidence_window,
-        thread_id_getter=lambda: thread_id,
+        thread_id_getter=lambda: state.thread_id,
         now_ts=now_rfc3339,
         evidence_append=evw.append,
         segment_add=_segment_add,
@@ -439,18 +455,18 @@ def run_autopilot_from_boot(
         )
 
     def _get_executed_batches() -> int:
-        return int(executed_batches)
+        return int(state.executed_batches)
 
     def _get_status() -> str:
-        return str(status or "")
+        return str(state.status or "")
 
     def _get_notes() -> str:
-        return str(notes or "")
+        return str(state.notes or "")
 
     def _get_segment_id() -> str:
-        if not isinstance(segment_state, dict):
+        if not isinstance(state.segment_state, dict):
             return ""
-        return str(segment_state.get("segment_id") or "")
+        return str(state.segment_state.get("segment_id") or "")
 
     workflow_mining_wiring = W.WorkflowMiningWiringDeps(
         enabled=bool(wf_auto_mine),
@@ -598,7 +614,6 @@ def run_autopilot_from_boot(
             deps=node_materialize_wiring,
         )
 
-    _last_checkpoint_key = ""
     checkpoint_wiring = W.CheckpointWiringDeps(
         checkpoint_enabled=bool(checkpoint_enabled),
         task=task,
@@ -624,12 +639,10 @@ def run_autopilot_from_boot(
     def _maybe_checkpoint_and_mine(*, batch_id: str, planned_next_input: str, status_hint: str, note: str) -> None:
         """LLM-judged checkpoint: may mine workflows/preferences and reset segment buffer."""
 
-        nonlocal segment_state, segment_records, _last_checkpoint_key
-
         res = W.run_checkpoint_pipeline_wired(
-            segment_state=segment_state if isinstance(segment_state, dict) else {},
-            segment_records=segment_records if isinstance(segment_records, list) else [],
-            last_checkpoint_key=str(_last_checkpoint_key or ""),
+            segment_state=state.segment_state if isinstance(state.segment_state, dict) else {},
+            segment_records=state.segment_records if isinstance(state.segment_records, list) else [],
+            last_checkpoint_key=str(state.last_checkpoint_key or ""),
             batch_id=batch_id,
             planned_next_input=planned_next_input,
             status_hint=status_hint,
@@ -637,9 +650,9 @@ def run_autopilot_from_boot(
             deps=checkpoint_wiring,
         )
 
-        segment_state = res.segment_state if isinstance(res.segment_state, dict) else {}
-        segment_records = res.segment_records if isinstance(res.segment_records, list) else []
-        _last_checkpoint_key = str(res.last_checkpoint_key or "")
+        state.segment_state = res.segment_state if isinstance(res.segment_state, dict) else {}
+        state.segment_records = res.segment_records if isinstance(res.segment_records, list) else []
+        state.last_checkpoint_key = str(res.last_checkpoint_key or "")
         if bool(res.persist_segment_state):
             _persist_segment_state()
 
@@ -676,13 +689,12 @@ def run_autopilot_from_boot(
     ) -> bool:
         """Set next_input for the next Hands batch, with loop-guard + loop-break (best-effort)."""
 
-        nonlocal next_input, status, notes, sent_sigs
         out = W.queue_next_input_wired(
             nxt=nxt,
             hands_last_message=hands_last_message,
             batch_id=batch_id,
             reason=reason,
-            sent_sigs=sent_sigs,
+            sent_sigs=state.sent_sigs,
             repo_observation=repo_observation,
             thought_db_context=thought_db_context,
             check_plan=check_plan,
@@ -712,14 +724,14 @@ def run_autopilot_from_boot(
                 checkpoint_before_continue=_maybe_checkpoint_and_mine,
             ),
         )
-        sent_sigs = list(out.sent_sigs)
+        state.sent_sigs = list(out.sent_sigs)
         if not bool(out.queued):
-            status = str(out.status or "blocked")
-            notes = str(out.notes or "")
+            state.status = str(out.status or "blocked")
+            state.notes = str(out.notes or "")
             return False
-        next_input = str(out.next_input or "")
-        status = str(out.status or "not_done")
-        notes = str(out.notes or "")
+        state.next_input = str(out.next_input or "")
+        state.status = str(out.status or "not_done")
+        state.notes = str(out.notes or "")
         return True
 
     interaction_record_wiring = W.InteractionRecordWiringDeps(
@@ -729,7 +741,7 @@ def run_autopilot_from_boot(
         segment_add=_segment_add,
         persist_segment_state=_persist_segment_state,
         now_ts=now_rfc3339,
-        thread_id_getter=lambda: thread_id,
+        thread_id_getter=lambda: state.thread_id,
     )
 
     def _append_user_input_record(*, batch_id: str, question: str, answer: str) -> dict[str, Any]:
@@ -763,7 +775,6 @@ def run_autopilot_from_boot(
     ) -> bool:
         """Fallback when decide_next fails/skips."""
 
-        nonlocal status, notes
         ask_when_uncertain = bool(resolve_operational_defaults(tdb=tdb, as_of_ts=now_rfc3339()).ask_when_uncertain)
         cont, blocked_note = AD.handle_decide_next_missing(
             batch_idx=batch_idx,
@@ -779,8 +790,8 @@ def run_autopilot_from_boot(
             queue_next_input=_queue_next_input,
         )
         if not cont and blocked_note:
-            status = "blocked"
-            notes = blocked_note
+            state.status = "blocked"
+            state.notes = blocked_note
         return bool(cont)
 
     def _build_thought_db_context_obj(hlm: str, recs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -851,8 +862,6 @@ def run_autopilot_from_boot(
     ) -> bool:
         """Re-decide after collecting user input (no extra Hands run before decision)."""
 
-        nonlocal last_decide_next_rec
-
         cont, decide_rec2 = W.ask_user_redecide_with_input_wired(
             batch_idx=batch_idx,
             hands_last=hands_last,
@@ -889,7 +898,7 @@ def run_autopilot_from_boot(
             ),
         )
         if isinstance(decide_rec2, dict) and str(decide_rec2.get("event_id") or "").strip():
-            last_decide_next_rec = decide_rec2
+            state.last_decide_next_rec = decide_rec2
         return bool(cont)
 
     def _handle_decide_next_ask_user(
@@ -903,7 +912,6 @@ def run_autopilot_from_boot(
     ) -> bool:
         """Handle decide_next(next_action=ask_user) path with auto-answer retries and re-decide."""
 
-        nonlocal status, notes
         return W.handle_decide_next_ask_user_wired(
             batch_idx=batch_idx,
             task=task,
@@ -970,8 +978,6 @@ def run_autopilot_from_boot(
     ) -> tuple[str, dict[str, Any] | None]:
         """Persist decide_next outputs and apply declared side effects."""
 
-        nonlocal status, notes, last_decide_next_rec
-
         res = W.record_decide_next_effects_wired(
             batch_idx=batch_idx,
             decision_obj=decision_obj if isinstance(decision_obj, dict) else {},
@@ -988,9 +994,9 @@ def run_autopilot_from_boot(
         )
 
         if isinstance(res.decide_rec, dict) and str(res.decide_rec.get("event_id") or "").strip():
-            last_decide_next_rec = res.decide_rec
-        status = str(res.status or "not_done")
-        notes = str(res.notes or "")
+            state.last_decide_next_rec = res.decide_rec
+        state.status = str(res.status or "not_done")
+        state.notes = str(res.notes or "")
         return str(res.next_action or "stop"), res.decide_rec if isinstance(res.decide_rec, dict) else None
 
     def _decide_next_route_action(
@@ -1005,7 +1011,6 @@ def run_autopilot_from_boot(
     ) -> bool:
         """Route and apply next_action from decide_next."""
 
-        nonlocal status, notes
         cont, blocked_note = AD.route_decide_next_action(
             batch_idx=batch_idx,
             next_action=str(next_action or ""),
@@ -1018,8 +1023,8 @@ def run_autopilot_from_boot(
             queue_next_input=_queue_next_input,
         )
         if not cont and blocked_note:
-            status = "blocked"
-            notes = blocked_note
+            state.status = "blocked"
+            state.notes = blocked_note
         return bool(cont)
 
     def _phase_decide_next(
@@ -1049,11 +1054,9 @@ def run_autopilot_from_boot(
     def _predecide_run_hands(*, ctx: AP.BatchExecutionContext) -> Any:
         """Execute Hands for one batch and persist session/input records."""
 
-        nonlocal thread_id, executed_batches
-
-        result, st = AP.run_hands_batch(
+        result, hs_state = AP.run_hands_batch(
             ctx=ctx,
-            state=AP.RunState(thread_id=thread_id, executed_batches=executed_batches),
+            state=AP.RunState(thread_id=state.thread_id, executed_batches=state.executed_batches),
             deps=AP.HandsFlowDeps(
                 run_deps=AP.RunDeps(
                     emit_prefixed=_emit_prefixed,
@@ -1071,8 +1074,8 @@ def run_autopilot_from_boot(
                 write_overlay=lambda ov: write_project_overlay(home_dir=home, project_root=project_path, overlay=ov),
             ),
         )
-        thread_id = st.thread_id
-        executed_batches = int(st.executed_batches or 0)
+        state.thread_id = hs_state.thread_id
+        state.executed_batches = int(hs_state.executed_batches or 0)
         return result
 
     predecide_user_deps = W.PredecideUserWiringDeps(
@@ -1108,8 +1111,6 @@ def run_autopilot_from_boot(
     ) -> tuple[bool | None, dict[str, Any]]:
         """Apply deterministic pre-action arbitration before decide_next."""
 
-        nonlocal status, notes
-
         if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("needs_user_input", False)):
             handled, checks_out = W.handle_auto_answer_needs_user_wired(
                 batch_idx=batch_idx,
@@ -1136,8 +1137,8 @@ def run_autopilot_from_boot(
             rationale="user provided testless verification strategy",
         )
         if block_reason:
-            status = "blocked"
-            notes = block_reason
+            state.status = "blocked"
+            state.notes = block_reason
             return False, checks_obj
 
         answer_text = ""
@@ -1189,8 +1190,6 @@ def run_autopilot_from_boot(
     ) -> tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]:
         """Run extract_evidence and build Thought DB context for this batch."""
 
-        nonlocal last_evidence_rec
-
         out = W.extract_evidence_and_context_wired(
             batch_idx=int(batch_idx),
             batch_id=str(batch_id or ""),
@@ -1199,7 +1198,7 @@ def run_autopilot_from_boot(
             repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
             deps=extract_evidence_wiring,
         )
-        last_evidence_rec = out.evidence_rec
+        state.last_evidence_rec = out.evidence_rec
         return out.summary, out.evidence_obj, out.hands_last, out.tdb_ctx_batch_obj
 
     workflow_progress_wiring = W.WorkflowProgressWiringDeps(
@@ -1328,8 +1327,6 @@ def run_autopilot_from_boot(
     def _predecide_maybe_prompt_risk_continue(*, risk_obj: dict[str, Any]) -> bool | None:
         """Apply runtime violation policy; return False when user blocks run."""
 
-        nonlocal status, notes
-
         vr = runtime_cfg.get("violation_response") if isinstance(runtime_cfg.get("violation_response"), dict) else {}
         out = RP.maybe_prompt_risk_continue(
             risk_obj=risk_obj if isinstance(risk_obj, dict) else {},
@@ -1338,8 +1335,8 @@ def run_autopilot_from_boot(
             read_user_answer=_read_user_answer,
         )
         if out is False:
-            status = "blocked"
-            notes = "stopped after risk event"
+            state.status = "blocked"
+            state.notes = "stopped after risk event"
             return False
         return out
 
@@ -1512,21 +1509,15 @@ def run_autopilot_from_boot(
         return AP.build_batch_execution_context(
             batch_idx=batch_idx,
             transcripts_dir=project_paths.transcripts_dir,
-            next_input=next_input,
-            thread_id=thread_id,
+            next_input=state.next_input,
+            thread_id=state.thread_id,
             hands_resume=hands_resume,
             resumed_from_overlay=bool(resumed_from_overlay),
             now_ts=now_rfc3339,
             build_light_injection_for_ts=lambda as_of_ts: build_light_injection(tdb=tdb, as_of_ts=as_of_ts),
         )
 
-    last_evidence_rec: dict[str, Any] | None = None
-    last_decide_next_rec: dict[str, Any] | None = None
-
-    executed_batches = 0
-    last_batch_id = ""
     def _run_predecide_via_service(req: AP.BatchRunRequest) -> bool | AP.PreactionDecision:
-        nonlocal last_batch_id
         out = AP.run_batch_predecide(
             batch_idx=int(req.batch_idx),
             deps=AP.BatchPredecideDeps(
@@ -1550,7 +1541,7 @@ def run_autopilot_from_boot(
                 ),
             ),
         )
-        last_batch_id = str(out.batch_id or f"b{int(req.batch_idx)}")
+        state.last_batch_id = str(out.batch_id or f"b{int(req.batch_idx)}")
         return out.out
 
     def _run_decide_via_service(req: AP.BatchRunRequest, preaction: AP.PreactionDecision) -> bool:
@@ -1565,8 +1556,8 @@ def run_autopilot_from_boot(
 
     def _run_learn_update() -> None:
         AP.maybe_run_learn_update_on_run_end(
-            executed_batches=int(executed_batches),
-            last_batch_id=str(last_batch_id or ""),
+            executed_batches=int(state.executed_batches),
+            last_batch_id=str(state.last_batch_id or ""),
             learn_suggested_records_this_run=learn_suggested_records_this_run,
             tdb=tdb,
             evw=evw,
@@ -1577,18 +1568,18 @@ def run_autopilot_from_boot(
             hands_provider=cur_provider,
             runtime_cfg=_runtime_cfg_for_prompts(),
             project_overlay=overlay if isinstance(overlay, dict) else {},
-            status=str(status or ""),
-            notes=str(notes or ""),
-            thread_id=(thread_id or ""),
+            status=str(state.status or ""),
+            notes=str(state.notes or ""),
+            thread_id=(state.thread_id or ""),
         )
 
     def _run_why_trace() -> None:
         AP.maybe_run_why_trace_on_run_end(
             enabled=bool(auto_why_on_end),
-            executed_batches=int(executed_batches),
-            last_batch_id=str(last_batch_id or ""),
-            last_decide_next_rec=last_decide_next_rec if isinstance(last_decide_next_rec, dict) else None,
-            last_evidence_rec=last_evidence_rec if isinstance(last_evidence_rec, dict) else None,
+            executed_batches=int(state.executed_batches),
+            last_batch_id=str(state.last_batch_id or ""),
+            last_decide_next_rec=state.last_decide_next_rec if isinstance(state.last_decide_next_rec, dict) else None,
+            last_evidence_rec=state.last_evidence_rec if isinstance(state.last_evidence_rec, dict) else None,
             tdb=tdb,
             mem_service=mem.service,
             project_paths=project_paths,
@@ -1597,20 +1588,17 @@ def run_autopilot_from_boot(
             why_min_write_conf=float(why_min_write_conf),
             mind_call=_mind_call,
             evw=evw,
-            thread_id=(thread_id or ""),
+            thread_id=(state.thread_id or ""),
         )
 
     def _set_status(value: str) -> None:
-        nonlocal status
-        status = str(value or "")
+        state.status = str(value or "")
 
     def _set_notes(value: str) -> None:
-        nonlocal notes
-        notes = str(value or "")
+        state.notes = str(value or "")
 
     def _set_last_batch_id(value: str) -> None:
-        nonlocal last_batch_id
-        last_batch_id = str(value or "")
+        state.last_batch_id = str(value or "")
 
     def _run_checkpoint_request(request: Any) -> None:
         _maybe_checkpoint_and_mine(
@@ -1625,15 +1613,15 @@ def run_autopilot_from_boot(
             max_batches=int(max_batches),
             run_predecide_phase=_run_predecide_via_service,
             run_decide_phase=_run_decide_via_service,
-            next_input_getter=lambda: str(next_input or ""),
-            thread_id_getter=lambda: str(thread_id or ""),
-            status_getter=lambda: str(status or ""),
+            next_input_getter=lambda: str(state.next_input or ""),
+            thread_id_getter=lambda: str(state.thread_id or ""),
+            status_getter=lambda: str(state.status or ""),
             status_setter=_set_status,
-            notes_getter=lambda: str(notes or ""),
+            notes_getter=lambda: str(state.notes or ""),
             notes_setter=_set_notes,
-            last_batch_id_getter=lambda: str(last_batch_id or ""),
+            last_batch_id_getter=lambda: str(state.last_batch_id or ""),
             last_batch_id_setter=_set_last_batch_id,
-            executed_batches_getter=lambda: int(executed_batches),
+            executed_batches_getter=lambda: int(state.executed_batches),
             checkpoint_enabled=bool(checkpoint_enabled),
             checkpoint_runner=_run_checkpoint_request,
             learn_runner=_run_learn_update,
@@ -1645,11 +1633,11 @@ def run_autopilot_from_boot(
     orchestrator.run()
 
     return AP.AutopilotResult(
-        status=status,
-        thread_id=thread_id or "unknown",
+        status=state.status,
+        thread_id=state.thread_id or "unknown",
         project_dir=run_session.project_paths.project_dir,
         evidence_log_path=run_session.project_paths.evidence_log_path,
         transcripts_dir=run_session.project_paths.transcripts_dir,
-        batches=executed_batches,
-        notes=notes,
+        batches=state.executed_batches,
+        notes=state.notes,
     )

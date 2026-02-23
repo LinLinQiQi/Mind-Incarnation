@@ -14,6 +14,7 @@ from . import prompts as P
 from .runner_wiring_checkpoint import build_checkpoint_mining_wiring_bundle
 from .runner_wiring_decide import build_decide_wiring_bundle
 from .runner_wiring_next_input import build_next_input_wiring_bundle
+from .runner_wiring_preaction import build_preaction_wiring_bundle
 from .runner_wiring_predecide import build_predecide_wiring_bundle
 from .runner_wiring_risk import build_risk_predecide_wiring_bundle
 from .runner_wiring_testless import build_testless_wiring_bundle
@@ -453,6 +454,27 @@ def run_autopilot_from_boot(
         set_notes=lambda v: setattr(state, "notes", str(v or "")),
     )
 
+    preaction = build_preaction_wiring_bundle(
+        task=task,
+        hands_provider=cur_provider,
+        runtime_cfg_for_prompts=_runtime_cfg_for_prompts,
+        overlay=overlay if isinstance(overlay, dict) else {},
+        evidence_window=evidence_window,
+        maybe_cross_project_recall=_maybe_cross_project_recall,
+        mind_call=_mind_call,
+        append_auto_answer_record=_append_auto_answer_record,
+        get_check_input=_get_check_input,
+        join_hands_inputs=AP.join_hands_inputs,
+        queue_next_input=next_input.queue_next_input,
+        read_user_answer=_read_user_answer,
+        append_user_input_record=_append_user_input_record,
+        set_blocked=lambda blocked_note: (
+            _set_status("blocked"),
+            _set_notes(str(blocked_note or "").strip()),
+        ),
+        resolve_tls_for_checks=_resolve_tls_for_checks,
+    )
+
     def _set_last_decide_rec(rec: dict[str, Any] | None) -> None:
         state.last_decide_next_rec = rec if isinstance(rec, dict) else None
 
@@ -513,86 +535,6 @@ def run_autopilot_from_boot(
         state.thread_id = hs_state.thread_id
         state.executed_batches = int(hs_state.executed_batches or 0)
         return result
-
-    predecide_user_deps = W.PredecideUserWiringDeps(
-        task=task,
-        hands_provider=cur_provider,
-        runtime_cfg_getter=_runtime_cfg_for_prompts,
-        project_overlay=overlay if isinstance(overlay, dict) else {},
-        recent_evidence=evidence_window,
-        empty_auto_answer=AP._empty_auto_answer,
-        maybe_cross_project_recall=_maybe_cross_project_recall,
-        auto_answer_prompt_builder=P.auto_answer_to_hands_prompt,
-        mind_call=_mind_call,
-        append_auto_answer_record=_append_auto_answer_record,
-        get_check_input=_get_check_input,
-        join_hands_inputs=AP.join_hands_inputs,
-        queue_next_input=next_input.queue_next_input,
-        read_user_answer=_read_user_answer,
-        append_user_input_record=_append_user_input_record,
-        set_blocked=lambda blocked_note: (
-            _set_status("blocked"),
-            _set_notes(str(blocked_note or "").strip()),
-        ),
-    )
-
-    def _predecide_apply_preactions(
-        *,
-        batch_idx: int,
-        hands_last: str,
-        repo_obs: dict[str, Any],
-        tdb_ctx_batch_obj: dict[str, Any],
-        checks_obj: dict[str, Any],
-        auto_answer_obj: dict[str, Any],
-    ) -> tuple[bool | None, dict[str, Any]]:
-        """Apply deterministic pre-action arbitration before decide_next."""
-
-        if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("needs_user_input", False)):
-            handled, checks_out = W.handle_auto_answer_needs_user_wired(
-                batch_idx=batch_idx,
-                hands_last=hands_last,
-                repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-                tdb_ctx_batch_obj=tdb_ctx_batch_obj,
-                checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-                auto_answer_obj=auto_answer_obj,
-                deps=predecide_user_deps,
-            )
-            return handled, checks_out
-
-        checks_obj, block_reason = _resolve_tls_for_checks(
-            checks_obj=checks_obj if isinstance(checks_obj, dict) else AP._empty_check_plan(),
-            hands_last_message=hands_last,
-            repo_observation=repo_obs if isinstance(repo_obs, dict) else {},
-            user_input_batch_id=f"b{batch_idx}",
-            batch_id_after_testless=f"b{batch_idx}.after_testless",
-            batch_id_after_tls_claim=f"b{batch_idx}.after_tls_claim",
-            tag_after_testless=f"checks_after_tls_b{batch_idx}",
-            tag_after_tls_claim=f"checks_after_tls_claim_b{batch_idx}",
-            notes_prefix="",
-            source="user_input:testless_strategy",
-            rationale="user provided testless verification strategy",
-        )
-        if block_reason:
-            state.status = "blocked"
-            state.notes = block_reason
-            return False, checks_obj
-
-        answer_text = ""
-        if isinstance(auto_answer_obj, dict) and bool(auto_answer_obj.get("should_answer", False)):
-            answer_text = str(auto_answer_obj.get("hands_answer_input") or "").strip()
-        queued = W.try_queue_answer_with_checks_wired(
-            batch_id=f"b{batch_idx}",
-            queue_reason="sent auto-answer/checks to Hands",
-            answer_text=answer_text,
-            hands_last=hands_last,
-            repo_obs=repo_obs if isinstance(repo_obs, dict) else {},
-            checks_obj=checks_obj if isinstance(checks_obj, dict) else {},
-            tdb_ctx_batch_obj=tdb_ctx_batch_obj,
-            deps=predecide_user_deps,
-        )
-        if isinstance(queued, bool):
-            return queued, checks_obj
-        return None, checks_obj
 
     def _set_last_evidence_rec(rec: dict[str, Any] | None) -> None:
         state.last_evidence_rec = rec if isinstance(rec, dict) else None
@@ -710,7 +652,7 @@ def run_autopilot_from_boot(
                     maybe_auto_answer=predecide.maybe_auto_answer,
                 ),
                 preaction_deps=AP.PreactionPhaseDeps(
-                    apply_preactions=_predecide_apply_preactions,
+                    apply_preactions=preaction.apply_preactions,
                     empty_auto_answer=AP._empty_auto_answer,
                 ),
             ),

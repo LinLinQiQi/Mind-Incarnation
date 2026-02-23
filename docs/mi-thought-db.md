@@ -45,6 +45,7 @@ Implemented in V1 (incremental; safe foundation):
   - always includes pinned values/defaults (e.g., `values:base`, `mi:setting:*`),
   - uses the memory text index (FTS) as a candidate generator for query-relevant claims/nodes (scoped to current project + global),
   - then does a conservative 1-hop edge expansion to pull direct dependencies into the remaining budgets (active + valid only).
+- Retrieval helper logic (active/valid filters, neighbor expansion) is centralized in `mi/thoughtdb/retrieval.py` to reduce drift between callers (behavior-preserving).
 
 Not implemented yet (future direction):
 

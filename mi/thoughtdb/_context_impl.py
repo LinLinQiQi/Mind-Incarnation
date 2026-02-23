@@ -8,7 +8,12 @@ from ..memory.text import tokenize_query, truncate
 from .store import ThoughtDbStore, ThoughtDbView
 from .values import VALUES_BASE_TAG, VALUES_RAW_TAG, VALUES_SUMMARY_TAG
 from .pins import PINNED_PREF_GOAL_TAGS
-from .retrieval import seed_ids_from_memory, expand_one_hop
+from .retrieval import (
+    _claim_active_and_valid as _claim_active_and_valid_view,
+    _node_active as _node_active_view,
+    expand_one_hop,
+    seed_ids_from_memory,
+)
 
 
 def _safe_list_str(items: Any, *, limit: int) -> list[str]:
@@ -174,32 +179,10 @@ def build_decide_next_thoughtdb_context(
         seed_notes = seeds.notes
 
     def _claim_active_and_valid(view: ThoughtDbView, claim_id: str) -> bool:
-        cid = str(claim_id or "").strip()
-        if not cid:
-            return False
-        if cid in view.redirects_same_as:
-            return False
-        if view.claim_status(cid) != "active":
-            return False
-        c = view.claims_by_id.get(cid)
-        if not isinstance(c, dict):
-            return False
-        if t:
-            vf = c.get("valid_from")
-            vt = c.get("valid_to")
-            if isinstance(vf, str) and vf.strip() and vf.strip() > t:
-                return False
-            if isinstance(vt, str) and vt.strip() and t >= vt.strip():
-                return False
-        return True
+        return _claim_active_and_valid_view(view, claim_id, as_of_ts=t)
 
     def _node_active(view: ThoughtDbView, node_id: str) -> bool:
-        nid = str(node_id or "").strip()
-        if not nid:
-            return False
-        if nid in view.redirects_same_as:
-            return False
-        return view.node_status(nid) == "active"
+        return _node_active_view(view, node_id)
 
     # Nodes: include a small set of recent/high-signal Decision/Action/Summary nodes so
     # decide_next can benefit from past decisions/steps without replaying the full transcript.

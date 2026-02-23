@@ -1,20 +1,16 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import selectors
-import subprocess
-import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .interrupts import InterruptConfig, compute_escalation_delays_ms, escalation_delay_s_for_step, signal_from_name, should_interrupt_command
-from ..core.redact import redact_text
+from .proc_stream import run_streaming_process
+from .interrupts import InterruptConfig, should_interrupt_command
 from ..core.storage import now_rfc3339
-from ..runtime.transcript_store import append_transcript_line, write_transcript_header
+from ..runtime.transcript_store import write_transcript_header
 from ..runtime.transcript import last_agent_message_from_transcript
 
 
@@ -72,138 +68,63 @@ def _run_process(
     redact: bool,
     on_live_line: Callable[[str], None] | None,
 ) -> tuple[int, str, str]:
-    merged_env = os.environ.copy()
-    if env:
-        merged_env.update({str(k): str(v) for k, v in env.items()})
-
-    proc = subprocess.Popen(
-        argv,
-        cwd=str(cwd),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        universal_newlines=True,
-        env=merged_env,
-    )
-    assert proc.stdin and proc.stdout and proc.stderr
-    if stdin_text:
-        proc.stdin.write(stdin_text)
-    proc.stdin.close()
-
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ, data="stdout")
-    sel.register(proc.stderr, selectors.EVENT_READ, data="stderr")
-
     last_stdout = ""
     stdout_tail: deque[str] = deque(maxlen=80)
     found_thread_id = ""
     found_session_id = ""
     rx = re.compile(thread_id_regex) if thread_id_regex else None
-    interrupt_requested = False
-    interrupt_requested_at = 0.0
-    next_signal_idx = 0
-    emit_live = bool(live)
-    sig_sequence: list[str] = list(interrupt.signal_sequence) if interrupt else []
-    delays_ms: list[int] = compute_escalation_delays_ms(interrupt.escalation_ms) if interrupt else [0]
 
-    def emit(line: str) -> None:
-        if not emit_live:
-            return
-        s = redact_text(line) if redact else line
-        if on_live_line is not None:
-            try:
-                on_live_line(s)
-                return
-            except Exception:
-                pass
-        print(s, flush=True)
+    def _on_line(
+        stream_name: str,
+        line: str,
+        emit: Callable[[str], None],
+        _append_meta: Callable[[str], None],
+        request_interrupt: Callable[[str], None],
+    ) -> None:
+        nonlocal last_stdout, found_thread_id, found_session_id
 
-    start = time.time()
-    try:
-        while sel.get_map():
-            # Escalate signals on a timer, if requested (best-effort; we only have raw text).
-            if interrupt and interrupt_requested and next_signal_idx < len(sig_sequence):
-                delay_s = escalation_delay_s_for_step(delays_ms, next_signal_idx)
-                if (time.time() - interrupt_requested_at) >= delay_s:
-                    sig_name = str(sig_sequence[next_signal_idx])
-                    sig = signal_from_name(sig_name)
-                    if sig is not None:
-                        try:
-                            proc.send_signal(sig)
-                            append_transcript_line(
-                                transcript_path,
-                                {"ts": now_rfc3339(), "stream": "meta", "line": f"mi.interrupt.sent={sig_name}"},
-                            )
-                        except Exception:
-                            pass
-                    next_signal_idx += 1
+        if hands_raw:
+            emit(f"[hands:{stream_name}] {line}")
+        else:
+            if line.strip():
+                emit(f"[hands:{stream_name}] {line}")
 
-            for key, _mask in sel.select(timeout=0.2):
-                stream_name = key.data
-                f = key.fileobj
-                line = f.readline()
-                if line == "":
-                    sel.unregister(f)
-                    continue
-                line = line.rstrip("\n")
-                append_transcript_line(transcript_path, {"ts": now_rfc3339(), "stream": stream_name, "line": line})
-                if hands_raw:
-                    emit(f"[hands:{stream_name}] {line}")
-                else:
-                    if line.strip():
-                        emit(f"[hands:{stream_name}] {line}")
+        if stream_name == "stdout" and line.strip():
+            last_stdout = line
+            stdout_tail.append(line)
+            if not found_session_id:
+                s = line.strip()
+                if s.startswith("{") and s.endswith("}"):
+                    try:
+                        ev = json.loads(s)
+                    except Exception:
+                        ev = None
+                    if isinstance(ev, dict):
+                        sid = ev.get("session_id") or ev.get("sessionId")
+                        if isinstance(sid, str) and sid.strip():
+                            found_session_id = sid.strip()
+        if rx and not found_thread_id and line:
+            m = rx.search(line)
+            if m and m.group(1):
+                found_thread_id = m.group(1)
+        if interrupt and line:
+            mode = str(interrupt.mode or "")
+            if mode in ("on_high_risk", "on_any_external") and should_interrupt_command(mode, line):
+                request_interrupt(f"mi.interrupt.requested=1 mode={mode} text={line[:200]}")
 
-                if stream_name == "stdout" and line.strip():
-                    last_stdout = line
-                    stdout_tail.append(line)
-                    if not found_session_id:
-                        s = line.strip()
-                        if s.startswith("{") and s.endswith("}"):
-                            try:
-                                ev = json.loads(s)
-                            except Exception:
-                                ev = None
-                            if isinstance(ev, dict):
-                                sid = ev.get("session_id") or ev.get("sessionId")
-                                if isinstance(sid, str) and sid.strip():
-                                    found_session_id = sid.strip()
-                if rx and not found_thread_id and line:
-                    m = rx.search(line)
-                    if m and m.group(1):
-                        found_thread_id = m.group(1)
-                if interrupt and not interrupt_requested and line:
-                    mode = str(interrupt.mode or "")
-                    if mode in ("on_high_risk", "on_any_external") and should_interrupt_command(mode, line):
-                        interrupt_requested = True
-                        interrupt_requested_at = time.time()
-                        next_signal_idx = 0
-                        append_transcript_line(
-                            transcript_path,
-                            {"ts": now_rfc3339(), "stream": "meta", "line": f"mi.interrupt.requested=1 mode={mode} text={line[:200]}"},
-                        )
-    finally:
-        try:
-            sel.close()
-        except Exception:
-            pass
-        try:
-            if proc.stdout:
-                proc.stdout.close()
-        except Exception:
-            pass
-        try:
-            if proc.stderr:
-                proc.stderr.close()
-        except Exception:
-            pass
-
-    exit_code = proc.wait()
-    duration_ms = int((time.time() - start) * 1000)
-    append_transcript_line(
-        transcript_path,
-        {"ts": now_rfc3339(), "stream": "meta", "line": f"mi.cli.exit_code={exit_code} duration_ms={duration_ms}"},
+    exit_code, _duration_ms = run_streaming_process(
+        argv=argv,
+        stdin_text=stdin_text,
+        transcript_path=transcript_path,
+        cwd=cwd,
+        env=env,
+        interrupt=interrupt,
+        exit_meta_prefix="mi.cli",
+        live=bool(live),
+        redact=bool(redact),
+        on_live_line=on_live_line,
+        on_line=_on_line,
+        start_timer_before_popen=False,
     )
 
     if not found_thread_id and found_session_id:
@@ -266,7 +187,6 @@ class CliHandsAdapter:
             },
         )
 
-        t0 = time.time()
         exit_code, extracted_tid, last_stdout = _run_process(
             argv=argv,
             stdin_text=stdin_text,
@@ -342,7 +262,6 @@ class CliHandsAdapter:
             },
         )
 
-        t0 = time.time()
         exit_code, extracted_tid, last_stdout = _run_process(
             argv=argv,
             stdin_text=stdin_text,

@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import json
-import os
-import selectors
-import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .interrupts import InterruptConfig, compute_escalation_delays_ms, escalation_delay_s_for_step, signal_from_name, should_interrupt_command
+from .proc_stream import run_streaming_process
+from .interrupts import InterruptConfig, should_interrupt_command
 from ..core.storage import now_rfc3339
-from ..core.redact import redact_text
 from ..runtime.live import render_codex_event
-from ..runtime.transcript_store import append_transcript_line, write_transcript_header
+from ..runtime.transcript_store import write_transcript_header
 
 
 def _is_inside_git_repo(start_dir: Path) -> bool:
@@ -185,140 +181,77 @@ def _run_codex_process(
     redact: bool,
     on_live_line: Callable[[str], None] | None,
 ) -> CodexRunResult:
-    start = time.time()
-    proc = subprocess.Popen(
-        args,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        universal_newlines=True,
-        env=os.environ.copy(),
-    )
-    assert proc.stdin and proc.stdout and proc.stderr
-    proc.stdin.write(stdin_text)
-    proc.stdin.close()
-
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ, data="stdout")
-    sel.register(proc.stderr, selectors.EVENT_READ, data="stderr")
-
     events: list[dict[str, Any]] = []
     thread_id: str | None = None
-    interrupt_requested = False
-    interrupt_requested_at = 0.0
-    next_signal_idx = 0
-    emit_live = bool(live)
-    sig_sequence: list[str] = list(interrupt.signal_sequence) if interrupt else []
-    delays_ms: list[int] = compute_escalation_delays_ms(interrupt.escalation_ms) if interrupt else [0]
+    def _on_line(
+        stream_name: str,
+        line: str,
+        emit: Callable[[str], None],
+        _append_meta: Callable[[str], None],
+        request_interrupt: Callable[[str], None],
+    ) -> None:
+        nonlocal thread_id
 
-    def emit(line: str) -> None:
-        if not emit_live:
-            return
-        s = redact_text(line) if redact else line
-        if on_live_line is not None:
-            try:
-                on_live_line(s)
-                return
-            except Exception:
-                # Fall back to printing.
-                pass
-        print(s, flush=True)
-
-    while sel.get_map():
-        # Escalate signals on a timer, if requested.
-        if interrupt and interrupt_requested and next_signal_idx < len(sig_sequence):
-            delay_s = escalation_delay_s_for_step(delays_ms, next_signal_idx)
-            if (time.time() - interrupt_requested_at) >= delay_s:
-                sig_name = sig_sequence[next_signal_idx]
-                sig = signal_from_name(sig_name)
-                if sig is not None:
-                    try:
-                        proc.send_signal(sig)
-                        append_transcript_line(
-                            transcript_path,
-                            {"ts": now_rfc3339(), "stream": "meta", "line": f"mi.interrupt.sent={sig_name}"},
-                        )
-                    except Exception:
-                        pass
-                next_signal_idx += 1
-
-        for key, _mask in sel.select(timeout=0.2):
-            stream_name = key.data
-            f = key.fileobj
-            line = f.readline()
-            if line == "":
-                sel.unregister(f)
-                continue
-            line = line.rstrip("\n")
-            append_transcript_line(
-                transcript_path,
-                {"ts": now_rfc3339(), "stream": stream_name, "line": line},
-            )
-
-            # Best-effort live rendering:
-            # - stdout: Codex emits JSON event objects (one per line).
-            # - stderr: surface raw stderr lines (often useful in failures).
-            if stream_name != "stdout":
-                if hands_raw:
-                    emit(f"[hands:{stream_name}] {line}")
-                else:
-                    if line.strip():
-                        emit(f"[hands:stderr] {line}")
-                continue
-
-            ev: dict[str, Any] | None = None
-            if line.startswith("{") and line.endswith("}"):
-                try:
-                    parsed = json.loads(line)
-                except Exception:
-                    parsed = None
-                if isinstance(parsed, dict):
-                    ev = parsed
-
+        # Best-effort live rendering:
+        # - stdout: Codex emits JSON event objects (one per line).
+        # - stderr: surface raw stderr lines (often useful in failures).
+        if stream_name != "stdout":
             if hands_raw:
+                emit(f"[hands:{stream_name}] {line}")
+            else:
+                if line.strip():
+                    emit(f"[hands:stderr] {line}")
+            return
+
+        ev: dict[str, Any] | None = None
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                parsed = json.loads(line)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                ev = parsed
+
+        if hands_raw:
+            emit(f"[hands:stdout] {line}")
+
+        if ev is None:
+            if (not hands_raw) and line.strip():
                 emit(f"[hands:stdout] {line}")
+            return
 
-            if ev is None:
-                if (not hands_raw) and line.strip():
-                    emit(f"[hands:stdout] {line}")
-                continue
+        events.append(ev)
+        if ev.get("type") == "thread.started" and isinstance(ev.get("thread_id"), str):
+            thread_id = ev["thread_id"]
+        if interrupt and ev.get("type") == "item.started":
+            item = ev.get("item")
+            if isinstance(item, dict) and item.get("type") == "command_execution":
+                cmd = str(item.get("command") or "")
+                if should_interrupt_command(interrupt.mode, cmd):
+                    request_interrupt(f"mi.interrupt.requested=1 mode={interrupt.mode} command={cmd}")
 
-            events.append(ev)
-            if ev.get("type") == "thread.started" and isinstance(ev.get("thread_id"), str):
-                thread_id = ev["thread_id"]
-            if interrupt and (not interrupt_requested) and ev.get("type") == "item.started":
-                item = ev.get("item")
-                if isinstance(item, dict) and item.get("type") == "command_execution":
-                    cmd = str(item.get("command") or "")
-                    if should_interrupt_command(interrupt.mode, cmd):
-                        interrupt_requested = True
-                        interrupt_requested_at = time.time()
-                        next_signal_idx = 0
-                        append_transcript_line(
-                            transcript_path,
-                            {
-                                "ts": now_rfc3339(),
-                                "stream": "meta",
-                                "line": f"mi.interrupt.requested=1 mode={interrupt.mode} command={cmd}",
-                            },
-                        )
+        if not hands_raw:
+            for out_line in render_codex_event(ev):
+                if out_line is None:
+                    continue
+                s = str(out_line)
+                if not s.strip():
+                    continue
+                emit(f"[hands] {s}")
 
-            if not hands_raw:
-                for out_line in render_codex_event(ev):
-                    if out_line is None:
-                        continue
-                    s = str(out_line)
-                    if not s.strip():
-                        continue
-                    emit(f"[hands] {s}")
-
-    exit_code = proc.wait()
-    duration_ms = int((time.time() - start) * 1000)
-    append_transcript_line(
-        transcript_path,
-        {"ts": now_rfc3339(), "stream": "meta", "line": f"mi.codex.exit_code={exit_code} duration_ms={duration_ms}"},
+    exit_code, _duration_ms = run_streaming_process(
+        argv=args,
+        stdin_text=stdin_text,
+        transcript_path=transcript_path,
+        cwd=None,
+        env=None,
+        interrupt=interrupt,
+        exit_meta_prefix="mi.codex",
+        live=bool(live),
+        redact=bool(redact),
+        on_live_line=on_live_line,
+        on_line=_on_line,
+        start_timer_before_popen=True,
     )
 
     if not thread_id:

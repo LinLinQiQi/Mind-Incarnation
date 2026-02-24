@@ -21,7 +21,7 @@ def _rewrite_cli_argv(argv: list[str]) -> list[str]:
 
     args = list(argv or [])
     if not args:
-        return args
+        return ["status"]
 
     # Find the first positional token (the "subcommand" slot). Argparse expects
     # global options before subcommands, so we desugar `@pinned` into `-C @pinned`.
@@ -51,7 +51,8 @@ def _rewrite_cli_argv(argv: list[str]) -> list[str]:
 
         # First positional.
         if a.startswith("@"):
-            return args[:i] + ["-C", a] + args[i + 1 :]
+            rewritten = args[:i] + ["-C", a] + args[i + 1 :]
+            return rewritten + ["status"] if i == len(args) - 1 else rewritten
         if a[:1] in ("/", ".", "~"):
             # Only treat path-ish tokens as project selection when they already exist
             # and are a directory. This avoids stealing normal command words.
@@ -61,12 +62,14 @@ def _rewrite_cli_argv(argv: list[str]) -> list[str]:
                     p = (Path.cwd() / p)
                 p = p.resolve()
                 if p.is_dir():
-                    return args[:i] + ["-C", str(p)] + args[i + 1 :]
+                    rewritten = args[:i] + ["-C", str(p)] + args[i + 1 :]
+                    return rewritten + ["status"] if i == len(args) - 1 else rewritten
             except Exception:
                 pass
         return args
 
-    return args
+    # No positional tokens => no subcommand. Default to `status` to reduce friction.
+    return args + ["status"]
 
 
 def main(argv: list[str] | None = None) -> int:

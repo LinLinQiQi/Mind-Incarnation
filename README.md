@@ -172,6 +172,8 @@ Notes:
 Everyday status + front-door inspect (reduce command surface area):
 
 ```bash
+mi                      # defaults to: mi status
+mi @pinned              # defaults to: mi @pinned status
 mi status --cd /path/to/your/project
 mi status --cd /path/to/your/project --json
 

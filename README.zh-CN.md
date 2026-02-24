@@ -172,6 +172,8 @@ mi run --cd /path/to/your/project "完成 X，并用最小检查验证。"
 日常状态 + 统一查看入口（降低命令面、减少心智负担）：
 
 ```bash
+mi                      # 默认等价：mi status
+mi @pinned              # 默认等价：mi @pinned status
 mi status --cd /path/to/your/project
 mi status --cd /path/to/your/project --json
 

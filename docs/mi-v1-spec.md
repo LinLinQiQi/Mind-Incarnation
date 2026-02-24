@@ -1166,6 +1166,8 @@ mi --home ~/.mind-incarnation run --cd <project_root> --hands-raw <task words...
 Everyday status (front-door, read-only):
 
 ```bash
+mi --home ~/.mind-incarnation                              # defaults to: mi ... status
+mi --home ~/.mind-incarnation @pinned                       # defaults to: mi -C @pinned status
 mi --home ~/.mind-incarnation status --cd <project_root>
 mi --home ~/.mind-incarnation status --cd <project_root> --json
 mi --home ~/.mind-incarnation --here status --json

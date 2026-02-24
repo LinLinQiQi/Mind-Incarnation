@@ -339,6 +339,55 @@ def _build_learn_suggested_handler(
     return _handle_learn_suggested
 
 
+def _build_segment_adder(
+    *,
+    checkpoint_enabled: bool,
+    state: RunnerWiringState,
+    segment_max_records: int,
+) -> Callable[[dict[str, Any]], None]:
+    """Build segment buffer record adder (behavior-preserving)."""
+
+    def _segment_add(obj: dict[str, Any]) -> None:
+        SS.add_segment_record(
+            enabled=bool(checkpoint_enabled),
+            obj=obj,
+            segment_records=state.segment_records,
+            segment_max_records=int(segment_max_records),
+            truncate=AP._truncate,
+        )
+
+    return _segment_add
+
+
+def _build_cross_project_recall_writer(
+    *,
+    mem: Any,
+    evidence_append: Any,
+    evidence_window: list[dict[str, Any]],
+    thread_id: str,
+    segment_add: Callable[[dict[str, Any]], None],
+    persist_segment_state: Callable[[], None],
+) -> Callable[..., None]:
+    """Build on-demand cross-project recall writer (behavior-preserving)."""
+
+    def _maybe_cross_project_recall(*, batch_id: str, reason: str, query: str) -> None:
+        RF.maybe_cross_project_recall_write_through(
+            batch_id=batch_id,
+            reason=reason,
+            query=query,
+            thread_id=thread_id,
+            evidence_window=evidence_window,
+            deps=RF.RecallDeps(
+                mem_recall=mem.maybe_cross_project_recall,
+                evidence_append=evidence_append,
+                segment_add=segment_add,
+                persist_segment_state=persist_segment_state,
+            ),
+        )
+
+    return _maybe_cross_project_recall
+
+
 def run_autopilot_from_boot(
     *,
     boot: W.BootstrappedAutopilotRun,
@@ -477,33 +526,20 @@ def run_autopilot_from_boot(
         now_ts=now_rfc3339,
     )
 
-    def _segment_add(obj: dict[str, Any]) -> None:
-        SS.add_segment_record(
-            enabled=checkpoint_enabled,
-            obj=obj,
-            segment_records=state.segment_records,
-            segment_max_records=segment_max_records,
-            truncate=AP._truncate,
-        )
+    _segment_add = _build_segment_adder(
+        checkpoint_enabled=checkpoint_enabled,
+        state=state,
+        segment_max_records=segment_max_records,
+    )
 
-    def _maybe_cross_project_recall(*, batch_id: str, reason: str, query: str) -> None:
-        """On-demand cross-project recall (best-effort).
-
-        This writes an EvidenceLog record and appends a compact version to evidence_window so Mind prompts can use it.
-        """
-        RF.maybe_cross_project_recall_write_through(
-            batch_id=batch_id,
-            reason=reason,
-            query=query,
-            thread_id=state_access.get_thread_id(),
-            evidence_window=evidence_window,
-            deps=RF.RecallDeps(
-                mem_recall=mem.maybe_cross_project_recall,
-                evidence_append=evw.append,
-                segment_add=_segment_add,
-                persist_segment_state=_persist_segment_state,
-            ),
-        )
+    _maybe_cross_project_recall = _build_cross_project_recall_writer(
+        mem=mem,
+        evidence_append=evw.append,
+        evidence_window=evidence_window,
+        thread_id=state_access.get_thread_id(),
+        segment_add=_segment_add,
+        persist_segment_state=_persist_segment_state,
+    )
 
     def _build_phase_bundles() -> PhaseAssembly:
         phase_dicts = normalize_phase_dicts(

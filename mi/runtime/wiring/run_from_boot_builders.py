@@ -387,16 +387,3 @@ __all__ = [
     "build_segment_state_io",
     "bootstrap_segment_state_if_enabled",
 ]
-
-# Backwards-compatible internal aliases (repo not released yet, but avoids missing call sites).
-_build_batch_predecide_deps = build_batch_predecide_deps
-_build_checkpoint_callbacks = build_checkpoint_callbacks
-_build_cross_project_recall_writer = build_cross_project_recall_writer
-_build_decide_next_logger = build_decide_next_logger
-_build_learn_suggested_handler = build_learn_suggested_handler
-_build_mind_call = build_mind_call
-_build_run_end_callbacks = build_run_end_callbacks
-_build_runtime_cfg_for_prompts = build_runtime_cfg_for_prompts
-_build_segment_adder = build_segment_adder
-_build_segment_state_io = build_segment_state_io
-_bootstrap_segment_state_if_enabled = bootstrap_segment_state_if_enabled

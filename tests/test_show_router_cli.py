@@ -86,7 +86,7 @@ class TestShowRouterCli(unittest.TestCase):
             payload = json.loads(out)
             self.assertEqual(str(payload.get("project_root") or ""), str(proj.resolve()))
 
-    def test_show_pseudo_ref_project(self) -> None:
+    def test_project_show(self) -> None:
         with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:
             home = Path(td_home)
             proj = Path(td_proj)
@@ -94,7 +94,7 @@ class TestShowRouterCli(unittest.TestCase):
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
             try:
-                code = mi_main(["--home", str(home), "show", "project", "--cd", str(proj), "--json"])
+                code = mi_main(["--home", str(home), "project", "show", "--cd", str(proj), "--json"])
                 out = sys.stdout.getvalue()
             finally:
                 sys.stdout = old_stdout

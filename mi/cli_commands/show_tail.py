@@ -445,10 +445,8 @@ def handle_show(
             effective_cd_arg=effective_cd_arg,
         )
     if token in ("project", "overlay"):
-        args2 = argparse.Namespace(**vars(args))
-        args2.cmd = "project"
-        args2.project_cmd = "show"
-        return dispatch_fn(args2, home_dir, cfg)
+        print("use `mi project show` for per-project state; `mi show` is for ids/transcripts", file=sys.stderr)
+        return 2
     if token in ("hands", "mind"):
         project_root = resolve_project_root_from_args(home_dir, effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
         pp2 = ProjectPaths(home_dir=home_dir, project_root=project_root)
@@ -492,7 +490,7 @@ def handle_show(
         return _show_workflow_ref(wid=ref, args=args, home_dir=home_dir, cfg=cfg, dispatch_fn=dispatch_fn)
 
     print(
-        f"unknown ref: {ref} (expected ev_/cl_/nd_/wf_/ed_, a transcript .jsonl path, or one of: last/project/hands/mind)",
+        f"unknown ref: {ref} (expected ev_/cl_/nd_/wf_/ed_, a transcript .jsonl path, or one of: last/hands/mind)",
         file=sys.stderr,
     )
     return 2

@@ -184,9 +184,11 @@ mi show /path/to/transcript.jsonl -n 200
 
 # 便捷 pseudo-ref：
 mi show last --cd /path/to/your/project --json
-mi show project --cd /path/to/your/project --json
 mi show hands --cd /path/to/your/project -n 200
 mi show mind --cd /path/to/your/project -n 200
+
+# 项目级状态（overlay + 存储路径解析）：
+mi project show --cd /path/to/your/project --json
 
 # 追踪最近活动（默认 evidence）：
 mi tail --cd /path/to/your/project -n 20
@@ -243,9 +245,9 @@ mi show last --cd /path/to/your/project --redact
 查看项目级状态（overlay + 存储路径解析）：
 
 ```bash
-mi show project --cd /path/to/your/project
-mi show project --cd /path/to/your/project --json
-mi show project --cd /path/to/your/project --redact
+mi project show --cd /path/to/your/project
+mi project show --cd /path/to/your/project --json
+mi project show --cd /path/to/your/project --redact
 ```
 
 查看 MI 将如何解析 project root（只读；不会更新 `@last`）：

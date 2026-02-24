@@ -184,9 +184,11 @@ mi show /path/to/transcript.jsonl -n 200
 
 # Convenience pseudo-refs:
 mi show last --cd /path/to/your/project --json
-mi show project --cd /path/to/your/project --json
 mi show hands --cd /path/to/your/project -n 200
 mi show mind --cd /path/to/your/project -n 200
+
+# Per-project overlay + resolved paths:
+mi project show --cd /path/to/your/project --json
 
 # Tail recent activity (evidence by default):
 mi tail --cd /path/to/your/project -n 20
@@ -243,9 +245,9 @@ Note: `mi show last --json` includes `why_trace` / `why_traces` when present (e.
 Show per-project overlay + resolved storage paths:
 
 ```bash
-mi show project --cd /path/to/your/project
-mi show project --cd /path/to/your/project --json
-mi show project --cd /path/to/your/project --redact
+mi project show --cd /path/to/your/project
+mi project show --cd /path/to/your/project --json
+mi project show --cd /path/to/your/project --redact
 ```
 
 Show how MI resolves the project root (read-only; does not update `@last`):

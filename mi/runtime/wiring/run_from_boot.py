@@ -364,7 +364,7 @@ def _build_cross_project_recall_writer(
     mem: Any,
     evidence_append: Any,
     evidence_window: list[dict[str, Any]],
-    thread_id: str,
+    thread_id_getter: Callable[[], str],
     segment_add: Callable[[dict[str, Any]], None],
     persist_segment_state: Callable[[], None],
 ) -> Callable[..., None]:
@@ -375,7 +375,7 @@ def _build_cross_project_recall_writer(
             batch_id=batch_id,
             reason=reason,
             query=query,
-            thread_id=thread_id,
+            thread_id=thread_id_getter(),
             evidence_window=evidence_window,
             deps=RF.RecallDeps(
                 mem_recall=mem.maybe_cross_project_recall,
@@ -536,7 +536,7 @@ def run_autopilot_from_boot(
         mem=mem,
         evidence_append=evw.append,
         evidence_window=evidence_window,
-        thread_id=state_access.get_thread_id(),
+        thread_id_getter=state_access.get_thread_id,
         segment_add=_segment_add,
         persist_segment_state=_persist_segment_state,
     )

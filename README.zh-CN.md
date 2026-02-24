@@ -268,6 +268,7 @@ mi project alias list
 mi run --cd @repo1 "完成 X，并用最小检查验证。"
 mi @repo1 run "完成 X，并用最小检查验证。"   # 等价：mi -C @repo1 run ...
 mi @pinned status                          # 等价：mi -C @pinned status
+mi /path/to/your/project status             # 等价：mi -C /path/to/your/project status
 ```
 
 查看 EvidenceLog / transcript：

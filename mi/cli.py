@@ -16,6 +16,7 @@ def _rewrite_cli_argv(argv: list[str]) -> list[str]:
     Example:
       mi @pinned status   -> mi -C @pinned status
       mi @repo1 run ...   -> mi -C @repo1 run ...
+      mi ~/repo status    -> mi -C ~/repo status
     """
 
     args = list(argv or [])
@@ -51,6 +52,18 @@ def _rewrite_cli_argv(argv: list[str]) -> list[str]:
         # First positional.
         if a.startswith("@"):
             return args[:i] + ["-C", a] + args[i + 1 :]
+        if a[:1] in ("/", ".", "~"):
+            # Only treat path-ish tokens as project selection when they already exist
+            # and are a directory. This avoids stealing normal command words.
+            try:
+                p = Path(a).expanduser()
+                if not p.is_absolute():
+                    p = (Path.cwd() / p)
+                p = p.resolve()
+                if p.is_dir():
+                    return args[:i] + ["-C", str(p)] + args[i + 1 :]
+            except Exception:
+                pass
         return args
 
     return args

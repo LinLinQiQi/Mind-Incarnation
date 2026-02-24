@@ -1241,7 +1241,7 @@ Notes on `--cd` (project root):
 
 - Most project-scoped commands accept `--cd <project_root>` to choose which project to operate on.
 - You can also set a per-invocation default project root via `mi -C <project_root> <cmd> ...` (argparse: `-C/--cd` must appear **before** the subcommand). Subcommand `--cd` overrides `-C/--cd` if both are provided.
-- Shorthand: you can put a selection token first: `mi @pinned <cmd> ...` / `mi @repo1 <cmd> ...` (sugar for `mi -C @pinned <cmd> ...`).
+- Shorthand: you can put a selection token or a path first: `mi @pinned <cmd> ...` / `mi @repo1 <cmd> ...` / `mi /path/to/repo <cmd> ...` (sugar for `mi -C ... <cmd> ...`).
 - You can force the project root to be the current working directory (even inside a git repo) via `mi --here <cmd> ...` (global flag; must appear **before** the subcommand). This is useful for monorepo subdirs and is ignored when `--cd/-C` is provided.
 - `--cd` is optional. If omitted, MI infers a project root from your current working directory:
   - for git repos: defaults to the git toplevel (repo root) unless the current directory was previously used as a distinct MI project root (monorepo subproject)
@@ -1303,6 +1303,7 @@ mi --home ~/.mind-incarnation project alias list
 mi --home ~/.mind-incarnation run --cd @repo1 "<task>"
 mi --home ~/.mind-incarnation run --cd @pinned "<task>"
 mi --home ~/.mind-incarnation @repo1 run "<task>"                     # shorthand (equivalent to -C)
+mi --home ~/.mind-incarnation <project_root> status                    # shorthand (equivalent to -C)
 ```
 
 Tail EvidenceLog:

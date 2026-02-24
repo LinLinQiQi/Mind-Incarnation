@@ -23,7 +23,12 @@ class TestCliProjectTokenShorthand(unittest.TestCase):
         self.assertEqual(ns.cmd, "status")
         self.assertEqual(ns.global_cd, "@repo1")
 
+    def test_rewrites_existing_directory_path(self) -> None:
+        # Use the current directory as an always-existing path.
+        ns = build_parser().parse_args(_rewrite_cli_argv([".", "status"]))
+        self.assertEqual(ns.cmd, "status")
+        self.assertTrue(str(ns.global_cd))
+
 
 if __name__ == "__main__":
     unittest.main()
-

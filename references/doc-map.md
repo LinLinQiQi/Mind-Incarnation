@@ -91,6 +91,7 @@ Examples: new provider, new template, config knobs, validation behavior changes.
 Examples: new subcommand/flag, renamed output keys, new JSON fields.
 
 - Update: `README.md`, `README.zh-CN.md` quickstart usage snippets
+- Update: `docs/cli.md`, `docs/cli.zh-CN.md` (canonical CLI reference)
 - Update: `docs/mi-v1-spec.md` CLI Usage section (especially if new commands/flags)
 
 ## Quick Doc Drift Checks (before committing)

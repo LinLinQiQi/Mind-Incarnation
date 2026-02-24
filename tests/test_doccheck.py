@@ -57,6 +57,9 @@ def _init_min_repo(*, root: Path, last_updated: str) -> str:
         ),
     )
     _write_text(root, "docs/mi-thought-db.md", "# Thought DB\n\nNotes.\n")
+    _write_text(root, "docs/cli.md", "# CLI\n\nGuide.\n")
+    _write_text(root, "docs/cli.zh-CN.md", "# CLI (ZH)\n\nGuide.\n")
+    _write_text(root, "docs/internals.md", "# Internals\n\nNotes.\n")
     _write_text(root, "README.md", "# README\n\nHello.\n")
     _write_text(root, "README.zh-CN.md", "# README (ZH)\n\nHello.\n")
     _write_text(root, "references/doc-map.md", "# Doc Map\n\nKeep docs honest.\n")
@@ -125,6 +128,38 @@ class TestDoccheck(unittest.TestCase):
             self.assertEqual(p.returncode, 1)
             self.assertIn("README updated in only one language", p.stderr)
 
+    def test_cli_change_requires_cli_doc_update_in_strict_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            base = _init_min_repo(root=root, last_updated="2000-01-01")
+
+            today = datetime.date.today().isoformat()
+            _write_text(root, "mi/cli.py", "# cli\n\n# changed\n")
+            _write_text(
+                root,
+                "docs/mi-v1-spec.md",
+                "\n".join(
+                    [
+                        "# MI V1 Spec",
+                        "",
+                        f"Last updated: {today}",
+                        "",
+                        "Spec body changed.",
+                        "",
+                    ]
+                ),
+            )
+
+            _git(root, "add", "-A")
+            _git(root, "commit", "-m", "cli changed without cli doc", "-q")
+            head = _git(root, "rev-parse", "HEAD")
+
+            env = dict(os.environ)
+            env["MI_DOCCHECK_STRICT"] = "1"
+            p = _run([sys.executable, str(_DOCHECK_PATH), "--diff", f"{base}..{head}"], cwd=root, env=env)
+            self.assertEqual(p.returncode, 1)
+            self.assertIn("docs/cli.md not updated", p.stderr)
+
     def test_spec_last_updated_must_match_today_when_spec_changed(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -170,4 +205,3 @@ class TestDoccheck(unittest.TestCase):
             p = _run([sys.executable, str(_DOCHECK_PATH), "--diff", f"{base}..{head}"], cwd=root, env=env)
             self.assertEqual(p.returncode, 1)
             self.assertIn("references/doc-map.md not updated", p.stderr)
-

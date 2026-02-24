@@ -241,6 +241,12 @@ def main() -> int:
     readme_zh_changed = readme_zh in changed
     readme_any_changed = readme_en_changed or readme_zh_changed
 
+    cli_doc_en = "docs/cli.md"
+    cli_doc_zh = "docs/cli.zh-CN.md"
+    cli_doc_en_changed = cli_doc_en in changed
+    cli_doc_zh_changed = cli_doc_zh in changed
+    cli_doc_any_changed = cli_doc_en_changed or cli_doc_zh_changed
+
     thoughtdb_doc = "docs/mi-thought-db.md"
     thoughtdb_doc_changed = thoughtdb_doc in changed
     doc_map = "references/doc-map.md"
@@ -255,11 +261,20 @@ def main() -> int:
             expected=(spec,),
         )
 
-    # README updates are usually required for user-facing surface changes.
-    readme_reasons: list[str] = []
-    cli_changed = any(f in changed for f in ("mi/cli.py", "mi/cli_dispatch.py", "mi/runtime/inspect.py")) or any_changed(("mi/schemas",))
-    if cli_changed:
-        readme_reasons.append("CLI/inspect/schemas")
+    # CLI guide updates are required for CLI UX / inspect surface changes.
+    cli_changed = any(f in changed for f in ("mi/cli.py", "mi/cli_dispatch.py", "mi/runtime/inspect.py")) or any_changed(("mi/cli_commands", "mi/cli_parsers", "mi/schemas"))
+    if cli_changed and not cli_doc_any_changed:
+        warn(
+            category="cli_doc",
+            message=f"CLI/inspect/schemas changed but {cli_doc_en} not updated.",
+            expected=(cli_doc_en, cli_doc_zh),
+        )
+    elif cli_doc_en_changed != cli_doc_zh_changed:
+        warn(
+            category="cli_doc_sync",
+            message="CLI guide updated in only one language; keep docs/cli.md and docs/cli.zh-CN.md in sync.",
+            expected=(cli_doc_en, cli_doc_zh),
+        )
 
     # Thought DB / memory design notes.
     tdb_changed = any_changed(("mi/thoughtdb", "mi/memory"))
@@ -270,30 +285,31 @@ def main() -> int:
             expected=(thoughtdb_doc,),
         )
 
-    # Workflows / host adapters are user-facing; README should usually mention new/changed knobs.
+    # Workflows / host adapters are user-facing; CLI guide should usually mention knobs/commands.
     wf_changed = any_changed(("mi/workflows",)) or any(f in changed for f in ("mi/workflows/hosts.py",))
-    if wf_changed:
-        readme_reasons.append("Workflows/host adapters")
+    if wf_changed and not cli_doc_any_changed:
+        warn(
+            category="cli_doc",
+            message=f"Workflows/host adapters changed but {cli_doc_en} not updated.",
+            expected=(cli_doc_en, cli_doc_zh),
+        )
 
-    # Provider config/templates are user-facing.
+    # Provider config/templates are user-facing; CLI guide should usually mention config knobs.
     providers_changed = any_changed(("mi/providers",)) or any(f in changed for f in ("mi/core/config.py",))
-    if providers_changed:
-        readme_reasons.append("Providers/config")
+    if providers_changed and not cli_doc_any_changed:
+        warn(
+            category="cli_doc",
+            message=f"Providers/config changed but {cli_doc_en} not updated.",
+            expected=(cli_doc_en, cli_doc_zh),
+        )
 
-    if readme_reasons:
-        reasons_s = ", ".join(readme_reasons)
-        if not readme_any_changed:
-            warn(
-                category="readme",
-                message=f"{reasons_s} changed but README not updated.",
-                expected=(readme_en, readme_zh),
-            )
-        elif readme_en_changed != readme_zh_changed:
-            warn(
-                category="readme_sync",
-                message="README updated in only one language; keep README.md and README.zh-CN.md in sync.",
-                expected=(readme_en, readme_zh),
-            )
+    # If README changed, keep it bilingual (regardless of why it changed).
+    if readme_any_changed and (readme_en_changed != readme_zh_changed):
+        warn(
+            category="readme_sync",
+            message="README updated in only one language; keep README.md and README.zh-CN.md in sync.",
+            expected=(readme_en, readme_zh),
+        )
 
     # If the spec itself changed, ensure the header date is meaningful.
     if spec_changed and spec not in deleted:

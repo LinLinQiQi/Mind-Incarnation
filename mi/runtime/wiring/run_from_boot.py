@@ -27,17 +27,17 @@ from .phase_inputs import normalize_phase_dicts
 from .run_from_boot_builders import (
     CheckpointCallbacks,
     PhaseAssembly,
-    _bootstrap_segment_state_if_enabled,
-    _build_batch_predecide_deps,
-    _build_checkpoint_callbacks,
-    _build_cross_project_recall_writer,
-    _build_decide_next_logger,
-    _build_learn_suggested_handler,
-    _build_mind_call,
-    _build_run_end_callbacks,
-    _build_runtime_cfg_for_prompts,
-    _build_segment_adder,
-    _build_segment_state_io,
+    bootstrap_segment_state_if_enabled,
+    build_batch_predecide_deps,
+    build_checkpoint_callbacks,
+    build_cross_project_recall_writer,
+    build_decide_next_logger,
+    build_learn_suggested_handler,
+    build_mind_call,
+    build_run_end_callbacks,
+    build_runtime_cfg_for_prompts,
+    build_segment_adder,
+    build_segment_state_io,
 )
 
 
@@ -62,7 +62,7 @@ def run_autopilot_from_boot(
     def _runtime_cfg_for_prompts() -> dict[str, Any]:
         """Runtime knobs context for Mind prompts (non-canonical; best-effort)."""
 
-        return _build_runtime_cfg_for_prompts(runtime_cfg)
+        return build_runtime_cfg_for_prompts(runtime_cfg)
 
     # Cross-run Hands session persistence is stored in ProjectOverlay but only used when explicitly enabled.
     overlay = boot.overlay
@@ -128,7 +128,7 @@ def run_autopilot_from_boot(
         hands_state=hands_state,
     ).flush
 
-    segment_io = _build_segment_state_io(project_paths=project_paths, task=task, state_warnings=state_warnings)
+    segment_io = build_segment_state_io(project_paths=project_paths, task=task, state_warnings=state_warnings)
     segment_max_records = int(segment_io.segment_max_records)
     # Avoid inflating mined occurrence counts within a single `mi run` invocation.
     wf_sigs_counted_in_run: set[str] = set()
@@ -140,7 +140,7 @@ def run_autopilot_from_boot(
     def _persist_segment_state() -> None:
         segment_io.persist(enabled=checkpoint_enabled, segment_state=state.segment_state)
 
-    _bootstrap_segment_state_if_enabled(
+    bootstrap_segment_state_if_enabled(
         checkpoint_enabled=checkpoint_enabled,
         segment_io=segment_io,
         continue_hands=continue_hands,
@@ -156,20 +156,20 @@ def run_autopilot_from_boot(
 
     learn_suggested_records_this_run: list[dict[str, Any]] = []
 
-    _mind_call = _build_mind_call(
+    _mind_call = build_mind_call(
         llm=llm,
         evidence_append=evw.append,
         evidence_window=evidence_window,
         thread_id_getter=_cur_thread_id,
     )
 
-    _log_decide_next = _build_decide_next_logger(
+    _log_decide_next = build_decide_next_logger(
         evidence_append=evw.append,
         now_ts=now_rfc3339,
         thread_id_getter=state_access.get_thread_id_opt,
     )
 
-    _handle_learn_suggested = _build_learn_suggested_handler(
+    _handle_learn_suggested = build_learn_suggested_handler(
         runtime_cfg=runtime_cfg,
         project_paths=project_paths,
         state_access=state_access,
@@ -179,13 +179,13 @@ def run_autopilot_from_boot(
         now_ts=now_rfc3339,
     )
 
-    _segment_add = _build_segment_adder(
+    _segment_add = build_segment_adder(
         checkpoint_enabled=checkpoint_enabled,
         state=state,
         segment_max_records=segment_max_records,
     )
 
-    _maybe_cross_project_recall = _build_cross_project_recall_writer(
+    _maybe_cross_project_recall = build_cross_project_recall_writer(
         mem=mem,
         evidence_append=evw.append,
         evidence_window=evidence_window,
@@ -298,7 +298,7 @@ def run_autopilot_from_boot(
             new_segment_state=_new_segment_state,
         )
 
-        checkpoint_callbacks = _build_checkpoint_callbacks(
+        checkpoint_callbacks = build_checkpoint_callbacks(
             checkpoint_bundle=checkpoint_bundle,
             state=state,
             persist_segment_state=_persist_segment_state,
@@ -485,7 +485,7 @@ def run_autopilot_from_boot(
                 thread_id_getter=state_access.get_thread_id_opt,
             )
 
-            return _build_batch_predecide_deps(
+            return build_batch_predecide_deps(
                 project_path=project_path,
                 batch_ctx=batch_ctx,
                 hands_runner=hands_runner,
@@ -525,7 +525,7 @@ def run_autopilot_from_boot(
             auto_answer_obj=preaction.auto_answer_obj if isinstance(preaction.auto_answer_obj, dict) else AP._empty_auto_answer(),
         )
 
-    run_end = _build_run_end_callbacks(
+    run_end = build_run_end_callbacks(
         enabled_why_trace=bool(auto_why_on_end),
         learn_suggested_records_this_run=learn_suggested_records_this_run,
         tdb=tdb,

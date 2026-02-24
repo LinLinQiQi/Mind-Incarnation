@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from mi.runtime.runner_state import RunnerWiringState
-from mi.runtime.wiring.run_from_boot_builders import _build_cross_project_recall_writer, _build_segment_adder
+from mi.runtime.wiring.run_from_boot_builders import build_cross_project_recall_writer, build_segment_adder
 
 
 class TestRunFromBootBuilders(unittest.TestCase):
@@ -25,7 +25,7 @@ class TestRunFromBootBuilders(unittest.TestCase):
 
             m.side_effect = _side_effect
 
-            writer = _build_cross_project_recall_writer(
+            writer = build_cross_project_recall_writer(
                 mem=mock.Mock(maybe_cross_project_recall=mock.Mock()),
                 evidence_append=mock.Mock(),
                 evidence_window=[],
@@ -42,7 +42,7 @@ class TestRunFromBootBuilders(unittest.TestCase):
     def test_segment_adder_passes_expected_args(self) -> None:
         state = RunnerWiringState(thread_id="t", next_input="")
         with mock.patch("mi.runtime.wiring.run_from_boot_builders.SS.add_segment_record", autospec=True) as m:
-            add = _build_segment_adder(checkpoint_enabled=True, state=state, segment_max_records=123)
+            add = build_segment_adder(checkpoint_enabled=True, state=state, segment_max_records=123)
             add({"kind": "x"})
 
             self.assertTrue(m.called)
@@ -54,4 +54,3 @@ class TestRunFromBootBuilders(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

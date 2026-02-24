@@ -42,13 +42,13 @@ class RunEndCallbacks:
     why_runner: Callable[[], None]
 
 
-def _build_runtime_cfg_for_prompts(runtime_cfg: Any) -> dict[str, Any]:
+def build_runtime_cfg_for_prompts(runtime_cfg: Any) -> dict[str, Any]:
     """Return non-canonical runtime knobs for prompts (best-effort)."""
 
     return runtime_cfg if isinstance(runtime_cfg, dict) else {}
 
 
-def _build_batch_predecide_deps(
+def build_batch_predecide_deps(
     *,
     project_path: Any,
     batch_ctx: Any,
@@ -77,7 +77,7 @@ def _build_batch_predecide_deps(
     )
 
 
-def _build_checkpoint_callbacks(
+def build_checkpoint_callbacks(
     *,
     checkpoint_bundle: Any,
     state: RunnerWiringState,
@@ -115,7 +115,7 @@ def _build_checkpoint_callbacks(
     return CheckpointCallbacks(before_continue=_maybe_checkpoint_and_mine, runner=_run_checkpoint_request)
 
 
-def _build_segment_state_io(*, project_paths: Any, task: str, state_warnings: list[dict[str, Any]]) -> SegmentStateIO:
+def build_segment_state_io(*, project_paths: Any, task: str, state_warnings: list[dict[str, Any]]) -> SegmentStateIO:
     return SegmentStateIO(
         path=project_paths.segment_state_path,
         task=task,
@@ -128,7 +128,7 @@ def _build_segment_state_io(*, project_paths: Any, task: str, state_warnings: li
     )
 
 
-def _bootstrap_segment_state_if_enabled(
+def bootstrap_segment_state_if_enabled(
     *,
     checkpoint_enabled: bool,
     segment_io: SegmentStateIO,
@@ -154,7 +154,7 @@ def _bootstrap_segment_state_if_enabled(
     flush_state_warnings()
 
 
-def _build_mind_call(
+def build_mind_call(
     *,
     llm: Any,
     evidence_append: Any,
@@ -172,7 +172,7 @@ def _build_mind_call(
     ).call
 
 
-def _build_run_end_callbacks(
+def build_run_end_callbacks(
     *,
     enabled_why_trace: bool,
     learn_suggested_records_this_run: list[dict[str, Any]],
@@ -237,7 +237,7 @@ def _build_run_end_callbacks(
     return RunEndCallbacks(learn_runner=_run_learn_update, why_runner=_run_why_trace)
 
 
-def _build_decide_next_logger(
+def build_decide_next_logger(
     *,
     evidence_append: Any,
     now_ts: Callable[[], str],
@@ -277,7 +277,7 @@ def _build_decide_next_logger(
     return _log_decide_next
 
 
-def _build_learn_suggested_handler(
+def build_learn_suggested_handler(
     *,
     runtime_cfg: Any,
     project_paths: Any,
@@ -322,7 +322,7 @@ def _build_learn_suggested_handler(
     return _handle_learn_suggested
 
 
-def _build_segment_adder(
+def build_segment_adder(
     *,
     checkpoint_enabled: bool,
     state: RunnerWiringState,
@@ -342,7 +342,7 @@ def _build_segment_adder(
     return _segment_add
 
 
-def _build_cross_project_recall_writer(
+def build_cross_project_recall_writer(
     *,
     mem: Any,
     evidence_append: Any,
@@ -375,16 +375,28 @@ __all__ = [
     "CheckpointCallbacks",
     "PhaseAssembly",
     "RunEndCallbacks",
-    "_build_batch_predecide_deps",
-    "_build_checkpoint_callbacks",
-    "_build_cross_project_recall_writer",
-    "_build_decide_next_logger",
-    "_build_learn_suggested_handler",
-    "_build_mind_call",
-    "_build_run_end_callbacks",
-    "_build_runtime_cfg_for_prompts",
-    "_build_segment_adder",
-    "_build_segment_state_io",
-    "_bootstrap_segment_state_if_enabled",
+    "build_batch_predecide_deps",
+    "build_checkpoint_callbacks",
+    "build_cross_project_recall_writer",
+    "build_decide_next_logger",
+    "build_learn_suggested_handler",
+    "build_mind_call",
+    "build_run_end_callbacks",
+    "build_runtime_cfg_for_prompts",
+    "build_segment_adder",
+    "build_segment_state_io",
+    "bootstrap_segment_state_if_enabled",
 ]
 
+# Backwards-compatible internal aliases (repo not released yet, but avoids missing call sites).
+_build_batch_predecide_deps = build_batch_predecide_deps
+_build_checkpoint_callbacks = build_checkpoint_callbacks
+_build_cross_project_recall_writer = build_cross_project_recall_writer
+_build_decide_next_logger = build_decide_next_logger
+_build_learn_suggested_handler = build_learn_suggested_handler
+_build_mind_call = build_mind_call
+_build_run_end_callbacks = build_run_end_callbacks
+_build_runtime_cfg_for_prompts = build_runtime_cfg_for_prompts
+_build_segment_adder = build_segment_adder
+_build_segment_state_io = build_segment_state_io
+_bootstrap_segment_state_if_enabled = bootstrap_segment_state_if_enabled

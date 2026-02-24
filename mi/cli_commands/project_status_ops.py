@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -148,20 +149,35 @@ def _handle_status(
 
     # Deterministic next-step suggestions (no model calls).
     next_steps: list[str] = []
+
+    def _prefix_project(cmd: str) -> str:
+        """Make suggested commands copy/pasteable from any cwd (best-effort)."""
+
+        s = str(cmd or "").strip()
+        if not s.startswith("mi "):
+            return s
+        rest = s[len("mi ") :].lstrip()
+        if not rest:
+            return s
+        # Avoid double-prefixing if the suggestion already includes an explicit selection.
+        if rest.startswith(("-C ", "--cd ", "@", "/", ".", "~")):
+            return s
+        return f"mi {shlex.quote(str(root))} {rest}"
+
     if not bool(vcfg.get("ok", False)):
         next_steps.append("mi config validate")
     if not values_base_present:
-        next_steps.append('mi values set --text "..."')
+        next_steps.append(_prefix_project('mi values set --text "..."'))
     if pending_suggestions:
-        next_steps.append(f"mi claim apply-suggested {pending_suggestions[0]} --dry-run")
+        next_steps.append(_prefix_project(f"mi claim apply-suggested {pending_suggestions[0]} --dry-run"))
     st = str(decide_next.get("status") or "") if isinstance(decide_next, dict) else ""
     na = str(decide_next.get("next_action") or "") if isinstance(decide_next, dict) else ""
     if st in ("blocked", "not_done") or na in ("ask_user", "continue", "run_checks"):
-        next_steps.append("mi show last --redact")
+        next_steps.append(_prefix_project("mi show last --redact"))
     if bindings and (not host_sync_ok):
-        next_steps.append("mi host sync --json")
+        next_steps.append(_prefix_project("mi host sync --json"))
     if not next_steps:
-        next_steps.append('mi run "..."')
+        next_steps.append(_prefix_project('mi run "..."'))
     next_steps = next_steps[:3]
 
     payload = {

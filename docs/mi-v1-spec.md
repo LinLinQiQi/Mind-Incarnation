@@ -1174,7 +1174,7 @@ mi --home ~/.mind-incarnation --here status --json
 Notes:
 
 - `mi status` is read-only: it does not update `@last` / `global/project_selection.json`.
-- It aggregates: config/provider health, canonical values readiness, latest batch bundle summary, pending learn suggestions, and next-step command hints.
+- It aggregates: config/provider health, canonical values readiness, latest batch bundle summary, pending learn suggestions, and next-step command hints (project-scoped hints are copy/pasteable from any cwd and include the resolved project root).
 
 Show an MI resource (front-door):
 

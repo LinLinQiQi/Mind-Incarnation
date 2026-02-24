@@ -44,6 +44,9 @@ class TestStatusCli(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(out)
             self.assertEqual(str(payload.get("project_root") or ""), str(proj.resolve()))
+            next_steps = payload.get("next_steps") if isinstance(payload.get("next_steps"), list) else []
+            # Copy/pasteable: project-scoped suggestions include the resolved project_root.
+            self.assertTrue(any(str(proj.resolve()) in str(x) for x in next_steps))
 
             # status must not create/update the selection registry file.
             self.assertFalse(gp.project_selection_path.exists())
@@ -70,4 +73,3 @@ class TestStatusCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

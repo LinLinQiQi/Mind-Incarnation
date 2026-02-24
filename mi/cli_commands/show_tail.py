@@ -448,12 +448,8 @@ def handle_show(
         print("use `mi project show` for per-project state; `mi show` is for ids/transcripts", file=sys.stderr)
         return 2
     if token in ("hands", "mind"):
-        project_root = resolve_project_root_from_args(home_dir, effective_cd_arg(args), cfg=cfg, here=bool(getattr(args, "here", False)))
-        pp2 = ProjectPaths(home_dir=home_dir, project_root=project_root)
-        tp = _latest_transcript_path(pp2, mind=token == "mind")
-        want_jsonl = bool(getattr(args, "jsonl", False)) or bool(getattr(args, "json", False))
-        n = int(getattr(args, "lines", 200) or 200)
-        return _render_transcript(tp, lines=n, jsonl=want_jsonl, redact=bool(getattr(args, "redact", False)))
+        print("use `mi tail hands|mind` for transcript tails; `mi show` is for ids/transcripts", file=sys.stderr)
+        return 2
 
     if ref.endswith(".jsonl") or ref.endswith(".jsonl.gz"):
         tp = Path(ref).expanduser()
@@ -490,7 +486,7 @@ def handle_show(
         return _show_workflow_ref(wid=ref, args=args, home_dir=home_dir, cfg=cfg, dispatch_fn=dispatch_fn)
 
     print(
-        f"unknown ref: {ref} (expected ev_/cl_/nd_/wf_/ed_, a transcript .jsonl path, or one of: last/hands/mind)",
+        f"unknown ref: {ref} (expected ev_/cl_/nd_/wf_/ed_, a transcript .jsonl path, or one of: last)",
         file=sys.stderr,
     )
     return 2

@@ -184,8 +184,6 @@ mi show /path/to/transcript.jsonl -n 200
 
 # Convenience pseudo-refs:
 mi show last --cd /path/to/your/project --json
-mi show hands --cd /path/to/your/project -n 200
-mi show mind --cd /path/to/your/project -n 200
 
 # Per-project overlay + resolved paths:
 mi project show --cd /path/to/your/project --json

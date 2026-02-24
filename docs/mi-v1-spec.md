@@ -1194,8 +1194,6 @@ mi --home ~/.mind-incarnation show /path/to/transcript.jsonl -n 200
 
 # Convenience pseudo-refs:
 mi --home ~/.mind-incarnation show last --cd <project_root>
-mi --home ~/.mind-incarnation show hands --cd <project_root> -n 200
-mi --home ~/.mind-incarnation show mind --cd <project_root> -n 200
 mi --home ~/.mind-incarnation project show --cd <project_root>
 
 # Tail recent activity:
@@ -1212,8 +1210,9 @@ Notes:
 - `mi show ev_... --global` searches the global EvidenceLog only.
 - `mi show cl_/nd_/ed_/wf_...` uses effective resolution (project first, then global).
 - `mi show <path>.jsonl` prints a transcript tail (best-effort; supports archive stubs and `.gz`).
-- `mi show last/hands/mind` are pseudo-refs routed by the front-door show handler.
+- `mi show last` is a pseudo-ref routed by the front-door show handler.
 - `mi project show` is the canonical way to inspect per-project overlay + resolved paths.
+- For transcripts: use `mi tail hands|mind` (preferred) or `mi show <path>.jsonl`.
 - `mi tail [evidence|hands|mind]` is the canonical tail entry:
   - default target is `evidence`
   - evidence default lines is `20`; transcript default lines is `200`

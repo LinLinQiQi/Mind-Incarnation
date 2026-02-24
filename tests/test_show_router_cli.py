@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 from mi.cli import main as mi_main
@@ -104,45 +105,31 @@ class TestShowRouterCli(unittest.TestCase):
             self.assertEqual(str(payload.get("project_root") or ""), str(proj.resolve()))
             self.assertTrue(str(payload.get("project_id") or "").strip())
 
-    def test_show_pseudo_ref_hands_and_mind(self) -> None:
+    def test_show_hands_and_mind_are_not_pseudo_refs_anymore(self) -> None:
         with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:
             home = Path(td_home)
             proj = Path(td_proj)
-
-            pp = ProjectPaths(home_dir=home, project_root=proj)
-            hands_dir = pp.transcripts_dir / "hands"
-            mind_dir = pp.transcripts_dir / "mind"
-            hands_dir.mkdir(parents=True, exist_ok=True)
-            mind_dir.mkdir(parents=True, exist_ok=True)
-
-            hands_tp = hands_dir / "hands_1.jsonl"
-            mind_tp = mind_dir / "mind_1.jsonl"
-            hands_tp.write_text(json.dumps({"ts": "t", "stream": "stdout", "line": "hands-hello"}) + "\n", encoding="utf-8")
-            mind_tp.write_text(json.dumps({"ts": "t", "stream": "stdout", "line": "mind-hello"}) + "\n", encoding="utf-8")
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            err = io.StringIO()
+            try:
+                with redirect_stderr(err):
+                    code = mi_main(["--home", str(home), "show", "hands", "--cd", str(proj)])
+                _out = sys.stdout.getvalue()
+            finally:
+                sys.stdout = old_stdout
+            self.assertEqual(code, 2)
 
             old_stdout = sys.stdout
             sys.stdout = io.StringIO()
+            err = io.StringIO()
             try:
-                code = mi_main(["--home", str(home), "show", "hands", "--cd", str(proj), "-n", "1", "--jsonl"])
-                out = sys.stdout.getvalue()
+                with redirect_stderr(err):
+                    code = mi_main(["--home", str(home), "show", "mind", "--cd", str(proj)])
+                _out = sys.stdout.getvalue()
             finally:
                 sys.stdout = old_stdout
-
-            self.assertEqual(code, 0)
-            self.assertIn("hands_1.jsonl", out)
-            self.assertIn("hands-hello", out)
-
-            old_stdout = sys.stdout
-            sys.stdout = io.StringIO()
-            try:
-                code = mi_main(["--home", str(home), "show", "mind", "--cd", str(proj), "-n", "1", "--jsonl"])
-                out = sys.stdout.getvalue()
-            finally:
-                sys.stdout = old_stdout
-
-            self.assertEqual(code, 0)
-            self.assertIn("mind_1.jsonl", out)
-            self.assertIn("mind-hello", out)
+            self.assertEqual(code, 2)
 
     def test_show_claim_from_project(self) -> None:
         with tempfile.TemporaryDirectory() as td_home, tempfile.TemporaryDirectory() as td_proj:

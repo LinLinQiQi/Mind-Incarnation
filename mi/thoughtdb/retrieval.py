@@ -124,21 +124,6 @@ def seed_ids_from_memory(
     return MemorySeedIds(proj_claim, glob_claim, proj_node, glob_node, notes=notes)
 
 
-def _claim_active_and_valid(view: ThoughtDbView, claim_id: str, *, as_of_ts: str) -> bool:
-    # Backward-compatible wrapper; prefer importing from mi.thoughtdb.predicates.
-    return claim_active_and_valid(view, claim_id, as_of_ts=as_of_ts)
-
-
-def _node_active(view: ThoughtDbView, node_id: str) -> bool:
-    # Backward-compatible wrapper; prefer importing from mi.thoughtdb.predicates.
-    return node_active(view, node_id)
-
-
-def _edges_adjacent(view: ThoughtDbView, node_id: str) -> list[dict[str, Any]]:
-    # Backward-compatible wrapper; prefer importing from mi.thoughtdb.predicates.
-    return edges_adjacent(view, node_id)
-
-
 def expand_one_hop(
     *,
     v_proj: ThoughtDbView,
@@ -183,14 +168,14 @@ def expand_one_hop(
 
     def ok_other(other: str, kind: str) -> bool:
         if kind == "claim":
-            return _claim_active_and_valid(v_proj, other, as_of_ts=as_of_ts) or _claim_active_and_valid(v_glob, other, as_of_ts=as_of_ts)
+            return claim_active_and_valid(v_proj, other, as_of_ts=as_of_ts) or claim_active_and_valid(v_glob, other, as_of_ts=as_of_ts)
         if kind == "node":
-            return _node_active(v_proj, other) or _node_active(v_glob, other)
+            return node_active(v_proj, other) or node_active(v_glob, other)
         return False
 
     for view in (v_proj, v_glob):  # prefer project edges
         for sid in sorted(seeds):
-            for e in _edges_adjacent(view, sid):
+            for e in edges_adjacent(view, sid):
                 if len(added_claims) >= max_c and len(added_nodes) >= max_n:
                     break
                 if not isinstance(e, dict):

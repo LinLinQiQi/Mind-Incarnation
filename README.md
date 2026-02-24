@@ -266,6 +266,8 @@ mi project alias add repo1 --cd /path/to/your/project
 mi project alias list
 
 mi run --cd @repo1 "Do X, then verify with minimal checks."
+mi @repo1 run "Do X, then verify with minimal checks."   # shorthand for: mi -C @repo1 run ...
+mi @pinned status                                        # shorthand for: mi -C @pinned status
 ```
 
 Tail EvidenceLog / transcript:

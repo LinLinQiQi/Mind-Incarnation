@@ -36,6 +36,36 @@ class TestCliProjectTokenShorthand(unittest.TestCase):
         self.assertEqual(ns.cmd, "status")
         self.assertTrue(str(ns.global_cd))
 
+    def test_shorthand_routes_to_show_and_tail(self) -> None:
+        # Ref-first => show
+        ns = build_parser().parse_args(_rewrite_cli_argv(["ev_123", "--json"]))
+        self.assertEqual(ns.cmd, "show")
+        self.assertEqual(ns.ref, "ev_123")
+        self.assertTrue(bool(ns.json))
+
+        # last => show last
+        ns = build_parser().parse_args(_rewrite_cli_argv(["last", "--json"]))
+        self.assertEqual(ns.cmd, "show")
+        self.assertEqual(ns.ref, "last")
+
+        # hands/mind => tail hands/mind
+        ns = build_parser().parse_args(_rewrite_cli_argv(["hands", "-n", "1"]))
+        self.assertEqual(ns.cmd, "tail")
+        self.assertEqual(ns.target, "hands")
+        self.assertEqual(ns.lines, 1)
+
+        ns = build_parser().parse_args(_rewrite_cli_argv(["mind", "-n", "1", "--jsonl"]))
+        self.assertEqual(ns.cmd, "tail")
+        self.assertEqual(ns.target, "mind")
+        self.assertEqual(ns.lines, 1)
+        self.assertTrue(bool(ns.jsonl))
+
+        # Selection + ref => -C + show
+        ns = build_parser().parse_args(_rewrite_cli_argv(["@pinned", "ev_1", "--json"]))
+        self.assertEqual(ns.global_cd, "@pinned")
+        self.assertEqual(ns.cmd, "show")
+        self.assertEqual(ns.ref, "ev_1")
+
 
 if __name__ == "__main__":
     unittest.main()

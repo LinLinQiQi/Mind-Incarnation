@@ -1215,6 +1215,7 @@ Notes:
 - `mi show last` is a pseudo-ref routed by the front-door show handler.
 - `mi project show` is the canonical way to inspect per-project overlay + resolved paths.
 - For transcripts: use `mi tail hands|mind` (preferred) or `mi show <path>.jsonl`.
+- Shorthands (sugar): `mi ev_<id> ...` routes to `mi show ev_<id> ...`; `mi last ...` routes to `mi show last ...`; `mi hands|mind ...` routes to `mi tail hands|mind ...`.
 - `mi tail [evidence|hands|mind]` is the canonical tail entry:
   - default target is `evidence`
   - evidence default lines is `20`; transcript default lines is `200`
